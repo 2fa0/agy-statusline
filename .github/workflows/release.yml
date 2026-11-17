@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Download SQLite amalgamation
+        run: |
+          curl -fsSL https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip -o sqlite.zip
+          unzip -q sqlite.zip
+      - name: Build linux-x64
+        run: |
+          zig build-exe main.zig \
+            -cflags -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -- \
+            sqlite-amalgamation-3490100/sqlite3.c \
+            -I sqlite-amalgamation-3490100 \
+            -target x86_64-linux-musl -O ReleaseFast -lc \
+            -femit-bin=agy-statusline
+          tar -czf agy-statusline-linux-x64.tar.gz agy-statusline
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-statusline-linux-x64
+          path: agy-statusline-linux-x64.tar.gz
+
+  build-macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Build macos-arm64
+        run: |
+          zig build-obj main.zig -target aarch64-macos.13.0 -O ReleaseFast -lc -fcompiler-rt -femit-bin=main.o
+          clang main.o -arch arm64 -mmacosx-version-min=13.0 -lsqlite3 -o agy-statusline
+          tar -czf agy-statusline-macos-arm64.tar.gz agy-statusline
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-statusline-macos-arm64
+          path: agy-statusline-macos-arm64.tar.gz
+
+  build-windows-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Download SQLite amalgamation
+        run: |
+          curl -fsSL https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip -o sqlite.zip
+          unzip -q sqlite.zip
+      - name: Build windows-x64
+        run: |
+          zig build-exe main.zig \
+            -cflags -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -- \
+            sqlite-amalgamation-3490100/sqlite3.c \
+            -I sqlite-amalgamation-3490100 \
+            -target x86_64-windows-gnu -O ReleaseFast -lc \
+            -femit-bin=agy-statusline.exe
+          zip -q agy-statusline-windows-x64.zip agy-statusline.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-statusline-windows-x64
+          path: agy-statusline-windows-x64.zip
+
+  release:
+    needs: [build-linux-x64, build-macos-arm64, build-windows-x64]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/agy-statusline-linux-x64.tar.gz
+            dist/agy-statusline-macos-arm64.tar.gz
+            dist/agy-statusline-windows-x64.zip

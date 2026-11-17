@@ -1,0 +1,8 @@
+agy-statusline
+agy-statusline.exe
+*.o
+*.obj
+*.new
+.zig-cache/
+zig-out/
+.DS_Store
