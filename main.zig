@@ -9,7 +9,20 @@ extern "c" fn sqlite3_column_bytes(?*anyopaque, c_int) c_int;
 extern "c" fn sqlite3_finalize(?*anyopaque) c_int;
 
 const Usage = struct { input_tokens: ?i64 = null, cache_read_input_tokens: ?i64 = null, cache_creation_input_tokens: ?i64 = null };
-const State = struct { terminal_width: ?usize = null, conversation_id: []const u8 = "", context_window: struct { current_usage: ?Usage = null } = .{} };
+const QuotaBucket = struct { remaining_fraction: ?f64 = null, reset_in_seconds: ?i64 = null, disabled: ?bool = null };
+const QuotaWindow = struct { h5: ?f64 = null, weekly: ?f64 = null, other: ?f64 = null };
+const QuotaSummary = struct { gemini: QuotaWindow = .{}, argon: QuotaWindow = .{}, claude: QuotaWindow = .{} };
+const ContextWindow = struct {
+    total_input_tokens: ?i64 = null,
+    context_window_size: ?i64 = null,
+    current_usage: ?Usage = null,
+};
+const State = struct {
+    terminal_width: ?usize = null,
+    conversation_id: []const u8 = "",
+    context_window: ContextWindow = .{},
+    quota: ?std.json.ArrayHashMap(QuotaBucket) = null,
+};
 
 fn varint(data: []const u8, pos: *usize) ?u64 {
     var value: u64 = 0;
@@ -95,35 +108,164 @@ fn formatTokens(allocator: Allocator, value: i64) ![]const u8 {
     if (value >= 1000) try out.append('K');
     return out.toOwnedSlice();
 }
-fn render(allocator: Allocator, usage: ?Usage, speed: ?f64) ![]const u8 {
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or haystack.len < needle.len) return false;
+    for (0..haystack.len - needle.len + 1) |i| {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn updateMin(slot: *?f64, val: f64) void {
+    slot.* = if (slot.*) |cur| @min(cur, val) else val;
+}
+
+fn recordWindow(w: *QuotaWindow, key: []const u8, val: f64) void {
+    if (containsIgnoreCase(key, "5h")) {
+        updateMin(&w.h5, val);
+    } else if (containsIgnoreCase(key, "weekly")) {
+        updateMin(&w.weekly, val);
+    } else {
+        updateMin(&w.other, val);
+    }
+}
+
+fn hasWindow(w: QuotaWindow) bool {
+    return w.h5 != null or w.weekly != null or w.other != null;
+}
+
+fn summarizeQuota(quota: ?std.json.ArrayHashMap(QuotaBucket)) QuotaSummary {
+    var summary: QuotaSummary = .{};
+    const q = quota orelse return summary;
+    var it = q.map.iterator();
+    while (it.next()) |entry| {
+        const frac = entry.value_ptr.remaining_fraction orelse continue;
+        const clamped = @max(0.0, @min(1.0, frac));
+        const key = entry.key_ptr.*;
+        if (containsIgnoreCase(key, "argon")) {
+            recordWindow(&summary.argon, key, clamped);
+        } else if (containsIgnoreCase(key, "gemini") or containsIgnoreCase(key, "hydrogen") or containsIgnoreCase(key, "flash")) {
+            recordWindow(&summary.gemini, key, clamped);
+        } else if (containsIgnoreCase(key, "3p") or containsIgnoreCase(key, "claude") or containsIgnoreCase(key, "gpt") or containsIgnoreCase(key, "anthropic")) {
+            recordWindow(&summary.claude, key, clamped);
+        }
+    }
+    return summary;
+}
+
+fn visibleLen(s: []const u8) usize {
+    var count: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '\x1b' and i + 1 < s.len and s[i + 1] == '[') {
+            i += 2;
+            while (i < s.len and s[i] != 'm') : (i += 1) {}
+            if (i < s.len) i += 1;
+            continue;
+        }
+        if (s[i] != '\n' and (s[i] & 0xC0) != 0x80) count += 1;
+        i += 1;
+    }
+    return count;
+}
+
+fn appendGroup(out: *std.ArrayList(u8), badge_color: []const u8, label: []const u8, w: QuotaWindow) !void {
+    if (!hasWindow(w)) return;
+    const writer = out.writer();
+    if (w.h5 != null and w.weekly != null) {
+        try writer.print("{s} {s} {d:.0}% · {d:.0}% ", .{ badge_color, label, w.h5.? * 100.0, w.weekly.? * 100.0 });
+    } else if (w.h5 orelse w.weekly orelse w.other) |v| {
+        try writer.print("{s} {s} {d:.0}% ", .{ badge_color, label, v * 100.0 });
+    }
+}
+
+fn renderContext(allocator: Allocator, cw: ContextWindow) ![]const u8 {
+    const total = cw.context_window_size orelse return "Ctx: --";
+    if (total <= 0) return "Ctx: --";
+    var used: ?i64 = null;
+    if (cw.current_usage) |u| {
+        if (u.input_tokens != null and u.cache_read_input_tokens != null and u.cache_creation_input_tokens != null) {
+            const in_t = u.input_tokens.?;
+            const read_t = u.cache_read_input_tokens.?;
+            const create_t = u.cache_creation_input_tokens.?;
+            if (in_t >= 0 and read_t >= 0 and create_t >= 0) {
+                used = in_t +| read_t +| create_t;
+            }
+        }
+    }
+    if (used == null) {
+        if (cw.total_input_tokens) |t| {
+            if (t >= 0) used = t;
+        }
+    }
+    const u_val = used orelse return "Ctx: --";
+    return std.fmt.allocPrint(allocator, "Ctx: {s}/{s}", .{ try formatTokens(allocator, u_val), try formatTokens(allocator, total) });
+}
+
+fn renderMetrics(allocator: Allocator, cw: ContextWindow, speed: ?f64, color: []const u8) ![]const u8 {
     const speed_text = if (speed) |s| try std.fmt.allocPrint(allocator, "Last avg speed: {d:.0} token/s", .{s}) else "Last avg speed: --";
-    const color = if (speed != null and speed.? < 50) "\x1b[43;30m" else "\x1b[44;97m";
-    if (usage) |u| {
+    const ctx_text = try renderContext(allocator, cw);
+    if (cw.current_usage) |u| {
         if (u.input_tokens != null and u.cache_read_input_tokens != null and u.cache_creation_input_tokens != null) {
             const input = u.input_tokens.?; const read = u.cache_read_input_tokens.?;
             if (input >= 0 and read >= 0 and u.cache_creation_input_tokens.? == 0) {
                 const total = @as(f64, @floatFromInt(input)) + @as(f64, @floatFromInt(read));
-                if (total > 0) return std.fmt.allocPrint(allocator, "{s}Cache hit: {d:.1}% | Cache read: {s} | {s}\x1b[0m\n", .{color, 100 * @as(f64, @floatFromInt(read)) / total, try formatTokens(allocator, read), speed_text});
+                if (total > 0) return std.fmt.allocPrint(allocator, "{s}Cache hit: {d:.1}% | Cache read: {s} | {s} | {s}\x1b[0m\n", .{color, 100 * @as(f64, @floatFromInt(read)) / total, try formatTokens(allocator, read), ctx_text, speed_text});
             }
         }
     }
-    return std.fmt.allocPrint(allocator, "{s}Cache hit: -- | {s}\x1b[0m\n", .{color, speed_text});
+    return std.fmt.allocPrint(allocator, "{s}Cache hit: -- | {s} | {s}\x1b[0m\n", .{color, ctx_text, speed_text});
 }
+
+fn renderQuotaLine(allocator: Allocator, quota: QuotaSummary, base_color: []const u8) !?[]const u8 {
+    if (!hasWindow(quota.gemini) and !hasWindow(quota.argon) and !hasWindow(quota.claude)) return null;
+    var out = std.ArrayList(u8).init(allocator);
+    try appendGroup(&out, "\x1b[46;30m", "Gemini", quota.gemini);
+    try appendGroup(&out, "\x1b[106;30m", "Argon", quota.argon);
+    try appendGroup(&out, "\x1b[48;5;208;30m", "Claude", quota.claude);
+    try out.appendSlice(base_color);
+    try out.appendSlice("\x1b[0m\n");
+    return try out.toOwnedSlice();
+}
+
+fn render(allocator: Allocator, cw: ContextWindow, speed: ?f64, quota: QuotaSummary) ![]const u8 {
+    const color = if (speed != null and speed.? < 50) "\x1b[43;30m" else "\x1b[44;97m";
+    const metrics = try renderMetrics(allocator, cw, speed, color);
+    const quota_line = try renderQuotaLine(allocator, quota, color) orelse return metrics;
+    return std.fmt.allocPrint(allocator, "{s} | {s}", .{ metrics[0 .. metrics.len - "\x1b[0m\n".len], quota_line });
+}
+
+fn writePaddedLine(writer: anytype, line: []const u8, width: usize) !void {
+    const padding = width -| visibleLen(line);
+    try writer.writeAll(line[0 .. line.len - "\x1b[0m\n".len]);
+    try writer.writeByteNTimes(' ', padding);
+    try writer.writeAll("\x1b[0m\n");
+}
+
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator); defer arena.deinit();
     const a = arena.allocator();
     const input = std.io.getStdIn().reader().readAllAlloc(a, 1024 * 1024) catch "";
     const state = std.json.parseFromSlice(State, a, input, .{ .ignore_unknown_fields = true }) catch null;
-    const u = if (state) |s| s.value.context_window.current_usage else null;
+    const cw = if (state) |s| s.value.context_window else ContextWindow{};
     const speed = if (state) |s| lastSpeed(a, s.value.conversation_id) else null;
-    const line = try render(a, u, speed);
+    const quota = if (state) |s| summarizeQuota(s.value.quota) else QuotaSummary{};
     const width = if (state) |s| @min(s.value.terminal_width orelse 0, 1000) else 0;
-    const visible_len = line.len - "\x1b[44;97m".len - "\x1b[0m\n".len;
-    const padding = width -| visible_len;
+    const color = if (speed != null and speed.? < 50) "\x1b[43;30m" else "\x1b[44;97m";
+    const metrics = try renderMetrics(a, cw, speed, color);
+    const quota_line = try renderQuotaLine(a, quota, color);
     const writer = std.io.getStdOut().writer();
-    try writer.writeAll(line[0 .. line.len - "\x1b[0m\n".len]);
-    try writer.writeByteNTimes(' ', padding);
-    try writer.writeAll("\x1b[0m\n");
+    if (quota_line) |ql| {
+        const single = try std.fmt.allocPrint(a, "{s} | {s}", .{ metrics[0 .. metrics.len - "\x1b[0m\n".len], ql });
+        if (width > 0 and visibleLen(single) > width) {
+            try writePaddedLine(writer, metrics, width);
+            try writePaddedLine(writer, ql, width);
+            return;
+        }
+        try writePaddedLine(writer, single, width);
+    } else {
+        try writePaddedLine(writer, metrics, width);
+    }
 }
 
 test "formatting and speed" {
@@ -133,6 +275,24 @@ test "formatting and speed" {
     const data = [_]u8{0x0a,0x08,0x22,0x02,0x18,0x64,0x62,0x02,0x08,0x02};
     try std.testing.expectEqual(@as(?f64, 50), metadataSpeed(&data));
     try std.testing.expectEqual(@as(?f64, null), metadataSpeed(&.{0x0a,0xff}));
-    const line = try render(a, .{ .input_tokens = 200, .cache_read_input_tokens = 800, .cache_creation_input_tokens = 0 }, 12.6); defer a.free(line);
-    try std.testing.expectEqualStrings("\x1b[43;30mCache hit: 80.0% | Cache read: 800 | Last avg speed: 13 token/s\x1b[0m\n", line);
+    const line = try render(a, .{ .context_window_size = 1_048_576, .current_usage = .{ .input_tokens = 200, .cache_read_input_tokens = 800, .cache_creation_input_tokens = 0 } }, 12.6, .{}); defer a.free(line);
+    try std.testing.expectEqualStrings("\x1b[43;30mCache hit: 80.0% | Cache read: 800 | Ctx: 1K/1,048K | Last avg speed: 13 token/s\x1b[0m\n", line);
+}
+
+test "quota summary and rendering" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator); defer arena.deinit();
+    const a = arena.allocator();
+    const json =
+        \\{"terminal_width":110,"quota":{"gemini-weekly":{"remaining_fraction":0.9875},"gemini-5h":{"remaining_fraction":0.9815},"gemini-argon-wtu-weekly":{"remaining_fraction":1},"3p-5h":{"remaining_fraction":1},"3p-weekly":{"remaining_fraction":0.85}}}
+    ;
+    const state = try std.json.parseFromSlice(State, a, json, .{ .ignore_unknown_fields = true });
+    const quota = summarizeQuota(state.value.quota);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.9815), quota.gemini.h5.?, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.9875), quota.gemini.weekly.?, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), quota.argon.weekly.?, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), quota.claude.h5.?, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.85), quota.claude.weekly.?, 1e-6);
+    const line = try render(a, .{}, 60, quota);
+    try std.testing.expectEqualStrings("\x1b[44;97mCache hit: -- | Ctx: -- | Last avg speed: 60 token/s | \x1b[46;30m Gemini 98% · 99% \x1b[106;30m Argon 100% \x1b[48;5;208;30m Claude 100% · 85% \x1b[44;97m\x1b[0m\n", line);
+    try std.testing.expectEqual(@as(usize, 102), visibleLen(line));
 }
