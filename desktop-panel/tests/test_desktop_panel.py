@@ -11,7 +11,6 @@ from pathlib import Path
 PANEL_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PANEL_DIR))
 
-from server import APP_URI, MIME_TYPE, McpStatusServer  # noqa: E402
 from telemetry import (  # noqa: E402
     build_status_snapshot,
     decode_proto_fields,
@@ -202,40 +201,15 @@ class DesktopPanelTests(unittest.TestCase):
             self.assertAlmostEqual(snap["cacheHitPct"], 80.0, places=1)
             self.assertEqual(snap["cacheReadTokens"], 800)
 
-    def test_mcp_server_protocol(self) -> None:
-        server = McpStatusServer()
-        init_res = server.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}}
-        )
-        assert init_res is not None
-        self.assertEqual(init_res["result"]["protocolVersion"], "2025-03-26")
-
-        tools_res = server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-        assert tools_res is not None
-        tools = {t["name"]: t for t in tools_res["result"]["tools"]}
-        self.assertIn("open_status_panel", tools)
-        self.assertIn("get_status_snapshot", tools)
-        entrypoints = tools["open_status_panel"]["_meta"]["com.google.antigravity/ui"]["entrypoints"]
-        self.assertEqual({e["type"] for e in entrypoints}, {"aux_pane", "global"})
-        self.assertEqual(tools["get_status_snapshot"]["_meta"]["ui"]["visibility"], ["app"])
-
-        res_read = server.handle_request(
-            {"jsonrpc": "2.0", "id": 3, "method": "resources/read", "params": {"uri": APP_URI}}
-        )
-        assert res_read is not None
-        content = res_read["result"]["contents"][0]
-        self.assertEqual(content["mimeType"], MIME_TYPE)
-        self.assertIn("<script>", content["text"])
-        self.assertEqual(content["text"].count("<!DOCTYPE html>"), 1)
-        self.assertEqual(content["text"].count("</head>"), 1)
-
-        call_res = server.handle_request(
-            {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "open_status_panel", "arguments": {}}}
-        )
-        assert call_res is not None
-        self.assertIn("result", call_res)
-        self.assertFalse(call_res["result"]["isError"])
-        self.assertIn("structuredContent", call_res["result"])
+    def test_dist_html_bundle_is_valid_single_document(self) -> None:
+        html_path = PANEL_DIR / "dist" / "index.html"
+        self.assertTrue(html_path.is_file())
+        text = html_path.read_text(encoding="utf-8")
+        self.assertIn("<script>", text)
+        self.assertEqual(text.count("<!DOCTYPE html>"), 1)
+        self.assertEqual(text.count("</head>"), 1)
+        self.assertFalse((PANEL_DIR / "mcp_config.json").exists())
+        self.assertFalse((PANEL_DIR / "server.py").exists())
 
     def test_sidecar_manifest_and_telemetry_cli(self) -> None:
         sidecar_cfg_path = PANEL_DIR / "sidecars" / "status" / "sidecar.json"

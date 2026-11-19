@@ -8,7 +8,7 @@
 | **Desktop 右侧面板 (`AGY Desktop Status`)** | Antigravity 2.0 桌面端右侧辅助栏常驻 Tab | 平均输出速度 & 近期速度趋势图、当前轮次/会话总耗时、上下文窗口占用（`Ctx`）、Prompt 缓存命中率（`Cache hit`） | [desktop-panel/](./desktop-panel/) |
 
 > [!NOTE]
-> **合规与隐私说明**：本仓库中的所有工具均严格基于 Google Antigravity 官方开放的扩展机制（CLI `statusLine` 扩展、Desktop `Plugin` / `UI Sidecar` / `Lifecycle Hooks` / `MCP App`）构建。**全程零外部网络请求、不读取任何 OAuth Token 或 API 凭据、不调用或探测任何未公开的内部 RPC 接口、不修改客户端文件、不绕过任何 Google / Antigravity 配额或权限限制**。所有统计数据仅以只读方式（SQLite `mode=ro` & `PRAGMA query_only = ON`）解析本地已落盘的会话记录。
+> **合规与隐私说明**：本仓库中的所有工具均严格基于 Google Antigravity 官方开放的扩展机制（CLI `statusLine` 扩展、Desktop `Plugin` / `UI Sidecar` / `Lifecycle Hooks`）构建。**全程零外部网络请求、不读取任何 OAuth Token 或 API 凭据、不调用或探测任何未公开的内部 RPC 接口、不修改客户端文件、不绕过任何 Google / Antigravity 配额或权限限制**。所有统计数据仅以只读方式（SQLite `mode=ro` & `PRAGMA query_only = ON`）解析本地已落盘的会话记录。
 
 ---
 

@@ -70,7 +70,7 @@ if [[ -n "${LOCAL_DIR}" ]]; then
   if [[ "${MODE}" == "copy" ]]; then
     mkdir -p "${TARGET_DIR}"
     rsync -a --exclude 'node_modules' --exclude '.DS_Store' --exclude '__pycache__' "${LOCAL_DIR}/" "${TARGET_DIR}/"
-    chmod +x "${TARGET_DIR}/install.sh" "${TARGET_DIR}/server.py" "${TARGET_DIR}/hooks/track_active.py" 2>/dev/null || true
+    chmod +x "${TARGET_DIR}/install.sh" "${TARGET_DIR}/hooks/track_active.py" 2>/dev/null || true
     echo "Copied ${LOCAL_DIR} -> ${TARGET_DIR}"
   else
     ln -s "${LOCAL_DIR}" "${TARGET_DIR}"

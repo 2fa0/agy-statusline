@@ -1,9 +1,3 @@
-import {
-  App,
-  applyDocumentTheme,
-  applyHostStyleVariables,
-} from '@modelcontextprotocol/ext-apps';
-
 interface GenHistoryItem {
   idx: number;
   speedTokS: number | null;
@@ -49,6 +43,15 @@ interface StatusSnapshot {
   recentConversations?: RecentConversation[];
   generatedAt?: string;
   message?: string;
+}
+
+declare global {
+  interface Window {
+    sidecar?: {
+      conversationId?: string | null;
+      fetch?: typeof fetch;
+    };
+  }
 }
 
 const STORAGE_KEY_INTERVAL = 'agy_status_refresh_sec';
@@ -188,6 +191,12 @@ function highlightHistoryItem(targetIdx: number | null): void {
     const idx = Number(el.dataset.idx);
     el.classList.toggle('active', idx === item.idx);
   });
+}
+
+const urlParams = new URLSearchParams(window.location.search);
+
+function getPaneConversationId(): string {
+  return (window.sidecar?.conversationId || urlParams.get('conversationId') || '').trim();
 }
 
 function renderSnapshot(snap: StatusSnapshot): void {
@@ -395,26 +404,6 @@ historyListEl.addEventListener('click', (e) => {
   }
 });
 
-declare global {
-  interface Window {
-    sidecar?: {
-      conversationId?: string | null;
-      fetch?: typeof fetch;
-    };
-  }
-}
-
-const urlParams = new URLSearchParams(window.location.search);
-const isSidecarHost =
-  typeof window.sidecar !== 'undefined' ||
-  window.location.protocol === 'http:' ||
-  window.location.protocol === 'https:' ||
-  window.location.protocol === 'plugin:';
-
-function getPaneConversationId(): string {
-  return (window.sidecar?.conversationId || urlParams.get('conversationId') || '').trim();
-}
-
 function syncSidecarThemeFromBackground(): void {
   const probe = document.createElement('span');
   probe.style.cssText = 'position:absolute;visibility:hidden;color:var(--background, #f7f7f8)';
@@ -432,21 +421,6 @@ function syncSidecarThemeFromBackground(): void {
   }
 }
 
-const app = isSidecarHost ? null : new App({ name: 'AGY Desktop Status', version: '0.3.1' }, {});
-
-if (app) {
-  app.ontoolresult = (result) => {
-    if (result?.structuredContent) {
-      renderSnapshot(result.structuredContent as unknown as StatusSnapshot);
-    }
-  };
-
-  app.onhostcontextchanged = (ctx) => {
-    if (ctx?.theme) applyDocumentTheme(ctx.theme);
-    if (ctx?.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
-  };
-}
-
 async function fetchSidecarSnapshot(convId: string): Promise<StatusSnapshot | null> {
   const f = window.sidecar?.fetch ? window.sidecar.fetch.bind(window.sidecar) : fetch;
   const qs = convId ? `?conversationId=${encodeURIComponent(convId)}` : '';
@@ -459,29 +433,13 @@ async function refreshSnapshot(): Promise<void> {
   if (inFlight) return;
   inFlight = true;
   try {
-    if (isSidecarHost) {
-      const targetId =
-        selectedConversation && selectedConversation !== 'auto'
-          ? selectedConversation
-          : getPaneConversationId() || 'auto';
-      const snap = await fetchSidecarSnapshot(targetId);
-      if (snap) {
-        renderSnapshot(snap);
-      }
-      return;
-    }
-
-    if (!app) return;
-    const args =
+    const targetId =
       selectedConversation && selectedConversation !== 'auto'
-        ? { conversationId: selectedConversation }
-        : {};
-    const res = await app.callServerTool({
-      name: 'get_status_snapshot',
-      arguments: args,
-    });
-    if (res?.structuredContent) {
-      renderSnapshot(res.structuredContent as unknown as StatusSnapshot);
+        ? selectedConversation
+        : getPaneConversationId() || 'auto';
+    const snap = await fetchSidecarSnapshot(targetId);
+    if (snap) {
+      renderSnapshot(snap);
     }
   } catch {
     // Keep last rendered state if host aborts an in-flight refresh on close/reload.
@@ -521,21 +479,10 @@ refreshSelect.addEventListener('change', () => {
 });
 
 async function boot(): Promise<void> {
-  if (isSidecarHost) {
+  syncSidecarThemeFromBackground();
+  new MutationObserver(() => {
     syncSidecarThemeFromBackground();
-    new MutationObserver(() => {
-      syncSidecarThemeFromBackground();
-    }).observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
-    await refreshSnapshot();
-    resetTimer();
-    return;
-  }
-
-  if (!app) return;
-  await app.connect();
-  const ctx = app.getHostContext();
-  if (ctx?.theme) applyDocumentTheme(ctx.theme);
-  if (ctx?.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
   await refreshSnapshot();
   resetTimer();
 }
