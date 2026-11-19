@@ -2,7 +2,7 @@
   "name": "agy-desktop-status",
   "displayName": "AGY Desktop Status",
   "description": "Read-only right-pane telemetry monitor for Antigravity Desktop: average output speed, turn/session duration, context usage, and prompt cache hit rate.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "logo": "assets/logo.svg",
   "repository": "https://github.com/2fa0/agy-statusline",
   "homepage": "https://github.com/2fa0/agy-statusline",

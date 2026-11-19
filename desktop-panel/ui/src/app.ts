@@ -432,7 +432,7 @@ function syncSidecarThemeFromBackground(): void {
   }
 }
 
-const app = isSidecarHost ? null : new App({ name: 'AGY Desktop Status', version: '0.3.0' }, {});
+const app = isSidecarHost ? null : new App({ name: 'AGY Desktop Status', version: '0.3.1' }, {});
 
 if (app) {
   app.ontoolresult = (result) => {

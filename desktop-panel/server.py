@@ -123,7 +123,7 @@ class McpStatusServer:
                             "tools": {"listChanged": False},
                             "resources": {"subscribe": False, "listChanged": False},
                         },
-                        "serverInfo": {"name": "agy-desktop-status", "version": "0.1.0"},
+                        "serverInfo": {"name": "agy-desktop-status", "version": "0.3.1"},
                     },
                 )
 
