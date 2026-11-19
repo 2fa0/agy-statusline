@@ -15,6 +15,7 @@
       --agy-fg-faint: var(--color-text-tertiary, var(--placeholder, #9da5ab));
       --agy-border: var(--color-border-primary, var(--border, rgba(0, 0, 0, 0.1)));
       --agy-accent: var(--color-ring-primary, var(--primary, #2563eb));
+      --agy-accent-soft: rgba(37, 99, 235, 0.12);
       --agy-warn-bg: var(--color-background-warning, rgba(234, 179, 8, 0.12));
       --agy-warn-border: var(--color-border-warning, rgba(202, 138, 4, 0.4));
       --agy-warn-fg: var(--color-text-warning, #a16207);
@@ -31,6 +32,7 @@
       --agy-fg-faint: var(--color-text-tertiary, var(--placeholder, #6b7280));
       --agy-border: var(--color-border-primary, var(--border, rgba(255, 255, 255, 0.12)));
       --agy-accent: var(--color-ring-primary, var(--primary, #3b82f6));
+      --agy-accent-soft: rgba(59, 130, 246, 0.18);
       --agy-warn-bg: var(--color-background-warning, rgba(234, 179, 8, 0.14));
       --agy-warn-border: var(--color-border-warning, rgba(234, 179, 8, 0.45));
       --agy-warn-fg: var(--color-text-warning, #facc15);
@@ -78,17 +80,21 @@
       border-radius: 999px;
       flex: 0 0 auto;
       background: var(--agy-fg-faint);
+      transition: background 0.2s ease, box-shadow 0.2s ease;
     }
     .dot.live {
       background: var(--agy-ok-fg);
+      box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.16);
     }
-    select, button {
+    select, button, input {
       font: inherit;
       color: var(--agy-fg);
       background: var(--agy-card);
       border: 1px solid var(--agy-border);
       border-radius: 6px;
       padding: 4px 8px;
+    }
+    select, button {
       cursor: pointer;
     }
     select {
@@ -99,8 +105,61 @@
     button:hover {
       background: var(--agy-subtle);
     }
-    button.active {
+    .auto-group {
+      display: inline-flex;
+      align-items: center;
+      background: var(--agy-card);
+      border: 1px solid var(--agy-border);
+      border-radius: 7px;
+      overflow: hidden;
+      transition: border-color 0.15s ease;
+    }
+    .auto-group.active {
       border-color: var(--agy-accent);
+    }
+    .auto-btn {
+      border: none;
+      border-radius: 0;
+      padding: 4px 8px;
+      background: transparent;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .auto-group.active .auto-btn {
+      color: var(--agy-accent);
+      font-weight: 500;
+    }
+    .interval-box {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 0 6px;
+      border-left: 1px solid var(--agy-border);
+      background: var(--agy-subtle);
+      height: 100%;
+      font-size: 12px;
+      color: var(--agy-fg-muted);
+    }
+    .interval-input {
+      width: 34px;
+      border: none;
+      background: transparent;
+      padding: 3px 2px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      font-size: 12px;
+      color: var(--agy-fg);
+      outline: none;
+      -moz-appearance: textfield;
+    }
+    .interval-input::-webkit-outer-spin-button,
+    .interval-input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    .interval-input:focus {
+      color: var(--agy-accent);
+      font-weight: 600;
     }
     .controls {
       display: flex;
@@ -112,9 +171,22 @@
       display: flex;
       flex-wrap: wrap;
       align-items: center;
+      justify-content: space-between;
       gap: 6px;
       font-size: 11px;
       color: var(--agy-fg-muted);
+    }
+    .pills-wrap {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+    }
+    .updated-tag {
+      font-size: 11px;
+      color: var(--agy-fg-faint);
+      font-variant-numeric: tabular-nums;
+      margin-left: auto;
     }
     .pill {
       display: inline-flex;
@@ -145,6 +217,10 @@
       flex-direction: column;
       gap: 4px;
       min-width: 0;
+      transition: border-color 0.15s ease, transform 0.15s ease;
+    }
+    .card:hover {
+      border-color: var(--agy-accent);
     }
     .card.warn {
       background: var(--agy-warn-bg);
@@ -190,7 +266,7 @@
       border-radius: 999px;
       background: var(--agy-accent);
       width: 0%;
-      transition: width 0.2s ease;
+      transition: width 0.25s ease;
     }
     .bar-fill.high {
       background: var(--agy-warn-fg);
@@ -211,20 +287,64 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 6px;
+    }
+    .spark-detail {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--agy-fg);
+      background: var(--agy-subtle);
+      border: 1px solid var(--agy-border);
+      border-radius: 6px;
+      padding: 5px 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-variant-numeric: tabular-nums;
+      min-height: 28px;
+    }
+    .spark-detail .tag {
+      font-weight: 600;
+      color: var(--agy-accent);
+    }
+    .spark-detail .tag.warn {
+      color: var(--agy-warn-fg);
     }
     .spark {
       display: flex;
       align-items: flex-end;
-      gap: 4px;
-      height: 40px;
-      padding-top: 4px;
+      gap: 5px;
+      height: 54px;
+      padding: 8px 2px 2px;
+      border-bottom: 1px dashed var(--agy-border);
+    }
+    .spark-col {
+      flex: 1 1 0;
+      min-width: 8px;
+      height: 100%;
+      display: flex;
+      align-items: flex-end;
+      cursor: pointer;
+      padding: 0 1px;
+      border-radius: 4px;
+      transition: background 0.12s ease;
+    }
+    .spark-col:hover,
+    .spark-col.active {
+      background: var(--agy-accent-soft);
     }
     .spark-bar {
-      flex: 1 1 0;
-      min-width: 6px;
-      border-radius: 3px 3px 0 0;
+      width: 100%;
+      border-radius: 3px 3px 1px 1px;
       background: var(--agy-accent);
-      opacity: 0.85;
+      opacity: 0.78;
+      transition: height 0.2s ease, opacity 0.12s ease, transform 0.12s ease;
+    }
+    .spark-col:hover .spark-bar,
+    .spark-col.active .spark-bar {
+      opacity: 1;
+      transform: scaleY(1.03);
     }
     .spark-bar.warn {
       background: var(--agy-warn-fg);
@@ -232,32 +352,40 @@
     .history-list {
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 3px;
       font-size: 11px;
       font-variant-numeric: tabular-nums;
     }
     .history-row {
       display: grid;
-      grid-template-columns: 36px 1fr auto auto;
+      grid-template-columns: 38px 1fr auto auto;
       gap: 8px;
       align-items: center;
-      padding: 3px 4px;
-      border-radius: 4px;
+      padding: 4px 6px;
+      border-radius: 5px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background 0.12s ease, border-color 0.12s ease;
     }
     .history-row:nth-child(odd) {
       background: var(--agy-subtle);
     }
+    .history-row:hover,
+    .history-row.active {
+      background: var(--agy-accent-soft);
+      border-color: var(--agy-accent);
+    }
+    .speed-badge {
+      font-weight: 600;
+    }
+    .speed-badge.warn {
+      color: var(--agy-warn-fg);
+    }
     .muted {
       color: var(--agy-fg-muted);
-    }
-    .footer {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      font-size: 11px;
-      color: var(--agy-fg-faint);
-      padding-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .empty {
       padding: 18px 12px;
@@ -277,8 +405,13 @@
         </select>
       </div>
       <div class="controls">
-        <button id="toggle-auto" class="active" type="button">自动刷新 3s</button>
-        <button id="refresh-btn" type="button">刷新</button>
+        <div id="auto-group" class="auto-group active">
+          <button id="toggle-auto" class="auto-btn" type="button" title="点击开启或暂停自动刷新">自动刷新</button>
+          <label class="interval-box" title="自定义自动刷新间隔（1~60 秒）">
+            <input id="interval-input" class="interval-input" type="number" min="1" max="60" step="1" value="3" aria-label="Refresh interval seconds" />
+            <span>s</span>
+          </label>
+        </div>
       </div>
     </div>
 
@@ -291,16 +424,12 @@
         <span>近期生成速度趋势</span>
         <span id="history-count" class="muted"></span>
       </div>
+      <div id="spark-detail" class="spark-detail"></div>
       <div id="spark" class="spark"></div>
       <div id="history-list" class="history-list"></div>
     </div>
 
     <div id="empty-box" class="section empty" style="display:none"></div>
-
-    <div class="footer">
-      <span>Local Read-Only · Zero Network</span>
-      <span id="updated-at">--</span>
-    </div>
   </div>
   <!-- INLINE_SCRIPT -->
 </body>
