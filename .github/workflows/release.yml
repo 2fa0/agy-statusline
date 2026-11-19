@@ -77,8 +77,41 @@ jobs:
           name: agy-statusline-windows-x64
           path: agy-statusline-windows-x64.zip
 
+  package-desktop-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build and test AGY Desktop Status plugin
+        run: |
+          cd desktop-panel/ui
+          npm ci
+          npm run build
+          cd ..
+          python3 -m unittest discover -s tests
+      - name: Package desktop plugin archives
+        run: |
+          mkdir -p staging/agy-desktop-status
+          rsync -a \
+            --exclude 'ui/node_modules' \
+            --exclude 'tests' \
+            --exclude '__pycache__' \
+            --exclude '.DS_Store' \
+            desktop-panel/ staging/agy-desktop-status/
+          chmod +x staging/agy-desktop-status/install.sh staging/agy-desktop-status/server.py staging/agy-desktop-status/hooks/track_active.py
+          tar -C staging -czf agy-desktop-status-plugin.tar.gz agy-desktop-status
+          (cd staging && zip -qr ../agy-desktop-status-plugin.zip agy-desktop-status)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-desktop-status-plugin
+          path: |
+            agy-desktop-status-plugin.tar.gz
+            agy-desktop-status-plugin.zip
+
   release:
-    needs: [build-linux-x64, build-macos-arm64, build-windows-x64]
+    needs: [build-linux-x64, build-macos-arm64, build-windows-x64, package-desktop-plugin]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -93,3 +126,5 @@ jobs:
             dist/agy-statusline-linux-x64.tar.gz
             dist/agy-statusline-macos-arm64.tar.gz
             dist/agy-statusline-windows-x64.zip
+            dist/agy-desktop-status-plugin.tar.gz
+            dist/agy-desktop-status-plugin.zip

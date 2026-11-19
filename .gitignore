@@ -6,3 +6,6 @@ agy-statusline.exe
 .zig-cache/
 zig-out/
 .DS_Store
+node_modules/
+__pycache__/
+*.pyc

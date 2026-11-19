@@ -1,0 +1,14 @@
+{
+  "name": "agy-desktop-status",
+  "displayName": "AGY Desktop Status",
+  "description": "Read-only right-pane telemetry monitor for Antigravity Desktop: average output speed, turn/session duration, context usage, and prompt cache hit rate.",
+  "version": "0.3.0",
+  "logo": "assets/logo.svg",
+  "repository": "https://github.com/2fa0/agy-statusline",
+  "homepage": "https://github.com/2fa0/agy-statusline",
+  "suggestedPrompts": [
+    "Open the AGY Status side panel",
+    "Show my current session speed and context usage",
+    "Check my prompt cache hit rate and turn duration"
+  ]
+}

@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AGY Desktop Status</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --agy-bg: var(--color-background-primary, var(--background, #f7f7f8));
+      --agy-card: var(--color-background-secondary, var(--card, #ffffff));
+      --agy-subtle: var(--color-background-tertiary, var(--muted, #eff0f1));
+      --agy-fg: var(--color-text-primary, var(--foreground, #1d1f21));
+      --agy-fg-muted: var(--color-text-secondary, var(--muted-foreground, #5d676f));
+      --agy-fg-faint: var(--color-text-tertiary, var(--placeholder, #9da5ab));
+      --agy-border: var(--color-border-primary, var(--border, rgba(0, 0, 0, 0.1)));
+      --agy-accent: var(--color-ring-primary, var(--primary, #2563eb));
+      --agy-warn-bg: var(--color-background-warning, rgba(234, 179, 8, 0.12));
+      --agy-warn-border: var(--color-border-warning, rgba(202, 138, 4, 0.4));
+      --agy-warn-fg: var(--color-text-warning, #a16207);
+      --agy-ok-fg: var(--color-text-success, #16a34a);
+      --agy-font: var(--font-sans, var(--font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif));
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --agy-bg: var(--color-background-primary, var(--background, #111318));
+      --agy-card: var(--color-background-secondary, var(--card, #1a1e26));
+      --agy-subtle: var(--color-background-tertiary, var(--muted, #232833));
+      --agy-fg: var(--color-text-primary, var(--foreground, #e6e8ee));
+      --agy-fg-muted: var(--color-text-secondary, var(--muted-foreground, #9ca3af));
+      --agy-fg-faint: var(--color-text-tertiary, var(--placeholder, #6b7280));
+      --agy-border: var(--color-border-primary, var(--border, rgba(255, 255, 255, 0.12)));
+      --agy-accent: var(--color-ring-primary, var(--primary, #3b82f6));
+      --agy-warn-bg: var(--color-background-warning, rgba(234, 179, 8, 0.14));
+      --agy-warn-border: var(--color-border-warning, rgba(234, 179, 8, 0.45));
+      --agy-warn-fg: var(--color-text-warning, #facc15);
+      --agy-ok-fg: var(--color-text-success, #22c55e);
+    }
+    * {
+      box-sizing: border-box;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--agy-bg);
+      color: var(--agy-fg);
+      font-family: var(--agy-font);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .shell {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--agy-border);
+    }
+    .session-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1 1 180px;
+      min-width: 0;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      flex: 0 0 auto;
+      background: var(--agy-fg-faint);
+    }
+    .dot.live {
+      background: var(--agy-ok-fg);
+    }
+    select, button {
+      font: inherit;
+      color: var(--agy-fg);
+      background: var(--agy-card);
+      border: 1px solid var(--agy-border);
+      border-radius: 6px;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+    select {
+      width: 100%;
+      min-width: 0;
+      text-overflow: ellipsis;
+    }
+    button:hover {
+      background: var(--agy-subtle);
+    }
+    button.active {
+      border-color: var(--agy-accent);
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+    .meta-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--agy-fg-muted);
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--agy-card);
+      border: 1px solid var(--agy-border);
+      font-size: 11px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    @media (min-width: 680px) {
+      .grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+    }
+    .card {
+      background: var(--agy-card);
+      border: 1px solid var(--agy-border);
+      border-radius: 8px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .card.warn {
+      background: var(--agy-warn-bg);
+      border-color: var(--agy-warn-border);
+    }
+    .card-label {
+      font-size: 11px;
+      color: var(--agy-fg-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+    }
+    .card-value {
+      font-size: 19px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .card.warn .card-value {
+      color: var(--agy-warn-fg);
+    }
+    .card-sub {
+      font-size: 11px;
+      color: var(--agy-fg-muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .bar-track {
+      height: 5px;
+      border-radius: 999px;
+      background: var(--agy-subtle);
+      overflow: hidden;
+      margin-top: 2px;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--agy-accent);
+      width: 0%;
+      transition: width 0.2s ease;
+    }
+    .bar-fill.high {
+      background: var(--agy-warn-fg);
+    }
+    .section {
+      background: var(--agy-card);
+      border: 1px solid var(--agy-border);
+      border-radius: 8px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--agy-fg-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .spark {
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      height: 40px;
+      padding-top: 4px;
+    }
+    .spark-bar {
+      flex: 1 1 0;
+      min-width: 6px;
+      border-radius: 3px 3px 0 0;
+      background: var(--agy-accent);
+      opacity: 0.85;
+    }
+    .spark-bar.warn {
+      background: var(--agy-warn-fg);
+    }
+    .history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+    .history-row {
+      display: grid;
+      grid-template-columns: 36px 1fr auto auto;
+      gap: 8px;
+      align-items: center;
+      padding: 3px 4px;
+      border-radius: 4px;
+    }
+    .history-row:nth-child(odd) {
+      background: var(--agy-subtle);
+    }
+    .muted {
+      color: var(--agy-fg-muted);
+    }
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--agy-fg-faint);
+      padding-top: 2px;
+    }
+    .empty {
+      padding: 18px 12px;
+      text-align: center;
+      color: var(--agy-fg-muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="toolbar">
+      <div class="session-row">
+        <span id="live-dot" class="dot" title="Hook state"></span>
+        <select id="session-select" aria-label="Select conversation">
+          <option value="auto">自动跟随当前活跃会话</option>
+        </select>
+      </div>
+      <div class="controls">
+        <button id="toggle-auto" class="active" type="button">自动刷新 3s</button>
+        <button id="refresh-btn" type="button">刷新</button>
+      </div>
+    </div>
+
+    <div id="meta-strip" class="meta-strip"></div>
+
+    <div id="cards" class="grid"></div>
+
+    <div id="history-section" class="section" style="display:none">
+      <div class="section-title">
+        <span>近期生成速度趋势</span>
+        <span id="history-count" class="muted"></span>
+      </div>
+      <div id="spark" class="spark"></div>
+      <div id="history-list" class="history-list"></div>
+    </div>
+
+    <div id="empty-box" class="section empty" style="display:none"></div>
+
+    <div class="footer">
+      <span>Local Read-Only · Zero Network</span>
+      <span id="updated-at">--</span>
+    </div>
+  </div>
+  <!-- INLINE_SCRIPT -->
+</body>
+</html>

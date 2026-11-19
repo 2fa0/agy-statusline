@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "status": {
+      "command": "python3",
+      "args": ["${PLUGIN_ROOT}/server.py", "--data-dir", "${PLUGIN_DATA}"]
+    }
+  }
+}
