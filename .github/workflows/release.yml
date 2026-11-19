@@ -46,6 +46,8 @@ jobs:
         run: |
           zig build-obj main.zig -target aarch64-macos.13.0 -O ReleaseFast -lc -fcompiler-rt -femit-bin=main.o
           clang main.o -arch arm64 -mmacosx-version-min=13.0 -lsqlite3 -o agy-statusline
+          codesign --force --sign - --identifier io.github.2fa0.agy-statusline agy-statusline
+          codesign --verify --verbose agy-statusline
           tar -czf agy-statusline-macos-arm64.tar.gz agy-statusline
       - uses: actions/upload-artifact@v4
         with:

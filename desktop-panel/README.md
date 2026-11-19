@@ -6,6 +6,8 @@
 - **轮次 / 会话耗时**：基于本地 `transcript.jsonl` 时间戳计算当前轮次耗时与整个会话总耗时。
 - **上下文占用 (`Ctx`)** & **Cache 命中率 (`Cache hit`)**：只读解析本地会话库中的输入、缓存读取与缓存写入字段（若本地未落盘对应字段则显示 `--`，不伪造数据）。
 
+![AGY Desktop Status 右侧常驻面板预览](./assets/desktop-preview.svg)
+
 ## 合规与安全保障
 
 - **100% 官方规范**：仅使用 Antigravity 官方插件机制（`plugin.json`、`sidecars/status/sidecar.json`、`hooks.json`）。

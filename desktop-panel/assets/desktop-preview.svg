@@ -1,0 +1,255 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 560" width="880" height="560" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <filter id="windowShadow" x="-4%" y="-4%" width="108%" height="108%">
+      <feDropShadow dx="0" dy="8" stdDeviation="14" flood-color="#0f172a" flood-opacity="0.12" />
+    </filter>
+    <clipPath id="windowClip">
+      <rect x="16" y="12" width="848" height="536" rx="12" />
+    </clipPath>
+  </defs>
+
+  <!-- Outer Antigravity 2.0 Window (Light Theme) -->
+  <rect x="16" y="12" width="848" height="536" rx="12" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5" filter="url(#windowShadow)" />
+
+  <g clip-path="url(#windowClip)">
+    <!-- Left Chat Area Context (Antigravity 2.0 Main Canvas) -->
+    <rect x="16" y="12" width="444" height="536" fill="#ffffff" />
+
+    <!-- Top Breadcrumb Bar (Left Pane) -->
+    <g transform="translate(34, 24)">
+      <text x="0" y="15" fill="#64748b" font-size="12.5" font-weight="500">agy-statusline</text>
+      <text x="86" y="15" fill="#cbd5e1" font-size="12.5">/</text>
+      <text x="98" y="15" fill="#1e293b" font-size="12.5" font-weight="600">MacOS Binary Code Signing Issue</text>
+      <!-- Auxiliary Panel Toggle Icon -->
+      <rect x="394" y="2" width="18" height="16" rx="3" fill="none" stroke="#64748b" stroke-width="1.3" />
+      <line x1="406" y1="2" x2="406" y2="18" stroke="#64748b" stroke-width="1.3" />
+    </g>
+    <line x1="16" y1="50" x2="460" y2="50" stroke="#e5e7eb" stroke-width="1" />
+
+    <!-- Chat Messages Mock in Left Pane -->
+    <g transform="translate(36, 74)">
+      <!-- User Message Bubble (Right aligned) -->
+      <rect x="134" y="0" width="268" height="36" rx="14" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1" />
+      <text x="150" y="22" fill="#1e293b" font-size="12">等下，我觉得 readme 需要两个截图，看下现在安装好了是啥样的</text>
+
+      <!-- Agent Response Summary -->
+      <text x="0" y="64" fill="#94a3b8" font-size="11.5">Worked for 2m  ›</text>
+      <text x="0" y="88" fill="#1e293b" font-size="12.5">已经为 <tspan font-weight="600">Desktop 右侧面板</tspan> 和 <tspan font-weight="600">CLI 终端状态栏</tspan> 配置好实时遥测视图：</text>
+
+      <text x="8" y="116" fill="#334155" font-size="12">• <tspan font-weight="600">平均输出速度</tspan>：实时计算 <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#2563eb">tok/s</tspan> 并提供最近 12 次趋势柱状图</text>
+      <text x="8" y="138" fill="#334155" font-size="12">• <tspan font-weight="600">轮次 / 会话耗时</tspan>：自动统计当前轮耗时与会话累计时长</text>
+      <text x="8" y="160" fill="#334155" font-size="12">• <tspan font-weight="600">上下文与缓存</tspan>：只读监控 <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#2563eb">Ctx</tspan> 窗口占用比例与 <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#2563eb">Cache</tspan> 命中率</text>
+
+      <!-- File Change Review Bar -->
+      <rect x="0" y="186" width="402" height="36" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1" />
+      <text x="14" y="208" fill="#334155" font-size="12" font-weight="500">3 files changed</text>
+      <text x="108" y="208" fill="#16a34a" font-size="12" font-weight="600">+30</text>
+      <text x="134" y="208" fill="#dc2626" font-size="12" font-weight="600">-1</text>
+      <rect x="334" y="193" width="58" height="22" rx="5" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+      <text x="363" y="208" fill="#334155" font-size="11" font-weight="500" text-anchor="middle">Review</text>
+    </g>
+
+    <!-- Bottom Chat Composer Box (Left Pane) -->
+    <g transform="translate(34, 456)">
+      <rect x="0" y="0" width="406" height="72" rx="12" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.2" />
+      <text x="16" y="24" fill="#94a3b8" font-size="12.5">Ask anything, @ to mention, / for actions</text>
+      <text x="16" y="56" fill="#64748b" font-size="11.5">+   Gemini 4 Argon Low  ⌄</text>
+      <text x="342" y="56" fill="#64748b" font-size="11.5">⚡ Turbo ⌄</text>
+      <circle cx="388" cy="52" r="10" fill="#18181b" />
+    </g>
+
+    <!-- Vertical Splitter between Chat and Auxiliary Side Pane -->
+    <line x1="460" y1="12" x2="460" y2="548" stroke="#e5e7eb" stroke-width="1.2" />
+
+    <!-- ================================================================= -->
+    <!-- RIGHT AUXILIARY PANE: AGY Status (Exact 2x2 Grid Light Theme UI)  -->
+    <!-- ================================================================= -->
+    <rect x="461" y="12" width="403" height="536" fill="#f7f7f8" />
+
+    <!-- Auxiliary Pane Header Bar -->
+    <rect x="461" y="12" width="403" height="38" fill="#ffffff" />
+    <line x1="461" y1="50" x2="864" y2="50" stroke="#e5e7eb" stroke-width="1" />
+
+    <!-- AGY Status Tab Pill -->
+    <g transform="translate(472, 19)">
+      <rect x="0" y="0" width="102" height="24" rx="6" fill="#f1f5f9" />
+      <!-- Terminal/Status Icon -->
+      <rect x="8" y="6" width="12" height="12" rx="2.5" fill="#2563eb" />
+      <text x="14" y="15" fill="#ffffff" font-size="8" font-weight="700" text-anchor="middle">&gt;_</text>
+      <text x="25" y="16" fill="#1e293b" font-size="12" font-weight="600">AGY Status</text>
+      <text x="91" y="16" fill="#64748b" font-size="12">×</text>
+      <text x="114" y="17" fill="#64748b" font-size="15">+</text>
+    </g>
+    <!-- Maximize / Close Icons on Far Right -->
+    <text x="826" y="35" fill="#64748b" font-size="12">⛶</text>
+    <text x="844" y="36" fill="#64748b" font-size="14">×</text>
+
+    <!-- Auxiliary Pane Inner Shell (padding: 12px) -->
+    <g transform="translate(474, 60)">
+      <!-- 1. Toolbar Row -->
+      <circle cx="6" cy="14" r="4" fill="#16a34a" />
+      <circle cx="6" cy="14" r="7" fill="#16a34a" fill-opacity="0.16" />
+
+      <!-- Session Dropdown -->
+      <rect x="18" y="0" width="256" height="28" rx="6" fill="#ffffff" stroke="#e2e8f0" stroke-width="1" />
+      <text x="28" y="18" fill="#1d1f21" font-size="12">自动跟随当前活跃会话</text>
+      <path d="M258 12 L262 16 L266 12" fill="none" stroke="#64748b" stroke-width="1.4" stroke-linecap="round" />
+
+      <!-- Auto Refresh Dropdown (Active blue border) -->
+      <rect x="280" y="0" width="96" height="28" rx="6" fill="#ffffff" stroke="#2563eb" stroke-width="1.2" />
+      <text x="289" y="18" fill="#1d1f21" font-size="11.5">自动刷新: 3s</text>
+      <path d="M362 12 L366 16 L370 12" fill="none" stroke="#64748b" stroke-width="1.4" stroke-linecap="round" />
+
+      <line x1="0" y1="36" x2="376" y2="36" stroke="#e5e7eb" stroke-width="1" />
+
+      <!-- 2. Meta Strip Pills -->
+      <g transform="translate(0, 44)">
+        <rect x="0" y="0" width="80" height="20" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1" />
+        <text x="40" y="14" fill="#5d676f" font-size="10.5" text-anchor="middle">会话 bb211326</text>
+
+        <rect x="85" y="0" width="112" height="20" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1" />
+        <text x="141" y="14" fill="#5d676f" font-size="10.5" text-anchor="middle">gemini-4-argon-trial</text>
+
+        <rect x="202" y="0" width="82" height="20" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1" />
+        <text x="243" y="14" fill="#5d676f" font-size="10.5" text-anchor="middle">agy-statusline</text>
+
+        <rect x="289" y="0" width="38" height="20" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1" />
+        <text x="308" y="14" fill="#5d676f" font-size="10.5" text-anchor="middle">3 轮</text>
+
+        <text x="376" y="14" fill="#9da5ab" font-size="10.5" text-anchor="end">19:05:31</text>
+      </g>
+
+      <!-- 3. 2x2 Metric Cards Grid -->
+      <g transform="translate(0, 74)">
+        <!-- Card (1,1): 平均输出速度 -->
+        <g transform="translate(0, 0)">
+          <rect x="0" y="0" width="184" height="74" rx="8" fill="#ffffff" stroke="#e5e7eb" stroke-width="1" />
+          <text x="10" y="19" fill="#5d676f" font-size="11">平均输出速度</text>
+          <text x="174" y="19" fill="#5d676f" font-size="11" text-anchor="end">tok/s</text>
+          <text x="10" y="45" fill="#1d1f21" font-size="19" font-weight="600">105.1 tok/s</text>
+          <text x="10" y="63" fill="#5d676f" font-size="11">输出 497 · 耗时 7.1s</text>
+        </g>
+
+        <!-- Card (1,2): 轮次 / 会话耗时 -->
+        <g transform="translate(192, 0)">
+          <rect x="0" y="0" width="184" height="74" rx="8" fill="#ffffff" stroke="#e5e7eb" stroke-width="1" />
+          <text x="10" y="19" fill="#5d676f" font-size="11">轮次 / 会话耗时</text>
+          <text x="10" y="45" fill="#1d1f21" font-size="19" font-weight="600">2m 44s</text>
+          <text x="10" y="63" fill="#5d676f" font-size="11">会话总计 5m 23s</text>
+        </g>
+
+        <!-- Card (2,1): 上下文占用 -->
+        <g transform="translate(0, 82)">
+          <rect x="0" y="0" width="184" height="74" rx="8" fill="#ffffff" stroke="#e5e7eb" stroke-width="1" />
+          <text x="10" y="19" fill="#5d676f" font-size="11">上下文占用</text>
+          <text x="174" y="19" fill="#5d676f" font-size="11" text-anchor="end">5.5%</text>
+          <text x="10" y="45" fill="#1d1f21" font-size="19" font-weight="600">57K/1,048K</text>
+          <rect x="10" y="58" width="164" height="5" rx="2.5" fill="#eff0f1" />
+          <rect x="10" y="58" width="12" height="5" rx="2.5" fill="#2563eb" />
+        </g>
+
+        <!-- Card (2,2): Cache 命中率 -->
+        <g transform="translate(192, 82)">
+          <rect x="0" y="0" width="184" height="74" rx="8" fill="#ffffff" stroke="#e5e7eb" stroke-width="1" />
+          <text x="10" y="19" fill="#5d676f" font-size="11">Cache 命中率</text>
+          <text x="10" y="45" fill="#1d1f21" font-size="19" font-weight="600">96.0%</text>
+          <text x="10" y="63" fill="#5d676f" font-size="11">Read 55K · In 2K</text>
+        </g>
+      </g>
+
+      <!-- 4. Recent Generation Speed Trend Section -->
+      <g transform="translate(0, 240)">
+        <rect x="0" y="0" width="376" height="238" rx="8" fill="#ffffff" stroke="#e5e7eb" stroke-width="1" />
+
+        <!-- Section Header -->
+        <text x="10" y="21" fill="#5d676f" font-size="11" font-weight="600">近期生成速度趋势</text>
+        <text x="366" y="21" fill="#5d676f" font-size="11" text-anchor="end">最近 12 次 · 均值 249.3 tok/s</text>
+
+        <!-- Spark Detail Banner (Inspecting #7 Low-Speed Item) -->
+        <rect x="10" y="29" width="356" height="26" rx="6" fill="#eff0f1" stroke="#e2e8f0" stroke-width="1" />
+        <text x="18" y="46" fill="#1d1f21" font-size="11" font-weight="600">#7</text>
+        <text x="34" y="46" fill="#5d676f" font-size="11">· gemini-4-argon-trial</text>
+        <text x="358" y="46" fill="#5d676f" font-size="11" text-anchor="end">
+          <tspan fill="#a16207" font-weight="600">10.5 tok/s</tspan>
+          <tspan fill="#5d676f"> · 输出 82 tok · 耗时 7.78s</tspan>
+        </text>
+
+        <!-- Sparkline Bars (12 bars, #7 highlighted) -->
+        <g transform="translate(10, 61)">
+          <!-- Bar 1 (#4: 158.2) -->
+          <rect x="2" y="34" width="24" height="10" rx="2" fill="#2563eb" fill-opacity="0.78" />
+          <!-- Bar 2 (#5: 827.3 max) -->
+          <rect x="32" y="4" width="24" height="40" rx="2" fill="#2563eb" fill-opacity="0.78" />
+          <!-- Bar 3 (#6: 95.9) -->
+          <rect x="62" y="37" width="24" height="7" rx="2" fill="#2563eb" fill-opacity="0.78" />
+          <!-- Bar 4 (#7: 10.5 warn, active column highlight) -->
+          <rect x="90" y="0" width="28" height="45" rx="4" fill="#2563eb" fill-opacity="0.14" />
+          <rect x="92" y="39" width="24" height="5" rx="2" fill="#a16207" />
+          <!-- Bar 5 (#8: 294.4) -->
+          <rect x="122" y="28" width="24" height="16" rx="2" fill="#2563eb" fill-opacity="0.78" />
+          <!-- Bar 6 (#9: 5.0 warn) -->
+          <rect x="152" y="39" width="24" height="5" rx="2" fill="#a16207" />
+          <!-- Bar 7 (#10: 195.4) -->
+          <rect x="182" y="33" width="24" height="11" rx="2" fill="#2563eb" fill-opacity="0.78" />
+          <!-- Bar 8 (#11: 574.8) -->
+          <rect x="212" y="16" width="24" height="28" rx="2" fill="#2563eb" fill-opacity="0.78" />
+          <!-- Bar 9 (#12: 405.5) -->
+          <rect x="242" y="24" width="24" height="20" rx="2" fill="#2563eb" fill-opacity="0.78" />
+          <!-- Bar 10 (#13: 6.5 warn) -->
+          <rect x="272" y="39" width="24" height="5" rx="2" fill="#a16207" />
+          <!-- Bar 11 (#14: 240.9) -->
+          <rect x="302" y="31" width="24" height="13" rx="2" fill="#2563eb" fill-opacity="0.78" />
+          <!-- Bar 12 (#15: 105.1) -->
+          <rect x="332" y="36" width="24" height="8" rx="2" fill="#2563eb" fill-opacity="0.78" />
+
+          <line x1="0" y1="46" x2="356" y2="46" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="3 3" />
+        </g>
+
+        <!-- History List (6 rows: #15 down to #10) -->
+        <g transform="translate(10, 113)" font-size="10.8">
+          <!-- Row 1 (#15 odd) -->
+          <rect x="0" y="0" width="356" height="19" rx="4" fill="#eff0f1" />
+          <text x="6" y="13" fill="#5d676f">#15</text>
+          <text x="44" y="13" fill="#5d676f">gemini-4-argon-trial</text>
+          <text x="292" y="13" fill="#1d1f21" font-weight="600" text-anchor="end">105.1 tok/s</text>
+          <text x="350" y="13" fill="#5d676f" text-anchor="end">497 / 7.1s</text>
+
+          <!-- Row 2 (#14 even) -->
+          <rect x="0" y="20" width="356" height="19" rx="4" fill="transparent" />
+          <text x="6" y="33" fill="#5d676f">#14</text>
+          <text x="44" y="33" fill="#5d676f">gemini-4-argon-trial</text>
+          <text x="292" y="33" fill="#1d1f21" font-weight="600" text-anchor="end">240.9 tok/s</text>
+          <text x="350" y="33" fill="#5d676f" text-anchor="end">737 / 8.7s</text>
+
+          <!-- Row 3 (#13 odd, warn 6.5 tok/s) -->
+          <rect x="0" y="40" width="356" height="19" rx="4" fill="#eff0f1" />
+          <text x="6" y="53" fill="#5d676f">#13</text>
+          <text x="44" y="53" fill="#5d676f">gemini-4-argon-trial</text>
+          <text x="292" y="53" fill="#a16207" font-weight="600" text-anchor="end">6.5 tok/s</text>
+          <text x="350" y="53" fill="#5d676f" text-anchor="end">46 / 7.1s</text>
+
+          <!-- Row 4 (#12 even) -->
+          <rect x="0" y="60" width="356" height="19" rx="4" fill="transparent" />
+          <text x="6" y="73" fill="#5d676f">#12</text>
+          <text x="44" y="73" fill="#5d676f">gemini-4-argon-trial</text>
+          <text x="292" y="73" fill="#1d1f21" font-weight="600" text-anchor="end">405.5 tok/s</text>
+          <text x="350" y="73" fill="#5d676f" text-anchor="end">7K / 49.0s</text>
+
+          <!-- Row 5 (#11 odd) -->
+          <rect x="0" y="80" width="356" height="19" rx="4" fill="#eff0f1" />
+          <text x="6" y="93" fill="#5d676f">#11</text>
+          <text x="44" y="93" fill="#5d676f">gemini-4-argon-trial</text>
+          <text x="292" y="93" fill="#1d1f21" font-weight="600" text-anchor="end">574.8 tok/s</text>
+          <text x="350" y="93" fill="#5d676f" text-anchor="end">128 / 14.0s</text>
+
+          <!-- Row 6 (#10 even) -->
+          <rect x="0" y="100" width="356" height="19" rx="4" fill="transparent" />
+          <text x="6" y="113" fill="#5d676f">#10</text>
+          <text x="44" y="113" fill="#5d676f">gemini-4-argon-trial</text>
+          <text x="292" y="113" fill="#1d1f21" font-weight="600" text-anchor="end">195.4 tok/s</text>
+          <text x="350" y="113" fill="#5d676f" text-anchor="end">101 / 8.7s</text>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

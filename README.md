@@ -16,6 +16,8 @@
 
 在 Antigravity 2.0 桌面端右侧辅助栏（Auxiliary Pane）提供常驻监控卡片与可交互速度趋势图，支持**自动跟随当前活跃会话**、**自动刷新档位切换（`3s` / `5s` / `10s` / `关闭`，默认 `3s`）**、**深浅色主题自适应**以及手动切换历史会话。
 
+![AGY Desktop Status 右侧常驻面板预览](./desktop-panel/assets/desktop-preview.svg)
+
 ### 傻瓜式安装（三种方式任选其一）
 
 #### 方式 1：一行命令自动安装（macOS / Linux，最推荐）
@@ -78,6 +80,8 @@ cd agy-statusline/desktop-panel
 
 轻量、零依赖的 **Google Antigravity CLI (`agy`)** 自定义 `statusLine` 工具（基于 Zig 编写，支持 **macOS / Linux / Windows**），在终端宽度不足时自动折行对齐。
 
+![agy-statusline CLI 终端状态栏预览](./desktop-panel/assets/cli-preview.svg)
+
 ### 展示功能与特性
 
 - **缓存命中率与读取量**（`Cache hit` / `Cache read`）：命中率按 `缓存读取 /（未缓存输入 + 缓存读取）` 计算；缺失数据、输入为零或缓存写入非零时显示 `--`。该口径取决于模型和 AGY 提供的字段语义。
@@ -92,6 +96,27 @@ cd agy-statusline/desktop-panel
 
 #### 1. 下载可执行文件
 
+**方式 A：命令行 `curl` 一键下载（macOS / Linux 推荐）**
+
+使用 `curl` 下载并解压到 `~/.gemini/antigravity-cli/`，在 macOS 上**不会产生浏览器隔离属性（`com.apple.quarantine`）**，可直接避开 Gatekeeper 弹窗拦截：
+
+- **macOS (Apple Silicon / arm64)**：
+  ```sh
+  mkdir -p ~/.gemini/antigravity-cli
+  curl -fsSL https://github.com/2fa0/agy-statusline/releases/latest/download/agy-statusline-macos-arm64.tar.gz \
+    | tar -xz -C ~/.gemini/antigravity-cli
+  chmod +x ~/.gemini/antigravity-cli/agy-statusline
+  ```
+- **Linux (x64)**：
+  ```sh
+  mkdir -p ~/.gemini/antigravity-cli
+  curl -fsSL https://github.com/2fa0/agy-statusline/releases/latest/download/agy-statusline-linux-x64.tar.gz \
+    | tar -xz -C ~/.gemini/antigravity-cli
+  chmod +x ~/.gemini/antigravity-cli/agy-statusline
+  ```
+
+**方式 B：从 Releases 页面手动下载（macOS / Linux / Windows）**
+
 前往本仓库的 [Releases](https://github.com/2fa0/agy-statusline/releases) 页面，下载对应平台的压缩包并解压：
 
 - **Linux (x64)**: `agy-statusline-linux-x64.tar.gz`
@@ -105,7 +130,10 @@ tar -xzf agy-statusline-macos-arm64.tar.gz
 chmod +x agy-statusline
 ```
 
-> **macOS 提示**：首次运行从网络下载的二进制文件如遇到 Gatekeeper 拦截，可执行 `xattr -d com.apple.quarantine /path/to/agy-statusline`。
+> **macOS 提示**：Release 包中的 macOS 二进制已内置规范的 ad-hoc 代码签名（不会触发 Apple Silicon 的 `SIGKILL`）。但若通过**浏览器**手动下载，macOS 会附加 `com.apple.quarantine` 隔离属性导致首次运行被 Gatekeeper 拦截，执行以下命令清除即可：
+> ```sh
+> xattr -dr com.apple.quarantine /path/to/agy-statusline
+> ```
 
 #### 2. 配置 AGY CLI
 
