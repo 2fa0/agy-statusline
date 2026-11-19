@@ -86,80 +86,31 @@
       background: var(--agy-ok-fg);
       box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.16);
     }
-    select, button, input {
+    select, button {
       font: inherit;
       color: var(--agy-fg);
       background: var(--agy-card);
       border: 1px solid var(--agy-border);
       border-radius: 6px;
       padding: 4px 8px;
-    }
-    select, button {
       cursor: pointer;
     }
-    select {
+    .session-row select {
       width: 100%;
       min-width: 0;
       text-overflow: ellipsis;
     }
-    button:hover {
-      background: var(--agy-subtle);
+    .refresh-select {
+      width: auto;
+      flex: 0 0 auto;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
     }
-    .auto-group {
-      display: inline-flex;
-      align-items: center;
-      background: var(--agy-card);
-      border: 1px solid var(--agy-border);
-      border-radius: 7px;
-      overflow: hidden;
-      transition: border-color 0.15s ease;
-    }
-    .auto-group.active {
+    .refresh-select.active {
       border-color: var(--agy-accent);
     }
-    .auto-btn {
-      border: none;
-      border-radius: 0;
-      padding: 4px 8px;
-      background: transparent;
-      font-size: 12px;
-      white-space: nowrap;
-    }
-    .auto-group.active .auto-btn {
-      color: var(--agy-accent);
-      font-weight: 500;
-    }
-    .interval-box {
-      display: inline-flex;
-      align-items: center;
-      gap: 2px;
-      padding: 0 6px;
-      border-left: 1px solid var(--agy-border);
+    button:hover, select:hover {
       background: var(--agy-subtle);
-      height: 100%;
-      font-size: 12px;
-      color: var(--agy-fg-muted);
-    }
-    .interval-input {
-      width: 34px;
-      border: none;
-      background: transparent;
-      padding: 3px 2px;
-      text-align: center;
-      font-variant-numeric: tabular-nums;
-      font-size: 12px;
-      color: var(--agy-fg);
-      outline: none;
-      -moz-appearance: textfield;
-    }
-    .interval-input::-webkit-outer-spin-button,
-    .interval-input::-webkit-inner-spin-button {
-      -webkit-appearance: none;
-      margin: 0;
-    }
-    .interval-input:focus {
-      color: var(--agy-accent);
-      font-weight: 600;
     }
     .controls {
       display: flex;
@@ -405,13 +356,12 @@
         </select>
       </div>
       <div class="controls">
-        <div id="auto-group" class="auto-group active">
-          <button id="toggle-auto" class="auto-btn" type="button" title="点击开启或暂停自动刷新">自动刷新</button>
-          <label class="interval-box" title="自定义自动刷新间隔（1~60 秒）">
-            <input id="interval-input" class="interval-input" type="number" min="1" max="60" step="1" value="3" aria-label="Refresh interval seconds" />
-            <span>s</span>
-          </label>
-        </div>
+        <select id="refresh-select" class="refresh-select active" aria-label="自动刷新间隔" title="设置自动刷新间隔">
+          <option value="3" selected>自动刷新: 3s</option>
+          <option value="5">自动刷新: 5s</option>
+          <option value="10">自动刷新: 10s</option>
+          <option value="0">自动刷新: 关闭</option>
+        </select>
       </div>
     </div>
 

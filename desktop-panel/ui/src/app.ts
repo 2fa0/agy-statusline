@@ -52,11 +52,10 @@ interface StatusSnapshot {
 }
 
 const STORAGE_KEY_INTERVAL = 'agy_status_refresh_sec';
+const ALLOWED_INTERVALS = new Set([0, 3, 5, 10]);
 
 const sessionSelect = document.getElementById('session-select') as HTMLSelectElement;
-const autoGroup = document.getElementById('auto-group') as HTMLDivElement;
-const toggleAutoBtn = document.getElementById('toggle-auto') as HTMLButtonElement;
-const intervalInput = document.getElementById('interval-input') as HTMLInputElement;
+const refreshSelect = document.getElementById('refresh-select') as HTMLSelectElement;
 const liveDot = document.getElementById('live-dot') as HTMLSpanElement;
 const metaStrip = document.getElementById('meta-strip') as HTMLDivElement;
 const cardsEl = document.getElementById('cards') as HTMLDivElement;
@@ -68,7 +67,6 @@ const historyListEl = document.getElementById('history-list') as HTMLDivElement;
 const emptyBox = document.getElementById('empty-box') as HTMLDivElement;
 
 let selectedConversation = 'auto';
-let autoRefresh = true;
 let refreshIntervalSec = loadSavedInterval();
 let inFlight = false;
 let timerId: number | null = null;
@@ -79,9 +77,9 @@ let activeHistoryIdx: number | null = null;
 function loadSavedInterval(): number {
   try {
     const raw = window.localStorage?.getItem(STORAGE_KEY_INTERVAL);
-    if (raw) {
+    if (raw !== null) {
       const n = Number.parseInt(raw, 10);
-      if (Number.isFinite(n) && n >= 1 && n <= 60) {
+      if (ALLOWED_INTERVALS.has(n)) {
         return n;
       }
     }
@@ -99,7 +97,8 @@ function saveInterval(sec: number): void {
   }
 }
 
-intervalInput.value = String(refreshIntervalSec);
+refreshSelect.value = String(refreshIntervalSec);
+refreshSelect.classList.toggle('active', refreshIntervalSec > 0);
 
 function formatTokens(val: number | null | undefined): string {
   if (val === null || val === undefined || val < 0) return '--';
@@ -496,7 +495,7 @@ function resetTimer(): void {
     window.clearInterval(timerId);
     timerId = null;
   }
-  if (autoRefresh) {
+  if (refreshIntervalSec > 0) {
     timerId = window.setInterval(() => {
       void refreshSnapshot();
     }, refreshIntervalSec * 1000);
@@ -509,36 +508,16 @@ sessionSelect.addEventListener('change', () => {
   void refreshSnapshot();
 });
 
-toggleAutoBtn.addEventListener('click', () => {
-  autoRefresh = !autoRefresh;
-  autoGroup.classList.toggle('active', autoRefresh);
-  toggleAutoBtn.textContent = autoRefresh ? '自动刷新' : '已暂停';
-  if (autoRefresh) {
+refreshSelect.addEventListener('change', () => {
+  const parsed = Number.parseInt(refreshSelect.value, 10);
+  refreshIntervalSec = ALLOWED_INTERVALS.has(parsed) ? parsed : 3;
+  refreshSelect.value = String(refreshIntervalSec);
+  refreshSelect.classList.toggle('active', refreshIntervalSec > 0);
+  saveInterval(refreshIntervalSec);
+  if (refreshIntervalSec > 0) {
     void refreshSnapshot();
   }
   resetTimer();
-});
-
-function applyIntervalChange(): void {
-  const parsed = Number.parseInt(intervalInput.value, 10);
-  const clamped = Number.isFinite(parsed) ? Math.min(60, Math.max(1, parsed)) : 3;
-  refreshIntervalSec = clamped;
-  intervalInput.value = String(clamped);
-  saveInterval(clamped);
-  if (!autoRefresh) {
-    autoRefresh = true;
-    autoGroup.classList.add('active');
-    toggleAutoBtn.textContent = '自动刷新';
-  }
-  resetTimer();
-}
-
-intervalInput.addEventListener('change', applyIntervalChange);
-intervalInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    intervalInput.blur();
-    applyIntervalChange();
-  }
 });
 
 async function boot(): Promise<void> {
