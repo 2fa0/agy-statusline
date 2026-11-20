@@ -35,6 +35,31 @@ jobs:
           name: agy-statusline-linux-x64
           path: agy-statusline-linux-x64.tar.gz
 
+  build-linux-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Download SQLite amalgamation
+        run: |
+          curl -fsSL https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip -o sqlite.zip
+          unzip -q sqlite.zip
+      - name: Build linux-arm64
+        run: |
+          zig build-exe main.zig \
+            -cflags -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -- \
+            sqlite-amalgamation-3490100/sqlite3.c \
+            -I sqlite-amalgamation-3490100 \
+            -target aarch64-linux-musl -O ReleaseFast -lc \
+            -femit-bin=agy-statusline
+          tar -czf agy-statusline-linux-arm64.tar.gz agy-statusline
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-statusline-linux-arm64
+          path: agy-statusline-linux-arm64.tar.gz
+
   build-macos-arm64:
     runs-on: macos-latest
     steps:
@@ -113,7 +138,7 @@ jobs:
             agy-desktop-status-plugin.zip
 
   release:
-    needs: [build-linux-x64, build-macos-arm64, build-windows-x64, package-desktop-plugin]
+    needs: [build-linux-x64, build-linux-arm64, build-macos-arm64, build-windows-x64, package-desktop-plugin]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -126,6 +151,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/agy-statusline-linux-x64.tar.gz
+            dist/agy-statusline-linux-arm64.tar.gz
             dist/agy-statusline-macos-arm64.tar.gz
             dist/agy-statusline-windows-x64.zip
             dist/agy-desktop-status-plugin.tar.gz

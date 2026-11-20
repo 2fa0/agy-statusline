@@ -114,12 +114,20 @@ cd agy-statusline/desktop-panel
     | tar -xz -C ~/.gemini/antigravity-cli
   chmod +x ~/.gemini/antigravity-cli/agy-statusline
   ```
+- **Linux (arm64 / aarch64)**：
+  ```sh
+  mkdir -p ~/.gemini/antigravity-cli
+  curl -fsSL https://github.com/2fa0/agy-statusline/releases/latest/download/agy-statusline-linux-arm64.tar.gz \
+    | tar -xz -C ~/.gemini/antigravity-cli
+  chmod +x ~/.gemini/antigravity-cli/agy-statusline
+  ```
 
 **方式 B：从 Releases 页面手动下载（macOS / Linux / Windows）**
 
 前往本仓库的 [Releases](https://github.com/2fa0/agy-statusline/releases) 页面，下载对应平台的压缩包并解压：
 
 - **Linux (x64)**: `agy-statusline-linux-x64.tar.gz`
+- **Linux (arm64 / aarch64)**: `agy-statusline-linux-arm64.tar.gz`
 - **macOS (Apple Silicon / arm64)**: `agy-statusline-macos-arm64.tar.gz`
 - **Windows (x64)**: `agy-statusline-windows-x64.zip`
 
@@ -173,5 +181,5 @@ Windows 示例（注意路径分隔符转义或使用正斜杠）：
 
 - **macOS**（使用系统 clang 和 SQLite）：
   在本目录运行 `./build.sh`；如果 Zig 不在 `PATH` 中，运行 `ZIG=/path/to/zig ./build.sh`。
-- **Release 静态构建**（Linux x64 / Windows x64）：
+- **Release 静态构建**（Linux x64 / Linux arm64 / Windows x64）：
   参考 [`.github/workflows/release.yml`](.github/workflows/release.yml) 中使用 SQLite amalgamation 静态链接的方式。
