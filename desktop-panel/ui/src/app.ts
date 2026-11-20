@@ -15,6 +15,38 @@ interface RecentConversation {
   isActive: boolean;
 }
 
+interface QuotaWindow {
+  pool: string;
+  window: string;
+  bucket?: string;
+  remainingPct?: number | null;
+  resetAt?: string | null;
+  resetAtEpoch?: number | null;
+  resetInSec?: number | null;
+  approx?: boolean;
+}
+
+interface QuotaSnapshot {
+  source?: string;
+  observedAt?: string;
+  observedAgeSec?: number;
+  stale?: boolean;
+  windows?: QuotaWindow[];
+}
+
+interface LiveState {
+  active: boolean;
+  stepIdx?: number | null;
+  stepType?: number | null;
+  status?: number | null;
+  outputChars?: number | null;
+  charsPerSec?: number | null;
+  charsPerToken?: number | null;
+  estTokPerSec?: number | null;
+  elapsedSec?: number | null;
+  observedAt?: string;
+}
+
 interface StatusSnapshot {
   found: boolean;
   conversationId: string;
@@ -41,7 +73,11 @@ interface StatusSnapshot {
   usageSource?: string;
   history?: GenHistoryItem[];
   recentConversations?: RecentConversation[];
+  quota?: QuotaSnapshot | null;
+  live?: LiveState | null;
   generatedAt?: string;
+  lastActivityAt?: string | null;
+  cacheHit?: boolean;
   message?: string;
 }
 
@@ -56,12 +92,20 @@ declare global {
 
 const STORAGE_KEY_INTERVAL = 'agy_status_refresh_sec';
 const ALLOWED_INTERVALS = new Set([0, 3, 5, 10]);
+// Adaptive polling: follow the session closely while it is generating and back
+// off when it is idle, so an open-but-quiet panel stops costing anything.
+const IDLE_POLL_MS = 15000;
+const IDLE_AFTER_SEC = 45;
+const LIVE_POLL_MS = 1000;
 
 const sessionSelect = document.getElementById('session-select') as HTMLSelectElement;
 const refreshSelect = document.getElementById('refresh-select') as HTMLSelectElement;
 const liveDot = document.getElementById('live-dot') as HTMLSpanElement;
 const metaStrip = document.getElementById('meta-strip') as HTMLDivElement;
 const cardsEl = document.getElementById('cards') as HTMLDivElement;
+const quotaSection = document.getElementById('quota-section') as HTMLDivElement;
+const quotaNote = document.getElementById('quota-note') as HTMLSpanElement;
+const quotaListEl = document.getElementById('quota-list') as HTMLDivElement;
 const historySection = document.getElementById('history-section') as HTMLDivElement;
 const historyCount = document.getElementById('history-count') as HTMLSpanElement;
 const sparkDetailEl = document.getElementById('spark-detail') as HTMLDivElement;
@@ -76,6 +120,7 @@ let timerId: number | null = null;
 let currentHistory: GenHistoryItem[] = [];
 let currentDefaultModel = '';
 let activeHistoryIdx: number | null = null;
+let lastSnapshot: StatusSnapshot | null = null;
 
 function loadSavedInterval(): number {
   try {
@@ -102,6 +147,8 @@ function saveInterval(sec: number): void {
 
 refreshSelect.value = String(refreshIntervalSec);
 refreshSelect.classList.toggle('active', refreshIntervalSec > 0);
+refreshSelect.title =
+  '自适应刷新：活跃时按所选间隔刷新，空闲时降到 15s，面板隐藏时暂停';
 
 function formatTokens(val: number | null | undefined): string {
   if (val === null || val === undefined || val < 0) return '--';
@@ -132,6 +179,127 @@ function escapeHtml(raw: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+const QUOTA_POOL_LABELS: Record<string, string> = { gemini: 'Gemini', argon: 'Argon', claude: 'Claude' };
+const QUOTA_WINDOW_LABELS: Record<string, string> = { '5h': '5小时', weekly: '周限', other: '额度' };
+const QUOTA_WINDOW_ORDER: Record<string, number> = { '5h': 0, weekly: 1, other: 2 };
+
+function formatClock(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function dayStart(offsetDays = 0): number {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + offsetDays).getTime();
+}
+
+/** Absolute local reset time, so nobody has to add "3d 4h" to the clock. */
+function formatResetAt(epochSec: number | null | undefined): string {
+  if (epochSec === null || epochSec === undefined) return '--';
+  const d = new Date(epochSec * 1000);
+  if (Number.isNaN(d.getTime())) return '--';
+  const hm = formatClock(d);
+  const resetDay = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diffDays = Math.round((resetDay - dayStart()) / 86400000);
+  if (diffDays === 0) return `今天 ${hm}`;
+  if (diffDays === 1) return `明天 ${hm}`;
+  return `${WEEKDAYS[d.getDay()]} ${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+
+function formatRemaining(sec: number | null | undefined): string {
+  if (sec === null || sec === undefined) return '';
+  if (sec <= 0) return '即将重置';
+  const days = Math.floor(sec / 86400);
+  const hours = Math.floor((sec % 86400) / 3600);
+  const mins = Math.floor((sec % 3600) / 60);
+  if (days > 0) return `${days}天 ${hours}小时`;
+  if (hours > 0) return `${hours}小时 ${mins}分钟`;
+  return `${mins}分钟`;
+}
+
+function formatAge(sec: number | undefined): string {
+  if (sec === undefined) return '';
+  if (sec < 60) return '刚刚';
+  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)} 小时前`;
+  return `${Math.floor(sec / 86400)} 天前`;
+}
+
+/** Clock label for the moment the quota snapshot was observed (local time). */
+function formatSnapshotTime(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay ? formatClock(d) : `${d.getMonth() + 1}/${d.getDate()} ${formatClock(d)}`;
+}
+
+function renderQuota(quota: QuotaSnapshot | null | undefined): void {
+  const windows = (quota?.windows || []).filter((w) => w && typeof w === 'object');
+  if (!quota || windows.length === 0) {
+    quotaSection.style.display = 'none';
+    quotaListEl.innerHTML = '';
+    return;
+  }
+  quotaSection.style.display = 'flex';
+
+  const age = formatAge(quota.observedAgeSec);
+  const observedAt = formatSnapshotTime(quota.observedAt);
+  quotaNote.textContent = quota.stale
+    ? `${observedAt || age} · 推算`
+    : `${observedAt || age} 更新`;
+  quotaNote.title = quota.stale
+    ? `上次采到额度是 ${observedAt}（${age}）；重置时间已按 5h / 7 天周期推算到下一次`
+    : '额度来自上一次 agy CLI 渲染时的状态栏数据';
+
+  const groups = new Map<string, QuotaWindow[]>();
+  for (const item of windows) {
+    const list = groups.get(item.pool) || [];
+    list.push(item);
+    groups.set(item.pool, list);
+  }
+
+  quotaListEl.innerHTML = Array.from(groups.entries())
+    .map(([poolKey, items]) => {
+      const pool = QUOTA_POOL_LABELS[poolKey] || poolKey;
+      const sorted = [...items].sort(
+        (a, b) => (QUOTA_WINDOW_ORDER[a.window] ?? 99) - (QUOTA_WINDOW_ORDER[b.window] ?? 99),
+      );
+      const cellsHtml = sorted
+        .map((item) => {
+          const windowLabel = QUOTA_WINDOW_LABELS[item.window] || item.window;
+          const hasReset = item.resetAtEpoch !== null && item.resetAtEpoch !== undefined;
+          const approxMark = hasReset && item.approx ? '≈ ' : '';
+          const remaining = hasReset ? formatRemaining(item.resetInSec) : '';
+          const resetAt = hasReset ? formatResetAt(item.resetAtEpoch) : '未知';
+          const fullLocal = hasReset ? new Date((item.resetAtEpoch as number) * 1000).toLocaleString() : '--';
+          const tip = [
+            `${pool} ${windowLabel}`,
+            hasReset ? `重置于 ${fullLocal}` : '重置时间未知',
+            hasReset && remaining ? `距重置 ${remaining}` : '',
+            item.approx ? '按 5h / 7 天周期推算' : '',
+            age ? `采集于 ${age}` : '',
+          ]
+            .filter(Boolean)
+            .join(' · ');
+          return `
+            <div class="quota-cell" title="${escapeHtml(tip)}">
+              <span class="quota-label">${escapeHtml(windowLabel)}</span>
+              <span class="quota-time">${escapeHtml(approxMark + resetAt)}</span>
+            </div>
+          `;
+        })
+        .join('');
+      return `
+        <div class="quota-group">
+          <div class="quota-group-title">${escapeHtml(pool)}</div>
+          <div class="quota-windows">${cellsHtml}</div>
+        </div>
+      `;
+    })
+    .join('');
 }
 
 function syncSessionSelect(recent: RecentConversation[] = []): void {
@@ -222,6 +390,7 @@ function renderSnapshot(snap: StatusSnapshot): void {
     historySection.style.display = 'none';
     emptyBox.style.display = 'block';
     emptyBox.textContent = snap.message || '暂未发现本地 Antigravity 桌面端会话记录。';
+    renderQuota(snap.quota);
     return;
   }
 
@@ -234,6 +403,17 @@ function renderSnapshot(snap: StatusSnapshot): void {
   if (typeof snap.turnCount === 'number' && snap.turnCount > 0) {
     const stepTip = snap.stepCount ? `共 ${snap.stepCount} 个执行步骤` : '';
     pills.push(`<span class="pill" title="${escapeHtml(stepTip)}">${snap.turnCount} 轮</span>`);
+  }
+  const live = snap.live;
+  const liveActive = Boolean(live?.active);
+  if (liveActive) {
+    const secs = live?.elapsedSec;
+    const liveTip = `正在生成：第 ${live?.stepIdx ?? '?'} 步，已流式输出 ${live?.outputChars ?? '?'} 字`;
+    pills.push(
+      `<span class="pill live" title="${escapeHtml(liveTip)}"><i class="live-pulse"></i>生成中${
+        typeof secs === 'number' ? ` · ${secs.toFixed(0)}s` : ''
+      }</span>`,
+    );
   }
   const updatedHtml = updatedText ? `<span class="updated-tag" title="上次刷新时间">${escapeHtml(updatedText)}</span>` : '';
   metaStrip.innerHTML = `<div class="pills-wrap">${pills.join('')}</div>${updatedHtml}`;
@@ -250,6 +430,43 @@ function renderSnapshot(snap: StatusSnapshot): void {
       : '--'
   }`;
 
+  // While the agent is replying, the DB row for the in-flight step grows with
+  // the streamed text; show that instead of the previous turn's average.
+  const liveEst = live?.estTokPerSec;
+  const liveChars = live?.outputChars;
+  const liveSpeedText =
+    typeof liveEst === 'number'
+      ? `≈ ${liveEst.toFixed(1)} tok/s`
+      : typeof liveChars === 'number'
+        ? `${liveChars} 字`
+        : '生成中…';
+  const liveSubParts = [
+    typeof liveChars === 'number' ? `已输出 ${liveChars} 字` : '',
+    typeof live?.charsPerSec === 'number' ? `${live.charsPerSec.toFixed(0)} 字/s` : '',
+    typeof live?.elapsedSec === 'number' ? `${live.elapsedSec.toFixed(1)}s` : '',
+  ].filter(Boolean);
+  const liveCardTip = `生成中实时估算：流式文本 ${liveChars ?? '?'} 字 · ${
+    live?.charsPerSec !== null && live?.charsPerSec !== undefined ? `${live.charsPerSec.toFixed(1)} 字/s` : '速率待测'
+  }\n按 ${live?.charsPerToken ?? '--'} 字/token 换算为 tok/s；精确 token 数在整步完成后落库`;
+
+  const speedCard = liveActive
+    ? `<div class="card live" title="${escapeHtml(liveCardTip)}">
+      <div class="card-label">
+        <span><i class="live-pulse"></i>实时输出速度</span>
+        <span>${typeof liveEst === 'number' ? 'tok/s' : 'streaming'}</span>
+      </div>
+      <div class="card-value">${escapeHtml(liveSpeedText)}</div>
+      <div class="card-sub">${escapeHtml(liveSubParts.join(' · ') || '正在接收输出…')}</div>
+    </div>`
+    : `<div class="card ${snap.lowSpeedWarning ? 'warn' : ''}" title="${escapeHtml(speedCardTip)}">
+      <div class="card-label">
+        <span>平均输出速度</span>
+        <span>${snap.lowSpeedWarning ? '偏慢' : 'tok/s'}</span>
+      </div>
+      <div class="card-value">${escapeHtml(speedText)}</div>
+      <div class="card-sub">输出 ${escapeHtml(outTokText)} · 耗时 ${escapeHtml(genDurText)}</div>
+    </div>`;
+
   const turnDurText = formatDuration(snap.turnDurationSec);
   const sessionDurText = formatDuration(snap.sessionDurationSec);
   const turnCardTip = `当前轮次耗时 ${turnDurText} · 会话累计耗时 ${sessionDurText}（共 ${
@@ -265,7 +482,7 @@ function renderSnapshot(snap: StatusSnapshot): void {
   const ctxPct = snap.contextPct ?? 0;
   const ctxCardTip = `已用上下文: ${formatExactTokens(snap.contextUsed)} / 容量: ${formatExactTokens(
     snap.contextTotal,
-  )} (${ctxPct.toFixed(2)}%)`;
+  )} (${ctxPct.toFixed(2)}%)${liveActive ? '\n生成中：上下文占用是 prompt 侧实测值，每步完成后刷新' : ''}`;
 
   const cacheHitMain =
     snap.cacheHitPct !== null && snap.cacheHitPct !== undefined
@@ -280,14 +497,7 @@ function renderSnapshot(snap: StatusSnapshot): void {
   )} · 缓存写入: ${formatExactTokens(snap.cacheWriteTokens)}`;
 
   cardsEl.innerHTML = `
-    <div class="card ${snap.lowSpeedWarning ? 'warn' : ''}" title="${escapeHtml(speedCardTip)}">
-      <div class="card-label">
-        <span>平均输出速度</span>
-        <span>${snap.lowSpeedWarning ? '偏慢' : 'tok/s'}</span>
-      </div>
-      <div class="card-value">${escapeHtml(speedText)}</div>
-      <div class="card-sub">输出 ${escapeHtml(outTokText)} · 耗时 ${escapeHtml(genDurText)}</div>
-    </div>
+    ${speedCard}
 
     <div class="card" title="${escapeHtml(turnCardTip)}">
       <div class="card-label">
@@ -320,6 +530,7 @@ function renderSnapshot(snap: StatusSnapshot): void {
   const history = (snap.history || []).filter((h) => h.speedTokS !== null || h.outputTokens !== null);
   currentHistory = history;
   currentDefaultModel = snap.modelName || '';
+  renderQuota(snap.quota);
 
   if (history.length > 0) {
     historySection.style.display = 'flex';
@@ -439,6 +650,7 @@ async function refreshSnapshot(): Promise<void> {
         : getPaneConversationId() || 'auto';
     const snap = await fetchSidecarSnapshot(targetId);
     if (snap) {
+      lastSnapshot = snap;
       renderSnapshot(snap);
     }
   } catch {
@@ -448,16 +660,41 @@ async function refreshSnapshot(): Promise<void> {
   }
 }
 
+function msSinceLastActivity(): number {
+  const raw = lastSnapshot?.lastActivityAt;
+  if (!raw) return Number.POSITIVE_INFINITY;
+  const ts = Date.parse(raw);
+  if (Number.isNaN(ts)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Date.now() - ts);
+}
+
+function nextPollDelay(): number {
+  if (refreshIntervalSec <= 0) return 0;
+  if (document.hidden) return 0;
+  const base = refreshIntervalSec * 1000;
+  // While the agent is streaming, poll faster so the live numbers move.
+  if (lastSnapshot?.live?.active) {
+    return Math.min(base, LIVE_POLL_MS);
+  }
+  if (msSinceLastActivity() / 1000 < IDLE_AFTER_SEC) {
+    return base;
+  }
+  return Math.max(base, IDLE_POLL_MS);
+}
+
 function resetTimer(): void {
   if (timerId !== null) {
-    window.clearInterval(timerId);
+    window.clearTimeout(timerId);
     timerId = null;
   }
-  if (refreshIntervalSec > 0) {
-    timerId = window.setInterval(() => {
-      void refreshSnapshot();
-    }, refreshIntervalSec * 1000);
-  }
+  const delay = nextPollDelay();
+  if (delay <= 0) return;
+  timerId = window.setTimeout(() => {
+    timerId = null;
+    void refreshSnapshot().then(() => {
+      resetTimer();
+    });
+  }, delay);
 }
 
 sessionSelect.addEventListener('change', () => {
@@ -483,6 +720,18 @@ async function boot(): Promise<void> {
   new MutationObserver(() => {
     syncSidecarThemeFromBackground();
   }).observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+        timerId = null;
+      }
+      return;
+    }
+    void refreshSnapshot().then(() => {
+      resetTimer();
+    });
+  });
   await refreshSnapshot();
   resetTimer();
 }

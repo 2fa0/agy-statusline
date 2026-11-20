@@ -1,11 +1,16 @@
 /**
- * AGY Desktop Status sidecar server for Antigravity Desktop aux_pane.
+ * AGY Desktop Status sidecar server for Antigravity Desktop.
  *
- * Serves the single-file UI bundle with sidecar_sdk's /preload.js injected
- * and exposes GET /api/status backed by desktop-panel/telemetry.py.
+ * Serves the single-file UI bundle with sidecar_sdk's /preload.js injected and
+ * exposes GET /api/status backed by desktop-panel/telemetry.py.
+ *
+ * telemetry.py runs as one long-lived worker (`--serve`, JSON-lines over
+ * stdin/stdout). Paying Python startup once instead of once per poll takes a
+ * 3s-interval poll from ~40ms to well under 1ms. A one-shot `execFile` fallback
+ * keeps the panel working if the worker cannot start.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -58,7 +63,7 @@ function loadHtmlWithPreload() {
   return html;
 }
 
-function queryTelemetry(conversationId, appData) {
+function queryTelemetryOneShot(conversationId, appData) {
   const args = [
     TELEMETRY_SCRIPT,
     '--conversation-id',
@@ -88,7 +93,152 @@ function queryTelemetry(conversationId, appData) {
   });
 }
 
+const WORKER_REQUEST_TIMEOUT_MS = 8000;
+const WORKER_MAX_RESTARTS = 3;
+
+class TelemetryWorker {
+  constructor(scriptPath, appData) {
+    this.scriptPath = scriptPath;
+    this.appData = appData;
+    this.child = null;
+    this.pending = [];
+    this.stdoutBuffer = '';
+    this.stderrTail = '';
+    this.restarts = 0;
+    this.disabled = false;
+  }
+
+  start() {
+    if (this.child || this.disabled) return this.child;
+    const child = spawn(
+      PYTHON_BIN,
+      [
+        '-u',
+        this.scriptPath,
+        '--serve',
+        '--data-dir',
+        join(this.appData, 'plugin_data', 'agy-desktop-status'),
+        '--desktop-root',
+        this.appData,
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+    this.child = child;
+    this.stdoutBuffer = '';
+    this.stderrTail = '';
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      if (this.child !== child) return;
+      this.stdoutBuffer += chunk;
+      let newline = this.stdoutBuffer.indexOf('\n');
+      while (newline !== -1) {
+        const line = this.stdoutBuffer.slice(0, newline).trim();
+        this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
+        if (line) this._settleNext(line);
+        newline = this.stdoutBuffer.indexOf('\n');
+      }
+    });
+
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      this.stderrTail = (this.stderrTail + chunk).slice(-2000);
+    });
+
+    child.stdin.on('error', (error) => this._stop(child, `telemetry worker pipe failed: ${error.message}`));
+    child.on('error', (error) => this._stop(child, `telemetry worker failed: ${error.message}`));
+    child.on('exit', (code) => this._stop(child, `telemetry worker exited (code ${code})`));
+    return child;
+  }
+
+  _stop(child, reason) {
+    if (this.child !== child) return;
+    this.child = null;
+    this.stdoutBuffer = '';
+    this.restarts += 1;
+    if (this.restarts >= WORKER_MAX_RESTARTS) this.disabled = true;
+    const error = new Error(reason || this.stderrTail.trim() || 'telemetry worker stopped');
+    while (this.pending.length) {
+      const entry = this.pending.shift();
+      clearTimeout(entry.timer);
+      entry.reject(error);
+    }
+    child.kill('SIGTERM');
+  }
+
+  _settleNext(line) {
+    const entry = this.pending.shift();
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
+        entry.reject(new Error(parsed.error));
+      } else {
+        entry.resolve(parsed);
+      }
+    } catch (error) {
+      entry.reject(new Error(`Invalid telemetry JSON: ${error.message}`));
+    }
+  }
+
+  query(conversationId) {
+    if (this.disabled) return Promise.reject(new Error('telemetry worker disabled'));
+    const child = this.start();
+    if (!child) return Promise.reject(new Error('telemetry worker unavailable'));
+    return new Promise((resolvePromise, rejectPromise) => {
+      const entry = {
+        resolve: resolvePromise,
+        reject: rejectPromise,
+        timer: setTimeout(() => {
+          // A late reply cannot be paired safely after any request times out.
+          this._stop(child, 'telemetry worker request timed out');
+        }, WORKER_REQUEST_TIMEOUT_MS),
+      };
+      entry.timer.unref?.();
+      this.pending.push(entry);
+      try {
+        child.stdin.write(`${JSON.stringify({ conversationId: conversationId || 'auto' })}\n`);
+      } catch (error) {
+        this._stop(child, error.message);
+      }
+    });
+  }
+
+  dispose() {
+    if (this.child) this._stop(this.child, 'telemetry worker disposed');
+  }
+}
+
 const appData = resolveAppDataDir();
+const worker = new TelemetryWorker(TELEMETRY_SCRIPT, appData);
+const inflight = new Map();
+
+async function queryTelemetry(conversationId) {
+  const key = conversationId || 'auto';
+  const existing = inflight.get(key);
+  if (existing) return existing;
+  const promise = worker
+    .query(key)
+    .catch(() => {
+      // Worker unavailable or crashed: fall back to a one-shot process.
+      return queryTelemetryOneShot(key, appData);
+    })
+    .finally(() => {
+      inflight.delete(key);
+    });
+  inflight.set(key, promise);
+  return promise;
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    worker.dispose();
+    process.exit(0);
+  });
+}
+process.on('exit', () => worker.dispose());
+
 const app = new SidecarApp();
 
 app.page('/', () => {
@@ -104,7 +254,7 @@ app.api(
       typeof data?.conversationId === 'string' && data.conversationId.trim()
         ? data.conversationId.trim()
         : 'auto';
-    return queryTelemetry(convId, appData);
+    return queryTelemetry(convId);
   },
   'GET',
 );

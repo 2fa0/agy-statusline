@@ -217,6 +217,59 @@ fn renderMetrics(allocator: Allocator, cw: ContextWindow, speed: ?f64, color: []
     return std.fmt.allocPrint(allocator, "{s}Cache hit: -- | {s} | {s}\x1b[0m\n", .{color, ctx_text, speed_text});
 }
 
+// Persist the last quota snapshot so other surfaces (the Desktop sidebar panel)
+// can render absolute reset times instead of the relative "resets in 2d 4h"
+// wording. Purely local, read-only with respect to AGY state.
+const QuotaCacheBucket = struct { key: []const u8, remaining_fraction: f64, reset_at: ?i64 = null };
+const QuotaCache = struct {
+    schema: u32 = 1,
+    source: []const u8 = "agy-statusline",
+    observed_at: i64,
+    buckets: []const QuotaCacheBucket,
+};
+
+fn quotaCachePath(allocator: Allocator) ?[]const u8 {
+    if (std.process.getEnvVarOwned(allocator, "AGY_STATUSLINE_QUOTA_FILE")) |path| {
+        if (path.len > 0) return path;
+    } else |_| {}
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return null;
+    if (home.len == 0) return null;
+    return std.fmt.allocPrint(allocator, "{s}/.gemini/agy-statusline/quota.json", .{home}) catch null;
+}
+
+fn writeQuotaSnapshot(allocator: Allocator, quota: ?std.json.ArrayHashMap(QuotaBucket)) void {
+    const quota_map = quota orelse return;
+    const now = std.time.timestamp();
+    var buckets = std.ArrayList(QuotaCacheBucket).init(allocator);
+    var it = quota_map.map.iterator();
+    while (it.next()) |entry| {
+        const frac = entry.value_ptr.remaining_fraction orelse continue;
+        if (std.math.isNan(frac)) continue;
+        var reset_at: ?i64 = null;
+        if (entry.value_ptr.reset_in_seconds) |seconds| {
+            // Guard against absurd values so a corrupt payload cannot move a reset
+            // window years into the future.
+            if (seconds > 0 and seconds < 400 * 24 * 3600) reset_at = now + seconds;
+        }
+        buckets.append(.{
+            .key = entry.key_ptr.*,
+            .remaining_fraction = @max(0.0, @min(1.0, frac)),
+            .reset_at = reset_at,
+        }) catch return;
+    }
+    if (buckets.items.len == 0) return;
+
+    var out = std.ArrayList(u8).init(allocator);
+    std.json.stringify(QuotaCache{ .observed_at = now, .buckets = buckets.items }, .{ .emit_null_optional_fields = false }, out.writer()) catch return;
+
+    const path = quotaCachePath(allocator) orelse return;
+    var file = std.fs.cwd().atomicFile(path, .{ .make_path = true }) catch return;
+    defer file.deinit();
+    file.file.writeAll(out.items) catch return;
+    file.finish() catch return;
+}
+
 fn renderQuotaLine(allocator: Allocator, quota: QuotaSummary, base_color: []const u8) !?[]const u8 {
     if (!hasWindow(quota.gemini) and !hasWindow(quota.argon) and !hasWindow(quota.claude)) return null;
     var out = std.ArrayList(u8).init(allocator);
@@ -250,6 +303,7 @@ pub fn main() !void {
     const cw = if (state) |s| s.value.context_window else ContextWindow{};
     const speed = if (state) |s| lastSpeed(a, s.value.conversation_id) else null;
     const quota = if (state) |s| summarizeQuota(s.value.quota) else QuotaSummary{};
+    writeQuotaSnapshot(a, if (state) |s| s.value.quota else null);
     const width = if (state) |s| @min(s.value.terminal_width orelse 0, 1000) else 0;
     const color = if (speed != null and speed.? < 50) "\x1b[43;30m" else "\x1b[44;97m";
     const metrics = try renderMetrics(a, cw, speed, color);

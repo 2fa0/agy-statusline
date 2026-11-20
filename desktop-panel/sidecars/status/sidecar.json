@@ -3,7 +3,7 @@
   "args": ["main.mjs"],
   "restart_policy": "always",
   "display_name": "AGY Status",
-  "description": "Read-only telemetry monitor: average output speed, turn/session duration, context usage, and prompt cache hit rate.",
+  "description": "Read-only telemetry monitor: live streaming speed, quota reset times, context usage, turn/session duration, and prompt cache hit rate.",
   "has_web_ui": true,
   "agent_permissions": {
     "allows_user_interactions": false

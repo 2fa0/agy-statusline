@@ -177,6 +177,39 @@
       background: var(--agy-warn-bg);
       border-color: var(--agy-warn-border);
     }
+    .card.live {
+      border-color: var(--agy-accent);
+      box-shadow: 0 0 0 1px var(--agy-accent-soft) inset;
+    }
+    .live-pulse {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      margin-right: 5px;
+      background: var(--agy-accent);
+      animation: agy-pulse 1.1s ease-in-out infinite;
+    }
+    @keyframes agy-pulse {
+      0%, 100% {
+        opacity: 0.35;
+        transform: scale(0.85);
+      }
+      50% {
+        opacity: 1;
+        transform: scale(1.15);
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .live-pulse {
+        animation: none;
+        opacity: 1;
+      }
+    }
+    .pill.live {
+      border-color: var(--agy-accent);
+      color: var(--agy-accent);
+    }
     .card-label {
       font-size: 11px;
       color: var(--agy-fg-muted);
@@ -230,6 +263,50 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
+    }
+    .quota-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+    .quota-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .quota-group-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--agy-fg-muted);
+    }
+    .quota-windows {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .quota-cell {
+      background: var(--agy-subtle);
+      border-radius: 6px;
+      padding: 5px 8px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 2px 6px;
+      min-width: 0;
+    }
+    .quota-label {
+      color: var(--agy-fg-muted);
+      white-space: nowrap;
+    }
+    .quota-time {
+      color: var(--agy-fg);
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      margin-left: auto;
     }
     .section-title {
       font-size: 11px;
@@ -380,64 +457,91 @@
     </div>
 
     <div id="empty-box" class="section empty" style="display:none"></div>
+
+    <div id="quota-section" class="section" style="display:none">
+      <div class="section-title">
+        <span>额度重置时间</span>
+        <span id="quota-note" class="muted"></span>
+      </div>
+      <div id="quota-list" class="quota-list"></div>
+    </div>
   </div>
-  <script>"use strict";(()=>{var G="agy_status_refresh_sec",W=new Set([0,3,5,10]),h=document.getElementById("session-select"),g=document.getElementById("refresh-select"),B=document.getElementById("live-dot"),F=document.getElementById("meta-strip"),R=document.getElementById("cards"),M=document.getElementById("history-section"),ie=document.getElementById("history-count"),ae=document.getElementById("spark-detail"),L=document.getElementById("spark"),w=document.getElementById("history-list"),C=document.getElementById("empty-box"),f="auto",d=le(),D=!1,y=null,E=[],j="",k=null;function le(){try{let e=window.localStorage?.getItem(G);if(e!==null){let t=Number.parseInt(e,10);if(W.has(t))return t}}catch{}return 3}function re(e){try{window.localStorage?.setItem(G,String(e))}catch{}}g.value=String(d);g.classList.toggle("active",d>0);function v(e){return e==null||e<0?"--":e>=1e3?`${Math.trunc(e/1e3).toLocaleString("en-US")}K`:e.toLocaleString("en-US")}function p(e){return e==null||e<0?"--":`${e.toLocaleString("en-US")} tok`}function $(e){if(e==null||e<0)return"--";if(e<60)return`${e.toFixed(1)}s`;let t=Math.floor(e/60),o=Math.round(e%60);return t<60?`${t}m ${o}s`:`${Math.floor(t/60)}h ${t%60}m`}function s(e){return e.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}function ce(e=[]){let t=f,o=['<option value="auto">\u81EA\u52A8\u8DDF\u968F\u5F53\u524D\u6D3B\u8DC3\u4F1A\u8BDD</option>'];for(let i of e){let c=[i.shortId];i.workspace&&c.push(i.workspace),i.modelName&&c.push(i.modelName),i.isActive&&c.push("\u6D3B\u8DC3"),o.push(`<option value="${s(i.conversationId)}">${s(c.join(" \xB7 "))}</option>`)}h.innerHTML=o.join("");let a=Array.from(h.options).some(i=>i.value===t);h.value=a?t:"auto",f=h.value}function x(e){if(E.length===0)return;let t=E[0],o=(e!==null?E.find(l=>l.idx===e):void 0)||t;k=o.idx;let a=o.speedTokS!==null&&o.speedTokS<50,i=o.speedTokS!==null?`${o.speedTokS.toFixed(1)} tok/s`:"--",c=o.model||j||"\u672A\u77E5\u6A21\u578B",S=o.outputTokens!==null&&o.outputTokens!==void 0?`${o.outputTokens.toLocaleString("en-US")} tok`:"--",b=o.durationSec!==null&&o.durationSec!==void 0?`${o.durationSec.toFixed(2)}s`:"--";ae.innerHTML=`
+  <script>"use strict";(()=>{var oe="agy_status_refresh_sec",se=new Set([0,3,5,10]),be=15e3,Te=45,ye=1e3,k=document.getElementById("session-select"),b=document.getElementById("refresh-select"),V=document.getElementById("live-dot"),K=document.getElementById("meta-strip"),z=document.getElementById("cards"),J=document.getElementById("quota-section"),X=document.getElementById("quota-note"),Z=document.getElementById("quota-list"),W=document.getElementById("history-section"),ke=document.getElementById("history-count"),xe=document.getElementById("spark-detail"),C=document.getElementById("spark"),N=document.getElementById("history-list"),U=document.getElementById("empty-box"),x="auto",f=we(),O=!1,v=null,H=[],re="",L=null,j=null;function we(){try{let e=window.localStorage?.getItem(oe);if(e!==null){let t=Number.parseInt(e,10);if(se.has(t))return t}}catch{}return 3}function Ee(e){try{window.localStorage?.setItem(oe,String(e))}catch{}}b.value=String(f);b.classList.toggle("active",f>0);b.title="\u81EA\u9002\u5E94\u5237\u65B0\uFF1A\u6D3B\u8DC3\u65F6\u6309\u6240\u9009\u95F4\u9694\u5237\u65B0\uFF0C\u7A7A\u95F2\u65F6\u964D\u5230 15s\uFF0C\u9762\u677F\u9690\u85CF\u65F6\u6682\u505C";function y(e){return e==null||e<0?"--":e>=1e3?`${Math.trunc(e/1e3).toLocaleString("en-US")}K`:e.toLocaleString("en-US")}function $(e){return e==null||e<0?"--":`${e.toLocaleString("en-US")} tok`}function E(e){if(e==null||e<0)return"--";if(e<60)return`${e.toFixed(1)}s`;let t=Math.floor(e/60),n=Math.round(e%60);return t<60?`${t}m ${n}s`:`${Math.floor(t/60)}h ${t%60}m`}function o(e){return e.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}var Le=["\u5468\u65E5","\u5468\u4E00","\u5468\u4E8C","\u5468\u4E09","\u5468\u56DB","\u5468\u4E94","\u5468\u516D"],Ie={gemini:"Gemini",argon:"Argon",claude:"Claude"},Me={"5h":"5\u5C0F\u65F6",weekly:"\u5468\u9650",other:"\u989D\u5EA6"},ee={"5h":0,weekly:1,other:2};function q(e){return`${String(e.getHours()).padStart(2,"0")}:${String(e.getMinutes()).padStart(2,"0")}`}function De(e=0){let t=new Date;return new Date(t.getFullYear(),t.getMonth(),t.getDate()+e).getTime()}function He(e){if(e==null)return"--";let t=new Date(e*1e3);if(Number.isNaN(t.getTime()))return"--";let n=q(t),a=new Date(t.getFullYear(),t.getMonth(),t.getDate()).getTime(),i=Math.round((a-De())/864e5);return i===0?`\u4ECA\u5929 ${n}`:i===1?`\u660E\u5929 ${n}`:`${Le[t.getDay()]} ${t.getMonth()+1}/${t.getDate()} ${n}`}function Ae(e){if(e==null)return"";if(e<=0)return"\u5373\u5C06\u91CD\u7F6E";let t=Math.floor(e/86400),n=Math.floor(e%86400/3600),a=Math.floor(e%3600/60);return t>0?`${t}\u5929 ${n}\u5C0F\u65F6`:n>0?`${n}\u5C0F\u65F6 ${a}\u5206\u949F`:`${a}\u5206\u949F`}function Ce(e){return e===void 0?"":e<60?"\u521A\u521A":e<3600?`${Math.floor(e/60)} \u5206\u949F\u524D`:e<86400?`${Math.floor(e/3600)} \u5C0F\u65F6\u524D`:`${Math.floor(e/86400)} \u5929\u524D`}function Ne(e){if(!e)return"";let t=new Date(e);return Number.isNaN(t.getTime())?"":t.toDateString()===new Date().toDateString()?q(t):`${t.getMonth()+1}/${t.getDate()} ${q(t)}`}function te(e){let t=(e?.windows||[]).filter(s=>s&&typeof s=="object");if(!e||t.length===0){J.style.display="none",Z.innerHTML="";return}J.style.display="flex";let n=Ce(e.observedAgeSec),a=Ne(e.observedAt);X.textContent=e.stale?`${a||n} \xB7 \u63A8\u7B97`:`${a||n} \u66F4\u65B0`,X.title=e.stale?`\u4E0A\u6B21\u91C7\u5230\u989D\u5EA6\u662F ${a}\uFF08${n}\uFF09\uFF1B\u91CD\u7F6E\u65F6\u95F4\u5DF2\u6309 5h / 7 \u5929\u5468\u671F\u63A8\u7B97\u5230\u4E0B\u4E00\u6B21`:"\u989D\u5EA6\u6765\u81EA\u4E0A\u4E00\u6B21 agy CLI \u6E32\u67D3\u65F6\u7684\u72B6\u6001\u680F\u6570\u636E";let i=new Map;for(let s of t){let d=i.get(s.pool)||[];d.push(s),i.set(s.pool,d)}Z.innerHTML=Array.from(i.entries()).map(([s,d])=>{let h=Ie[s]||s,p=[...d].sort((u,T)=>(ee[u.window]??99)-(ee[T.window]??99)).map(u=>{let T=Me[u.window]||u.window,m=u.resetAtEpoch!==null&&u.resetAtEpoch!==void 0,S=m&&u.approx?"\u2248 ":"",D=m?Ae(u.resetInSec):"",P=m?He(u.resetAtEpoch):"\u672A\u77E5",F=m?new Date(u.resetAtEpoch*1e3).toLocaleString():"--",R=[`${h} ${T}`,m?`\u91CD\u7F6E\u4E8E ${F}`:"\u91CD\u7F6E\u65F6\u95F4\u672A\u77E5",m&&D?`\u8DDD\u91CD\u7F6E ${D}`:"",u.approx?"\u6309 5h / 7 \u5929\u5468\u671F\u63A8\u7B97":"",n?`\u91C7\u96C6\u4E8E ${n}`:""].filter(Boolean).join(" \xB7 ");return`
+            <div class="quota-cell" title="${o(R)}">
+              <span class="quota-label">${o(T)}</span>
+              <span class="quota-time">${o(S+P)}</span>
+            </div>
+          `}).join("");return`
+        <div class="quota-group">
+          <div class="quota-group-title">${o(h)}</div>
+          <div class="quota-windows">${p}</div>
+        </div>
+      `}).join("")}function Pe(e=[]){let t=x,n=['<option value="auto">\u81EA\u52A8\u8DDF\u968F\u5F53\u524D\u6D3B\u8DC3\u4F1A\u8BDD</option>'];for(let i of e){let s=[i.shortId];i.workspace&&s.push(i.workspace),i.modelName&&s.push(i.modelName),i.isActive&&s.push("\u6D3B\u8DC3"),n.push(`<option value="${o(i.conversationId)}">${o(s.join(" \xB7 "))}</option>`)}k.innerHTML=n.join("");let a=Array.from(k.options).some(i=>i.value===t);k.value=a?t:"auto",x=k.value}function M(e){if(H.length===0)return;let t=H[0],n=(e!==null?H.find(c=>c.idx===e):void 0)||t;L=n.idx;let a=n.speedTokS!==null&&n.speedTokS<50,i=n.speedTokS!==null?`${n.speedTokS.toFixed(1)} tok/s`:"--",s=n.model||re||"\u672A\u77E5\u6A21\u578B",d=n.outputTokens!==null&&n.outputTokens!==void 0?`${n.outputTokens.toLocaleString("en-US")} tok`:"--",h=n.durationSec!==null&&n.durationSec!==void 0?`${n.durationSec.toFixed(2)}s`:"--";xe.innerHTML=`
     <span>
-      <strong>#${o.idx}</strong>
-      <span class="muted"> \xB7 ${s(c)}</span>
+      <strong>#${n.idx}</strong>
+      <span class="muted"> \xB7 ${o(s)}</span>
     </span>
     <span>
-      <span class="tag ${a?"warn":""}">${s(i)}</span>
-      <span class="muted"> \xB7 \u8F93\u51FA ${s(S)} \xB7 \u8017\u65F6 ${s(b)}</span>
+      <span class="tag ${a?"warn":""}">${o(i)}</span>
+      <span class="muted"> \xB7 \u8F93\u51FA ${o(d)} \xB7 \u8017\u65F6 ${o(h)}</span>
     </span>
-  `,L.querySelectorAll(".spark-col").forEach(l=>{let m=Number(l.dataset.idx);l.classList.toggle("active",m===o.idx)}),w.querySelectorAll(".history-row").forEach(l=>{let m=Number(l.dataset.idx);l.classList.toggle("active",m===o.idx)})}var de=new URLSearchParams(window.location.search);function _(){return(window.sidecar?.conversationId||de.get("conversationId")||"").trim()}function ue(e){ce(e.recentConversations);let t=_(),o=!!(e.hookConnected||t);B.classList.toggle("live",o),B.title=t?`\u5DF2\u7ED1\u5B9A\u5F53\u524D\u9762\u677F\u4F1A\u8BDD ${t.slice(0,8)}`:e.hookConnected?"Hook \u5DF2\u5173\u8054\u5B9E\u65F6\u6D3B\u8DC3\u4F1A\u8BDD":"\u7B49\u5F85 Hook \u4E8B\u4EF6\uFF0C\u5F53\u524D\u6309\u6700\u8FD1\u4F1A\u8BDD\u5C55\u793A";let a="";if(e.generatedAt){let r=new Date(e.generatedAt);a=Number.isNaN(r.getTime())?"":r.toLocaleTimeString()}if(!e.found){F.innerHTML="",R.innerHTML="",M.style.display="none",C.style.display="block",C.textContent=e.message||"\u6682\u672A\u53D1\u73B0\u672C\u5730 Antigravity \u684C\u9762\u7AEF\u4F1A\u8BDD\u8BB0\u5F55\u3002";return}C.style.display="none";let i=[];if(e.shortId&&i.push(`<span class="pill" title="\u4F1A\u8BDD UUID: ${s(e.conversationId)}">\u4F1A\u8BDD ${s(e.shortId)}</span>`),e.modelName&&i.push(`<span class="pill">${s(e.modelName)}</span>`),e.workspaceName&&i.push(`<span class="pill">${s(e.workspaceName)}</span>`),typeof e.turnCount=="number"&&e.turnCount>0){let r=e.stepCount?`\u5171 ${e.stepCount} \u4E2A\u6267\u884C\u6B65\u9AA4`:"";i.push(`<span class="pill" title="${s(r)}">${e.turnCount} \u8F6E</span>`)}let c=a?`<span class="updated-tag" title="\u4E0A\u6B21\u5237\u65B0\u65F6\u95F4">${s(a)}</span>`:"";F.innerHTML=`<div class="pills-wrap">${i.join("")}</div>${c}`;let S=e.lastAvgSpeed!==null&&e.lastAvgSpeed!==void 0?`${e.lastAvgSpeed.toFixed(1)} tok/s`:"--",b=$(e.lastGenDurationSec),l=v(e.outputTokens),m=`\u6700\u8FD1\u4E00\u6B21\u751F\u6210\uFF1A\u8F93\u51FA ${p(e.outputTokens)}\uFF0C\u751F\u6210\u8017\u65F6 ${e.lastGenDurationSec!==null&&e.lastGenDurationSec!==void 0?`${e.lastGenDurationSec.toFixed(2)}s`:"--"}`,N=$(e.turnDurationSec),A=$(e.sessionDurationSec),O=`\u5F53\u524D\u8F6E\u6B21\u8017\u65F6 ${N} \xB7 \u4F1A\u8BDD\u7D2F\u8BA1\u8017\u65F6 ${A}\uFF08\u5171 ${e.turnCount??0} \u8F6E / ${e.stepCount??0} \u6B65\uFF09`,K=v(e.contextUsed),V=v(e.contextTotal),Y=e.contextUsed!==null&&e.contextUsed!==void 0?`${K}/${V}`:"--",H=e.contextPct??0,z=`\u5DF2\u7528\u4E0A\u4E0B\u6587: ${p(e.contextUsed)} / \u5BB9\u91CF: ${p(e.contextTotal)} (${H.toFixed(2)}%)`,J=e.cacheHitPct!==null&&e.cacheHitPct!==void 0?`${e.cacheHitPct.toFixed(1)}%`:"--",Q=e.cacheReadTokens!==null&&e.cacheReadTokens!==void 0?`Read ${v(e.cacheReadTokens)} \xB7 In ${v(e.inputTokens)}`:"\u672C\u5730\u5E93\u6682\u65E0\u8F93\u5165/\u7F13\u5B58\u5B57\u6BB5",X=`\u7F13\u5B58\u8BFB\u53D6: ${p(e.cacheReadTokens)} \xB7 \u672A\u7F13\u5B58\u8F93\u5165: ${p(e.inputTokens)} \xB7 \u7F13\u5B58\u5199\u5165: ${p(e.cacheWriteTokens)}`;R.innerHTML=`
-    <div class="card ${e.lowSpeedWarning?"warn":""}" title="${s(m)}">
+  `,C.querySelectorAll(".spark-col").forEach(c=>{let p=Number(c.dataset.idx);c.classList.toggle("active",p===n.idx)}),N.querySelectorAll(".history-row").forEach(c=>{let p=Number(c.dataset.idx);c.classList.toggle("active",p===n.idx)})}var Fe=new URLSearchParams(window.location.search);function ie(){return(window.sidecar?.conversationId||Fe.get("conversationId")||"").trim()}function Re(e){Pe(e.recentConversations);let t=ie(),n=!!(e.hookConnected||t);V.classList.toggle("live",n),V.title=t?`\u5DF2\u7ED1\u5B9A\u5F53\u524D\u9762\u677F\u4F1A\u8BDD ${t.slice(0,8)}`:e.hookConnected?"Hook \u5DF2\u5173\u8054\u5B9E\u65F6\u6D3B\u8DC3\u4F1A\u8BDD":"\u7B49\u5F85 Hook \u4E8B\u4EF6\uFF0C\u5F53\u524D\u6309\u6700\u8FD1\u4F1A\u8BDD\u5C55\u793A";let a="";if(e.generatedAt){let l=new Date(e.generatedAt);a=Number.isNaN(l.getTime())?"":l.toLocaleTimeString()}if(!e.found){K.innerHTML="",z.innerHTML="",W.style.display="none",U.style.display="block",U.textContent=e.message||"\u6682\u672A\u53D1\u73B0\u672C\u5730 Antigravity \u684C\u9762\u7AEF\u4F1A\u8BDD\u8BB0\u5F55\u3002",te(e.quota);return}U.style.display="none";let i=[];if(e.shortId&&i.push(`<span class="pill" title="\u4F1A\u8BDD UUID: ${o(e.conversationId)}">\u4F1A\u8BDD ${o(e.shortId)}</span>`),e.modelName&&i.push(`<span class="pill">${o(e.modelName)}</span>`),e.workspaceName&&i.push(`<span class="pill">${o(e.workspaceName)}</span>`),typeof e.turnCount=="number"&&e.turnCount>0){let l=e.stepCount?`\u5171 ${e.stepCount} \u4E2A\u6267\u884C\u6B65\u9AA4`:"";i.push(`<span class="pill" title="${o(l)}">${e.turnCount} \u8F6E</span>`)}let s=e.live,d=!!s?.active;if(d){let l=s?.elapsedSec,_=`\u6B63\u5728\u751F\u6210\uFF1A\u7B2C ${s?.stepIdx??"?"} \u6B65\uFF0C\u5DF2\u6D41\u5F0F\u8F93\u51FA ${s?.outputChars??"?"} \u5B57`;i.push(`<span class="pill live" title="${o(_)}"><i class="live-pulse"></i>\u751F\u6210\u4E2D${typeof l=="number"?` \xB7 ${l.toFixed(0)}s`:""}</span>`)}let h=a?`<span class="updated-tag" title="\u4E0A\u6B21\u5237\u65B0\u65F6\u95F4">${o(a)}</span>`:"";K.innerHTML=`<div class="pills-wrap">${i.join("")}</div>${h}`;let c=e.lastAvgSpeed!==null&&e.lastAvgSpeed!==void 0?`${e.lastAvgSpeed.toFixed(1)} tok/s`:"--",p=E(e.lastGenDurationSec),u=y(e.outputTokens),T=`\u6700\u8FD1\u4E00\u6B21\u751F\u6210\uFF1A\u8F93\u51FA ${$(e.outputTokens)}\uFF0C\u751F\u6210\u8017\u65F6 ${e.lastGenDurationSec!==null&&e.lastGenDurationSec!==void 0?`${e.lastGenDurationSec.toFixed(2)}s`:"--"}`,m=s?.estTokPerSec,S=s?.outputChars,D=typeof m=="number"?`\u2248 ${m.toFixed(1)} tok/s`:typeof S=="number"?`${S} \u5B57`:"\u751F\u6210\u4E2D\u2026",P=[typeof S=="number"?`\u5DF2\u8F93\u51FA ${S} \u5B57`:"",typeof s?.charsPerSec=="number"?`${s.charsPerSec.toFixed(0)} \u5B57/s`:"",typeof s?.elapsedSec=="number"?`${s.elapsedSec.toFixed(1)}s`:""].filter(Boolean),F=`\u751F\u6210\u4E2D\u5B9E\u65F6\u4F30\u7B97\uFF1A\u6D41\u5F0F\u6587\u672C ${S??"?"} \u5B57 \xB7 ${s?.charsPerSec!==null&&s?.charsPerSec!==void 0?`${s.charsPerSec.toFixed(1)} \u5B57/s`:"\u901F\u7387\u5F85\u6D4B"}
+\u6309 ${s?.charsPerToken??"--"} \u5B57/token \u6362\u7B97\u4E3A tok/s\uFF1B\u7CBE\u786E token \u6570\u5728\u6574\u6B65\u5B8C\u6210\u540E\u843D\u5E93`,R=d?`<div class="card live" title="${o(F)}">
+      <div class="card-label">
+        <span><i class="live-pulse"></i>\u5B9E\u65F6\u8F93\u51FA\u901F\u5EA6</span>
+        <span>${typeof m=="number"?"tok/s":"streaming"}</span>
+      </div>
+      <div class="card-value">${o(D)}</div>
+      <div class="card-sub">${o(P.join(" \xB7 ")||"\u6B63\u5728\u63A5\u6536\u8F93\u51FA\u2026")}</div>
+    </div>`:`<div class="card ${e.lowSpeedWarning?"warn":""}" title="${o(T)}">
       <div class="card-label">
         <span>\u5E73\u5747\u8F93\u51FA\u901F\u5EA6</span>
         <span>${e.lowSpeedWarning?"\u504F\u6162":"tok/s"}</span>
       </div>
-      <div class="card-value">${s(S)}</div>
-      <div class="card-sub">\u8F93\u51FA ${s(l)} \xB7 \u8017\u65F6 ${s(b)}</div>
-    </div>
+      <div class="card-value">${o(c)}</div>
+      <div class="card-sub">\u8F93\u51FA ${o(u)} \xB7 \u8017\u65F6 ${o(p)}</div>
+    </div>`,G=E(e.turnDurationSec),Q=E(e.sessionDurationSec),ae=`\u5F53\u524D\u8F6E\u6B21\u8017\u65F6 ${G} \xB7 \u4F1A\u8BDD\u7D2F\u8BA1\u8017\u65F6 ${Q}\uFF08\u5171 ${e.turnCount??0} \u8F6E / ${e.stepCount??0} \u6B65\uFF09`,le=y(e.contextUsed),ce=y(e.contextTotal),ue=e.contextUsed!==null&&e.contextUsed!==void 0?`${le}/${ce}`:"--",B=e.contextPct??0,de=`\u5DF2\u7528\u4E0A\u4E0B\u6587: ${$(e.contextUsed)} / \u5BB9\u91CF: ${$(e.contextTotal)} (${B.toFixed(2)}%)${d?`
+\u751F\u6210\u4E2D\uFF1A\u4E0A\u4E0B\u6587\u5360\u7528\u662F prompt \u4FA7\u5B9E\u6D4B\u503C\uFF0C\u6BCF\u6B65\u5B8C\u6210\u540E\u5237\u65B0`:""}`,me=e.cacheHitPct!==null&&e.cacheHitPct!==void 0?`${e.cacheHitPct.toFixed(1)}%`:"--",pe=e.cacheReadTokens!==null&&e.cacheReadTokens!==void 0?`Read ${y(e.cacheReadTokens)} \xB7 In ${y(e.inputTokens)}`:"\u672C\u5730\u5E93\u6682\u65E0\u8F93\u5165/\u7F13\u5B58\u5B57\u6BB5",fe=`\u7F13\u5B58\u8BFB\u53D6: ${$(e.cacheReadTokens)} \xB7 \u672A\u7F13\u5B58\u8F93\u5165: ${$(e.inputTokens)} \xB7 \u7F13\u5B58\u5199\u5165: ${$(e.cacheWriteTokens)}`;z.innerHTML=`
+    ${R}
 
-    <div class="card" title="${s(O)}">
+    <div class="card" title="${o(ae)}">
       <div class="card-label">
         <span>\u8F6E\u6B21 / \u4F1A\u8BDD\u8017\u65F6</span>
       </div>
-      <div class="card-value">${s(N)}</div>
-      <div class="card-sub">\u4F1A\u8BDD\u603B\u8BA1 ${s(A)}</div>
+      <div class="card-value">${o(G)}</div>
+      <div class="card-sub">\u4F1A\u8BDD\u603B\u8BA1 ${o(Q)}</div>
     </div>
 
-    <div class="card" title="${s(z)}">
+    <div class="card" title="${o(de)}">
       <div class="card-label">
         <span>\u4E0A\u4E0B\u6587\u5360\u7528</span>
         <span>${e.contextPct!==null&&e.contextPct!==void 0?`${e.contextPct.toFixed(1)}%`:""}</span>
       </div>
-      <div class="card-value">${s(Y)}</div>
+      <div class="card-value">${o(ue)}</div>
       <div class="bar-track">
-        <div class="bar-fill ${H>=80?"high":""}" style="width: ${Math.min(100,Math.max(0,H))}%"></div>
+        <div class="bar-fill ${B>=80?"high":""}" style="width: ${Math.min(100,Math.max(0,B))}%"></div>
       </div>
     </div>
 
-    <div class="card" title="${s(X)}">
+    <div class="card" title="${o(fe)}">
       <div class="card-label">
         <span>Cache \u547D\u4E2D\u7387</span>
       </div>
-      <div class="card-value">${s(J)}</div>
-      <div class="card-sub">${s(Q)}</div>
+      <div class="card-value">${o(me)}</div>
+      <div class="card-sub">${o(pe)}</div>
     </div>
-  `;let u=(e.history||[]).filter(r=>r.speedTokS!==null||r.outputTokens!==null);if(E=u,j=e.modelName||"",u.length>0){M.style.display="flex";let r=u.map(n=>n.speedTokS).filter(n=>n!=null),Z=r.length>0?`${(r.reduce((n,T)=>n+T,0)/r.length).toFixed(1)} tok/s`:"--";ie.textContent=`\u6700\u8FD1 ${u.length} \u6B21 \xB7 \u5747\u503C ${Z}`;let P=[...u].reverse(),ee=Math.max(80,...P.map(n=>n.speedTokS??0));L.innerHTML=P.map(n=>{let T=n.speedTokS??0,ne=Math.max(12,Math.round(T/ee*100)),oe=n.speedTokS!==null&&n.speedTokS<50?"warn":"",se=`#${n.idx} \xB7 ${n.speedTokS!==null?`${n.speedTokS.toFixed(1)} tok/s`:"--"} \xB7 \u8F93\u51FA ${p(n.outputTokens)} \xB7 \u8017\u65F6 ${$(n.durationSec)}`;return`
-          <div class="spark-col" data-idx="${n.idx}" title="${s(se)}">
-            <div class="spark-bar ${oe}" style="height:${ne}%"></div>
+  `;let g=(e.history||[]).filter(l=>l.speedTokS!==null||l.outputTokens!==null);if(H=g,re=e.modelName||"",te(e.quota),g.length>0){W.style.display="flex";let l=g.map(r=>r.speedTokS).filter(r=>r!=null),_=l.length>0?`${(l.reduce((r,w)=>r+w,0)/l.length).toFixed(1)} tok/s`:"--";ke.textContent=`\u6700\u8FD1 ${g.length} \u6B21 \xB7 \u5747\u503C ${_}`;let Y=[...g].reverse(),ge=Math.max(80,...Y.map(r=>r.speedTokS??0));C.innerHTML=Y.map(r=>{let w=r.speedTokS??0,he=Math.max(12,Math.round(w/ge*100)),Se=r.speedTokS!==null&&r.speedTokS<50?"warn":"",$e=`#${r.idx} \xB7 ${r.speedTokS!==null?`${r.speedTokS.toFixed(1)} tok/s`:"--"} \xB7 \u8F93\u51FA ${$(r.outputTokens)} \xB7 \u8017\u65F6 ${E(r.durationSec)}`;return`
+          <div class="spark-col" data-idx="${r.idx}" title="${o($e)}">
+            <div class="spark-bar ${Se}" style="height:${he}%"></div>
           </div>
-        `}).join(""),w.innerHTML=u.slice(0,6).map(n=>{let T=n.speedTokS!==null&&n.speedTokS<50;return`
-          <div class="history-row" data-idx="${n.idx}">
-            <span class="muted">#${n.idx}</span>
-            <span class="muted">${s(n.model||e.modelName||"")}</span>
-            <span class="speed-badge ${T?"warn":""}">${n.speedTokS!==null?`${n.speedTokS.toFixed(1)} tok/s`:"--"}</span>
-            <span class="muted">${v(n.outputTokens)} / ${$(n.durationSec)}</span>
+        `}).join(""),N.innerHTML=g.slice(0,6).map(r=>{let w=r.speedTokS!==null&&r.speedTokS<50;return`
+          <div class="history-row" data-idx="${r.idx}">
+            <span class="muted">#${r.idx}</span>
+            <span class="muted">${o(r.model||e.modelName||"")}</span>
+            <span class="speed-badge ${w?"warn":""}">${r.speedTokS!==null?`${r.speedTokS.toFixed(1)} tok/s`:"--"}</span>
+            <span class="muted">${y(r.outputTokens)} / ${E(r.durationSec)}</span>
           </div>
-        `}).join("");let te=k!==null&&u.some(n=>n.idx===k)?k:u[0].idx;x(te)}else M.style.display="none"}L.addEventListener("mouseover",e=>{let t=e.target.closest(".spark-col");t&&t.dataset.idx&&x(Number(t.dataset.idx))});L.addEventListener("click",e=>{let t=e.target.closest(".spark-col");t&&t.dataset.idx&&x(Number(t.dataset.idx))});w.addEventListener("mouseover",e=>{let t=e.target.closest(".history-row");t&&t.dataset.idx&&x(Number(t.dataset.idx))});w.addEventListener("click",e=>{let t=e.target.closest(".history-row");t&&t.dataset.idx&&x(Number(t.dataset.idx))});function U(){let e=document.createElement("span");e.style.cssText="position:absolute;visibility:hidden;color:var(--background, #f7f7f8)",document.documentElement.appendChild(e);let t=getComputedStyle(e).color;e.remove();let o=(t.match(/[\d.]+/g)||[]).map(Number);if(o.length<3)return;let a=t.startsWith("color(")?1:255,[i,c,S]=o.slice(0,3).map(m=>m/a),l=.2126*i+.7152*c+.0722*S<.5?"dark":"light";document.documentElement.dataset.theme!==l&&(document.documentElement.dataset.theme=l)}async function me(e){let t=window.sidecar?.fetch?window.sidecar.fetch.bind(window.sidecar):fetch,o=e?`?conversationId=${encodeURIComponent(e)}`:"",a=await t(`/api/status${o}`,{method:"GET"});return a.ok?await a.json():null}async function I(){if(!D){D=!0;try{let e=f&&f!=="auto"?f:_()||"auto",t=await me(e);t&&ue(t)}catch{}finally{D=!1}}}function q(){y!==null&&(window.clearInterval(y),y=null),d>0&&(y=window.setInterval(()=>{I()},d*1e3))}h.addEventListener("change",()=>{f=h.value,k=null,I()});g.addEventListener("change",()=>{let e=Number.parseInt(g.value,10);d=W.has(e)?e:3,g.value=String(d),g.classList.toggle("active",d>0),re(d),d>0&&I(),q()});async function pe(){U(),new MutationObserver(()=>{U()}).observe(document.documentElement,{attributes:!0,attributeFilter:["style"]}),await I(),q()}pe();})();
+        `}).join("");let ve=L!==null&&g.some(r=>r.idx===L)?L:g[0].idx;M(ve)}else W.style.display="none"}C.addEventListener("mouseover",e=>{let t=e.target.closest(".spark-col");t&&t.dataset.idx&&M(Number(t.dataset.idx))});C.addEventListener("click",e=>{let t=e.target.closest(".spark-col");t&&t.dataset.idx&&M(Number(t.dataset.idx))});N.addEventListener("mouseover",e=>{let t=e.target.closest(".history-row");t&&t.dataset.idx&&M(Number(t.dataset.idx))});N.addEventListener("click",e=>{let t=e.target.closest(".history-row");t&&t.dataset.idx&&M(Number(t.dataset.idx))});function ne(){let e=document.createElement("span");e.style.cssText="position:absolute;visibility:hidden;color:var(--background, #f7f7f8)",document.documentElement.appendChild(e);let t=getComputedStyle(e).color;e.remove();let n=(t.match(/[\d.]+/g)||[]).map(Number);if(n.length<3)return;let a=t.startsWith("color(")?1:255,[i,s,d]=n.slice(0,3).map(p=>p/a),c=.2126*i+.7152*s+.0722*d<.5?"dark":"light";document.documentElement.dataset.theme!==c&&(document.documentElement.dataset.theme=c)}async function Be(e){let t=window.sidecar?.fetch?window.sidecar.fetch.bind(window.sidecar):fetch,n=e?`?conversationId=${encodeURIComponent(e)}`:"",a=await t(`/api/status${n}`,{method:"GET"});return a.ok?await a.json():null}async function I(){if(!O){O=!0;try{let e=x&&x!=="auto"?x:ie()||"auto",t=await Be(e);t&&(j=t,Re(t))}catch{}finally{O=!1}}}function _e(){let e=j?.lastActivityAt;if(!e)return Number.POSITIVE_INFINITY;let t=Date.parse(e);return Number.isNaN(t)?Number.POSITIVE_INFINITY:Math.max(0,Date.now()-t)}function We(){if(f<=0||document.hidden)return 0;let e=f*1e3;return j?.live?.active?Math.min(e,ye):_e()/1e3<Te?e:Math.max(e,be)}function A(){v!==null&&(window.clearTimeout(v),v=null);let e=We();e<=0||(v=window.setTimeout(()=>{v=null,I().then(()=>{A()})},e))}k.addEventListener("change",()=>{x=k.value,L=null,I()});b.addEventListener("change",()=>{let e=Number.parseInt(b.value,10);f=se.has(e)?e:3,b.value=String(f),b.classList.toggle("active",f>0),Ee(f),f>0&&I(),A()});async function Ue(){ne(),new MutationObserver(()=>{ne()}).observe(document.documentElement,{attributes:!0,attributeFilter:["style"]}),document.addEventListener("visibilitychange",()=>{if(document.hidden){v!==null&&(window.clearTimeout(v),v=null);return}I().then(()=>{A()})}),await I(),A()}Ue();})();
 </script>
 </body>
 </html>
