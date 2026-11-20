@@ -117,13 +117,24 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
+      # fetch-depth: 0 is required: the notes generator walks all tags/commits.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate release notes from commit history
+        run: |
+          python3 .github/scripts/release_notes.py "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            -o RELEASE_NOTES.md
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          # Our own grouped notes; GitHub's generator would only list PRs and
+          # this repo commits straight to main, producing an empty body.
+          body_path: RELEASE_NOTES.md
           files: |
             dist/agy-statusline-linux-x64.tar.gz
             dist/agy-statusline-macos-arm64.tar.gz
