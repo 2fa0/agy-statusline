@@ -282,9 +282,18 @@ class NativeTests(unittest.TestCase):
         db.close()
         for ext in ('-wal', '-shm'):
             Path(str(self.path) + ext).unlink(missing_ok=True)
+        before_ns = self.path.stat().st_mtime_ns
         snap = self.snapshot()
+        after_ns = self.path.stat().st_mtime_ns
+        self.assertEqual(before_ns, after_ns, f'snapshot changed mtime: {before_ns} -> {after_ns}')
         self.assertEqual(snap['outputTokens'], 100)
-        self.assert_snapshot_matches(snap, self.reference())
+        ref = self.reference()
+        ref_after_ns = self.path.stat().st_mtime_ns
+        self.assertEqual(after_ns, ref_after_ns, f'reference changed mtime: {after_ns} -> {ref_after_ns}')
+        snap_ts = datetime.fromisoformat(snap['recentConversations'][0]['updatedAt'].replace('Z', '+00:00')).timestamp()
+        ref_ts = datetime.fromisoformat(ref['recentConversations'][0]['updatedAt'].replace('Z', '+00:00')).timestamp()
+        self.assertAlmostEqual(snap_ts, ref_ts, places=5, msg=f'before_ns={before_ns} after_ns={after_ns} snap={snap_ts} ref={ref_ts}')
+        self.assert_snapshot_matches(snap, ref)
 
     def test_cli_reads_closed_wal_database(self):
         cli = PANEL.parent / ('agy-statusline.exe' if os.name == 'nt' else 'agy-statusline')
