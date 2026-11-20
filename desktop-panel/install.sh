@@ -95,7 +95,8 @@ prepare_backend() {
   arch="$(uname -m)"
   case "$(uname -s)-${arch}" in
     Darwin-arm64) platform="macos-arm64" ;;
-    Linux-x86_64) platform="linux-x64" ;;
+    Linux-x86_64 | Linux-amd64) platform="linux-x64" ;;
+    Linux-aarch64 | Linux-arm64) platform="linux-arm64" ;;
     *) platform="local" ;;
   esac
   native_source="${plugin_dir}/bin/${platform}/agy-desktop-backend"

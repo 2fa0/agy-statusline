@@ -54,6 +54,7 @@ detect_platform() {
   case "$(uname -s)-$(uname -m)" in
     Darwin-arm64) printf 'macos-arm64' ;;
     Linux-x86_64 | Linux-amd64) printf 'linux-x64' ;;
+    Linux-aarch64 | Linux-arm64) printf 'linux-arm64' ;;
     *) printf '' ;;
   esac
 }

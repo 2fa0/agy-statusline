@@ -30,7 +30,7 @@
 - **扩展入口**：使用 Antigravity 插件机制（`plugin.json`、`sidecars/status/sidecar.json`、`hooks.json`）。
 - **只读与零网络（Local Read-Only · Zero Network）**：SQLite 连接强制使用 `mode=ro` 与 `PRAGMA query_only = ON`（仅在打开已关闭且无 `-wal` 的归档 WAL 数据库时安全回退 `immutable=1`）；无任何外部网络请求、不读取 OAuth Token 或凭据、不探测未公开的内部 RPC 接口、不绕过任何配额或权限限制。
 - **额度来源透明**：桌面端本身不向插件暴露额度，面板只读取 CLI 状态栏自己写下的 `quota.json`（仅百分比与重置时间戳，无凭据）；文件不存在时提示「暂无额度重置数据，运行一次 agy CLI 后自动同步。」。
-- **开箱即用**：Release 包内含 macOS arm64 / Linux x64 / Windows x64 原生后台，前端单文件 HTML 嵌入二进制，普通用户无需安装 Node.js、Python 或 Zig。macOS 使用系统 SQLite；Linux/Windows 发布构建静态链接 SQLite。
+- **开箱即用**：Release 包内含 macOS arm64 / Linux x64 / Linux arm64 / Windows x64 原生后台，前端单文件 HTML 嵌入二进制，普通用户无需安装 Node.js、Python 或 Zig。macOS 使用系统 SQLite；Linux/Windows 发布构建静态链接 SQLite。
 
 ---
 

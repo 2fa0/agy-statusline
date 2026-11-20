@@ -260,6 +260,7 @@ cd agy-statusline/desktop-panel
 前往本仓库的 [Releases](https://github.com/2fa0/agy-statusline/releases) 页面，下载对应平台的压缩包并解压：
 
 - **Linux (x64)**: `agy-statusline-linux-x64.tar.gz`
+- **Linux (arm64 / aarch64)**: `agy-statusline-linux-arm64.tar.gz`
 - **macOS (Apple Silicon / arm64)**: `agy-statusline-macos-arm64.tar.gz`
 - **Windows (x64)**: `agy-statusline-windows-x64.zip`
 
@@ -313,7 +314,7 @@ Windows 示例（注意路径分隔符转义或使用正斜杠）：
 - **macOS**（使用系统 clang 和 SQLite）：
   在本目录运行 `./build.sh`；如果 Zig 不在 `PATH` 中，运行 `ZIG=/path/to/zig ./build.sh`。
   构建完可以直接在仓库根目录运行 `./install.sh`（本地源码模式）把 CLI 和面板一起装好，无需联网。
-- **Release 静态构建**（Linux x64 / Windows x64）：
+- **Release 静态构建**（Linux x64 / Linux arm64 / Windows x64）：
   参考 [`.github/workflows/release.yml`](.github/workflows/release.yml) 中使用 SQLite amalgamation 静态链接的方式。
 
 两个二进制都支持 `--version`，版本号来自仓库根目录的 `VERSION` 文件（单一来源，`./install.sh --doctor` 会交叉核对）。

@@ -138,7 +138,12 @@ class NativeTests(unittest.TestCase):
         source = (PANEL / 'install.sh').read_text()
         prepare = source[source.index('prepare_backend() {'):source.index('\nSCRIPT_SOURCE=')]
         import platform
-        target = {('Darwin', 'arm64'): 'macos-arm64', ('Linux', 'x86_64'): 'linux-x64'}.get((platform.system(), platform.machine()), 'local')
+        target = {
+            ('Darwin', 'arm64'): 'macos-arm64',
+            ('Linux', 'x86_64'): 'linux-x64',
+            ('Linux', 'aarch64'): 'linux-arm64',
+            ('Linux', 'arm64'): 'linux-arm64',
+        }.get((platform.system(), platform.machine()), 'local')
         (self.root / 'bin' / target).mkdir(parents=True)
         (self.root / 'sidecars' / 'status').mkdir(parents=True)
         import shutil

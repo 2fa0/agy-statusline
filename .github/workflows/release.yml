@@ -50,6 +50,51 @@ jobs:
           name: agy-statusline-linux-x64
           path: agy-statusline-linux-x64.tar.gz
 
+  build-linux-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Download SQLite amalgamation
+        run: |
+          curl -fsSL https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip -o sqlite.zip
+          unzip -q sqlite.zip
+      - name: Build linux-arm64
+        run: |
+          zig build-exe main.zig \
+            -cflags -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -- \
+            sqlite-amalgamation-3490100/sqlite3.c \
+            -I sqlite-amalgamation-3490100 \
+            -target aarch64-linux-musl -O ReleaseFast -lc \
+            -femit-bin=agy-statusline
+          tar -czf agy-statusline-linux-arm64.tar.gz agy-statusline
+      - name: Build native desktop backend (linux-arm64)
+        run: |
+          cp VERSION desktop-panel/VERSION  # backend.zig embeds it via @embedFile
+          rm -rf .zig-cache
+          zig build-exe desktop-panel/backend.zig \
+            -cflags -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -- \
+            sqlite-amalgamation-3490100/sqlite3.c \
+            -I sqlite-amalgamation-3490100 \
+            -target aarch64-linux-musl -O ReleaseSafe -lc \
+            -femit-bin=agy-desktop-backend
+          for s in llvm-strip aarch64-linux-gnu-strip; do
+            if command -v "$s" >/dev/null 2>&1; then
+              "$s" agy-desktop-backend
+              break
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-desktop-backend-linux-arm64
+          path: agy-desktop-backend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-statusline-linux-arm64
+          path: agy-statusline-linux-arm64.tar.gz
+
   build-macos-arm64:
     runs-on: macos-latest
     steps:
@@ -142,7 +187,7 @@ jobs:
           path: agy-statusline-windows-x64.zip
 
   package-desktop-plugin:
-    needs: [build-linux-x64, build-macos-arm64, build-windows-x64]
+    needs: [build-linux-x64, build-linux-arm64, build-macos-arm64, build-windows-x64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -176,11 +221,11 @@ jobs:
             --exclude '.DS_Store' \
             --exclude 'VERSION' \
             desktop-panel/ staging/agy-desktop-status/
-          for platform in macos-arm64 linux-x64 windows-x64; do
+          for platform in macos-arm64 linux-x64 linux-arm64 windows-x64; do
             mkdir -p "staging/agy-desktop-status/bin/$platform"
             cp native-backends/agy-desktop-backend-$platform/* "staging/agy-desktop-status/bin/$platform/"
           done
-          chmod +x staging/agy-desktop-status/install.sh staging/agy-desktop-status/bin/macos-arm64/agy-desktop-backend staging/agy-desktop-status/bin/linux-x64/agy-desktop-backend
+          chmod +x staging/agy-desktop-status/install.sh staging/agy-desktop-status/bin/macos-arm64/agy-desktop-backend staging/agy-desktop-status/bin/linux-x64/agy-desktop-backend staging/agy-desktop-status/bin/linux-arm64/agy-desktop-backend
           tar -C staging -czf agy-desktop-status-plugin.tar.gz agy-desktop-status
           (cd staging && zip -qr ../agy-desktop-status-plugin.zip agy-desktop-status)
       - uses: actions/upload-artifact@v4
@@ -191,7 +236,7 @@ jobs:
             agy-desktop-status-plugin.zip
 
   release:
-    needs: [build-linux-x64, build-macos-arm64, build-windows-x64, package-desktop-plugin]
+    needs: [build-linux-x64, build-linux-arm64, build-macos-arm64, build-windows-x64, package-desktop-plugin]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -220,6 +265,7 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: |
             dist/agy-statusline-linux-x64.tar.gz
+            dist/agy-statusline-linux-arm64.tar.gz
             dist/agy-statusline-macos-arm64.tar.gz
             dist/agy-statusline-windows-x64.zip
             dist/agy-desktop-status-plugin.tar.gz
