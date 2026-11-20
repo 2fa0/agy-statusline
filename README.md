@@ -1,5 +1,7 @@
 # agy-statusline — Google Antigravity CLI & Desktop 状态监控套件
 
+中文 | [English](./README.en.md)
+
 > **Google Antigravity (`agy` CLI & Antigravity 2.0 Desktop)** 专属的**本地会话只读、零外部网络请求**性能与额度遥测套件。
 > 实时查看 **输出速度 (`tok/s`)**、**Prompt 缓存命中率**、**上下文窗口与压缩曲线**、**按模型用量统计** 以及 **5h / 周额度绝对重置时间**。
 
@@ -12,25 +14,25 @@
   <img src="https://img.shields.io/badge/Memory-~3--7%20MB%20RSS-10b981?style=flat-square" alt="Memory ~3-7 MB RSS" />
 </p>
 
-## 实景预览（CLI & Desktop 双端并排）
+## 实景预览（Desktop & CLI 双端并排）
 
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>Antigravity CLI (<code>agy</code>) 终端状态栏</strong><br />
-      <sub>Zig 单二进制 · 零依赖 · 终端底部原生集成</sub>
-    </td>
-    <td width="50%" align="center">
       <strong>Antigravity 2.0 Desktop 右侧常驻面板</strong><br />
       <sub>官方 <code>AUX_PANE</code> Sidecar · 实时速度 · 交互式趋势图</sub>
+    </td>
+    <td width="50%" align="center">
+      <strong>Antigravity CLI (<code>agy</code>) 终端状态栏</strong><br />
+      <sub>Zig 单二进制 · 零依赖 · 终端底部原生集成</sub>
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="./desktop-panel/assets/cli-preview.png" alt="agy-statusline CLI 终端状态栏实景预览" width="100%" />
+      <img src="./desktop-panel/assets/desktop-preview.png" alt="AGY Desktop Status 右侧常驻面板实景预览" width="100%" />
     </td>
     <td width="50%">
-      <img src="./desktop-panel/assets/desktop-preview.png" alt="AGY Desktop Status 右侧常驻面板实景预览" width="100%" />
+      <img src="./desktop-panel/assets/cli-preview.png" alt="agy-statusline CLI 终端状态栏实景预览" width="100%" />
     </td>
   </tr>
 </table>
