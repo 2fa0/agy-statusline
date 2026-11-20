@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 
@@ -203,15 +203,14 @@ def _open_sqlite_ro(db_path: Path) -> Optional[sqlite3.Connection]:
 
 def _read_gen_records(
     conn: sqlite3.Connection, limit: int = 12, schema: Optional[DbSchema] = None
-) -> list[GenRecord]:
+) -> Iterator[GenRecord]:
     schema = schema or _detect_schema(conn)
     if not schema.has_gen_metadata:
-        return []
+        return
     rows = conn.execute(
         "SELECT idx, data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC LIMIT ?",
         (limit,),
-    ).fetchall()
-    out: list[GenRecord] = []
+    )
     for idx, blob in rows:
         if isinstance(blob, memoryview):
             blob = bytes(blob)
@@ -219,8 +218,7 @@ def _read_gen_records(
             continue
         rec = parse_gen_metadata_blob(int(idx), bytes(blob))
         if rec is not None:
-            out.append(rec)
-    return out
+            yield rec
 
 
 def _usage_from_metadata(blob: Any) -> Optional[dict[str, int]]:
@@ -384,59 +382,17 @@ def _parse_iso_ts(raw: Any) -> Optional[datetime]:
 def parse_transcript_timing(transcript_path: Path) -> dict[str, Any]:
     if not transcript_path.is_file():
         return {}
-    first_ts: Optional[datetime] = None
-    last_ts: Optional[datetime] = None
-    last_user_ts: Optional[datetime] = None
-    step_count = 0
-    turn_count = 0
-    last_user_preview = ""
+    tracker = TranscriptTracker(transcript_path)
     try:
-        with transcript_path.open("r", encoding="utf-8", errors="ignore") as fh:
+        with transcript_path.open("r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
                 try:
-                    item = json.loads(line)
+                    tracker._ingest(json.loads(line))
                 except ValueError:
                     continue
-                if not isinstance(item, dict):
-                    continue
-                step_count += 1
-                ts = _parse_iso_ts(item.get("created_at"))
-                if ts is not None:
-                    if first_ts is None or ts < first_ts:
-                        first_ts = ts
-                    if last_ts is None or ts > last_ts:
-                        last_ts = ts
-                step_type = str(item.get("type") or "")
-                source = str(item.get("source") or "")
-                if step_type == "USER_INPUT" or source == "USER_EXPLICIT":
-                    turn_count += 1
-                    if ts is not None:
-                        last_user_ts = ts
-                    content = str(item.get("content") or "").strip().splitlines()
-                    if content:
-                        last_user_preview = content[0][:60]
     except OSError:
         return {}
-
-    session_sec = (last_ts - first_ts).total_seconds() if (first_ts and last_ts) else None
-    turn_sec = (last_ts - last_user_ts).total_seconds() if (last_user_ts and last_ts) else None
-    if session_sec is not None and session_sec < 0:
-        session_sec = None
-    if turn_sec is not None and turn_sec < 0:
-        turn_sec = None
-
-    return {
-        "sessionDurationSec": session_sec,
-        "turnDurationSec": turn_sec,
-        "turnCount": turn_count,
-        "stepCount": step_count,
-        "lastUserPreview": last_user_preview,
-        "lastActivityAt": last_ts.isoformat() if last_ts else None,
-        "lastUserInputAt": last_user_ts.isoformat() if last_user_ts else None,
-    }
+    return tracker.snapshot()
 
 
 def infer_context_window_size(model_name: str) -> Optional[int]:
@@ -660,6 +616,39 @@ def _detect_schema(conn: sqlite3.Connection) -> DbSchema:
     )
 
 
+def _token_count(value: Any) -> Optional[int]:
+    return value if type(value) is int and 0 <= value <= 2**53 - 1 else None
+
+
+def _model_key(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "未知模型"
+    # These suffixes describe effort, not different served models.
+    return re.sub(r"-(minimal|low|medium|high|max)$", "", value.strip())
+
+
+def _empty_usage() -> dict[str, Any]:
+    return {
+        "requestCount": 0,
+        "recordedCount": 0,
+        "inputTokens": 0,
+        "cacheReadTokens": 0,
+        "outputTokens": 0,
+    }
+
+
+def _usage_summary(usage: dict[str, Any]) -> dict[str, Any]:
+    result = dict(usage)
+    recorded = result["recordedCount"]
+    total_input = result["inputTokens"] + result["cacheReadTokens"]
+    result["totalTokens"] = total_input + result["outputTokens"] if recorded else None
+    result["cacheHitPct"] = 100.0 * result["cacheReadTokens"] / total_input if total_input else None
+    if not recorded:
+        for key in ("inputTokens", "cacheReadTokens", "outputTokens"):
+            result[key] = None
+    return result
+
+
 class TranscriptTracker:
     """Line-incremental reader for transcript.jsonl.
 
@@ -681,6 +670,11 @@ class TranscriptTracker:
         self.step_count = 0
         self.turn_count = 0
         self.last_user_preview = ""
+        self.usage = _empty_usage()
+        self.model_usage: dict[str, dict[str, Any]] = {}
+        self.context_history: list[dict[str, Any]] = []
+        self.compaction_count = 0
+        self.latest_usage: Optional[dict[str, Any]] = None
 
     def _ingest(self, item: Any) -> None:
         if not isinstance(item, dict):
@@ -701,6 +695,36 @@ class TranscriptTracker:
             content = str(item.get("content") or "").strip().splitlines()
             if content:
                 self.last_user_preview = content[0][:60]
+
+        if step_type not in ("PLANNER_RESPONSE", "CHECKPOINT") or item.get("status") != "DONE":
+            return
+        model = _model_key(item.get("model"))
+        group = self.model_usage.setdefault(model, _empty_usage())
+        values = [_token_count(item.get(k)) for k in ("input_tokens", "cache_read_tokens", "output_tokens")]
+        for usage in (self.usage, group):
+            usage["requestCount"] += 1
+            if all(v is not None for v in values):
+                usage["recordedCount"] += 1
+                for key, val in zip(("inputTokens", "cacheReadTokens", "outputTokens"), values):
+                    usage[key] += val
+        checkpoint = step_type == "CHECKPOINT"
+        if not checkpoint:
+            self.latest_usage = {"inputTokens": values[0], "cacheReadTokens": values[1], "outputTokens": values[2]}
+            inp = sum(values[:2]) if all(v is not None for v in values[:2]) else 0
+            self.latest_usage["cacheHitPct"] = 100.0 * values[1] / inp if inp else None
+            self.latest_usage["totalTokens"] = sum(values) if all(v is not None for v in values) else None
+        if checkpoint:
+            self.compaction_count += 1
+        self.context_history.append({
+            "request": self.usage["requestCount"],
+            "stepIdx": item.get("step_index") if type(item.get("step_index")) is int else None,
+            "at": ts.isoformat() if ts else None,
+            "model": model,
+            "contextUsed": sum(values[:2]) if not checkpoint and all(v is not None for v in values[:2]) else None,
+            "compaction": checkpoint,
+        })
+        # Keep the panel response bounded; session totals still cover the whole log.
+        self.context_history = self.context_history[-120:]
 
     def update(self) -> dict[str, Any]:
         with self.path.open("rb") as fh:
@@ -749,6 +773,11 @@ class TranscriptTracker:
             "lastUserPreview": self.last_user_preview,
             "lastActivityAt": self.last_ts.isoformat() if self.last_ts else None,
             "lastUserInputAt": self.last_user_ts.isoformat() if self.last_user_ts else None,
+            "sessionUsage": _usage_summary(self.usage),
+            "latestUsage": self.latest_usage,
+            "modelUsage": [{"model": model, **_usage_summary(usage)} for model, usage in self.model_usage.items()],
+            "contextHistory": list(self.context_history),
+            "compactionCount": self.compaction_count,
         }
 
 
@@ -1028,6 +1057,7 @@ def build_status_snapshot(
             return cached
 
     gen_records: list[GenRecord] = []
+    speeds: dict[str, tuple[int, float, int]] = {}
     steps_usage: Optional[dict[str, int]] = None
     live_step: Optional[dict[str, Any]] = None
     chars_per_token: Optional[float] = None
@@ -1044,7 +1074,15 @@ def build_status_snapshot(
                 conn = _open_sqlite_ro(db_path)
             if conn is not None:
                 db_readable = True
-                gen_records = _read_gen_records(conn, limit=12, schema=schema)
+                # Aggregate all samples without retaining the session's raw blobs
+                # or decoded records. Only the recent chart needs individual rows.
+                for rec in _read_gen_records(conn, limit=-1, schema=schema):
+                    if len(gen_records) < 12:
+                        gen_records.append(rec)
+                    if rec.served_model and rec.speed_tok_s is not None and rec.output_tokens:
+                        key = _model_key(rec.served_model)
+                        tokens, seconds, count = speeds.get(key, (0, 0.0, 0))
+                        speeds[key] = (tokens + rec.output_tokens, seconds + rec.output_tokens / rec.speed_tok_s, count + 1)
                 steps_usage = _read_latest_steps_usage(conn, limit=40, schema=schema)
                 live_step = _read_live_step(conn, schema)
                 if live_step is not None:
@@ -1140,8 +1178,15 @@ def build_status_snapshot(
             else None,
             "model": rec.served_model or model_name,
         }
-        for rec in gen_records
+        for rec in gen_records[:12]
     ]
+
+    model_usage = timing.get("modelUsage", [])
+    model_usage = [dict(group) for group in model_usage]
+    for group in model_usage:
+        tokens, seconds, count = speeds.get(group["model"], (0, 0.0, 0))
+        group["avgSpeedTokS"] = round(tokens / seconds, 1) if seconds else None
+        group["speedSamples"] = count
 
     workspace_paths = session_meta.get("workspacePaths") or []
     workspace_name = ""
@@ -1180,6 +1225,11 @@ def build_status_snapshot(
         "inputTokens": input_tokens,
         "outputTokens": output_tokens,
         "usageSource": usage_source,
+        "sessionUsage": timing.get("sessionUsage"),
+        "latestUsage": timing.get("latestUsage"),
+        "modelUsage": model_usage,
+        "contextHistory": timing.get("contextHistory", []),
+        "compactionCount": timing.get("compactionCount"),
         "history": history,
         "lastActivityAt": timing.get("lastActivityAt"),
         "recentConversations": recent if recent is not None else list_recent_conversations(root, hook_state),

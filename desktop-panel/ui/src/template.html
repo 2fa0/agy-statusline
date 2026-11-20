@@ -14,8 +14,8 @@
       --agy-fg-muted: var(--color-text-secondary, var(--muted-foreground, #5d676f));
       --agy-fg-faint: var(--color-text-tertiary, var(--placeholder, #9da5ab));
       --agy-border: var(--color-border-primary, var(--border, rgba(0, 0, 0, 0.1)));
-      --agy-accent: var(--color-ring-primary, var(--primary, #2563eb));
-      --agy-accent-soft: rgba(37, 99, 235, 0.12);
+      --agy-accent: #1677ff;
+      --agy-accent-soft: rgba(22, 119, 255, 0.12);
       --agy-warn-bg: var(--color-background-warning, rgba(234, 179, 8, 0.12));
       --agy-warn-border: var(--color-border-warning, rgba(202, 138, 4, 0.4));
       --agy-warn-fg: var(--color-text-warning, #a16207);
@@ -31,8 +31,8 @@
       --agy-fg-muted: var(--color-text-secondary, var(--muted-foreground, #9ca3af));
       --agy-fg-faint: var(--color-text-tertiary, var(--placeholder, #6b7280));
       --agy-border: var(--color-border-primary, var(--border, rgba(255, 255, 255, 0.12)));
-      --agy-accent: var(--color-ring-primary, var(--primary, #3b82f6));
-      --agy-accent-soft: rgba(59, 130, 246, 0.18);
+      --agy-accent: #3898ff;
+      --agy-accent-soft: rgba(56, 152, 255, 0.18);
       --agy-warn-bg: var(--color-background-warning, rgba(234, 179, 8, 0.14));
       --agy-warn-border: var(--color-border-warning, rgba(234, 179, 8, 0.45));
       --agy-warn-fg: var(--color-text-warning, #facc15);
@@ -120,34 +120,77 @@
     }
     .meta-strip {
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      gap: 6px;
+      gap: 8px;
       font-size: 11px;
       color: var(--agy-fg-muted);
+      min-height: 20px;
     }
-    .pills-wrap {
+    .meta-main {
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .meta-text {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .updated-tag {
       font-size: 11px;
       color: var(--agy-fg-faint);
       font-variant-numeric: tabular-nums;
-      margin-left: auto;
+      flex: 0 0 auto;
     }
     .pill {
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      padding: 2px 7px;
+      padding: 1px 7px;
       border-radius: 999px;
       background: var(--agy-card);
       border: 1px solid var(--agy-border);
       font-size: 11px;
+      flex: 0 0 auto;
+    }
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 3px;
+      padding: 3px;
+      background: var(--agy-subtle);
+      border-radius: 8px;
+      border: 1px solid var(--agy-border);
+    }
+    .tab-btn {
+      border: none;
+      background: transparent;
+      color: var(--agy-fg-muted);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 8px;
+      border-radius: 6px;
+      transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .tab-btn:hover {
+      background: transparent;
+      color: var(--agy-fg);
+    }
+    .tab-btn.active {
+      background: var(--agy-card);
+      color: var(--agy-fg);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+    }
+    .tab-panel {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .tab-panel.active {
+      display: flex;
     }
     .grid {
       display: grid;
@@ -415,6 +458,55 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .usage-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+    .usage-total { font-size: 18px; font-weight: 600; margin: 2px 0 4px; }
+    .usage-total small { font-size: 11px; font-weight: 400; color: var(--agy-fg-muted); }
+    .stats-label { color: var(--agy-fg-muted); font-size: 11px; }
+    .stats-note { color: var(--agy-fg-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+    .model-stat {
+      font-size: 11px;
+      border-top: 1px solid var(--agy-border);
+      padding-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      overflow-wrap: anywhere;
+    }
+    .model-stat-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .model-stat-metrics {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .model-stat .usage-total { font-size: 15px; margin: 0; }
+    .context-chart { width: 100%; height: auto; display: block; color: var(--agy-accent); overflow: visible; }
+    .context-chart text { font-size: 10px; fill: var(--agy-fg-muted); font-variant-numeric: tabular-nums; }
+    .context-chart .ctx-grid { stroke: var(--agy-border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .context-chart .ctx-line { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+    .context-chart .ctx-compaction { stroke: var(--agy-warn-fg); stroke-width: 1.25; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+    .context-chart .ctx-dot { fill: var(--agy-card); stroke: currentColor; stroke-width: 1.5; vector-effect: non-scaling-stroke; transition: r 0.1s ease; }
+    .context-chart .ctx-dot.active { fill: currentColor; }
+    .context-chart .ctx-guide { stroke: var(--agy-accent); stroke-opacity: 0.35; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0; }
+    .context-chart .ctx-guide.active { opacity: 1; }
+    .context-chart .ctx-hit { fill: transparent; cursor: pointer; }
+    .context-records { font-size: 11px; line-height: 1.75; overflow-wrap: anywhere; margin-top: 6px; }
+    .section details summary { cursor: pointer; font-size: 11px; color: var(--agy-fg-muted); user-select: none; }
+    .section details summary:hover { color: var(--agy-fg); }
+    .section details summary:focus-visible { outline: 2px solid var(--agy-accent); outline-offset: 2px; }
+    .section details[open] .history-list { margin-top: 6px; }
+    @media (max-width: 360px) { .usage-grid { grid-template-columns: 1fr; } }
     .empty {
       padding: 18px 12px;
       text-align: center;
@@ -427,17 +519,17 @@
   <div class="shell">
     <div class="toolbar">
       <div class="session-row">
-        <span id="live-dot" class="dot" title="Hook state"></span>
+        <span id="live-dot" class="dot" title="Hook 状态"></span>
         <select id="session-select" aria-label="Select conversation">
           <option value="auto">自动跟随当前活跃会话</option>
         </select>
       </div>
       <div class="controls">
-        <select id="refresh-select" class="refresh-select active" aria-label="自动刷新间隔" title="设置自动刷新间隔">
-          <option value="3" selected>自动刷新: 3s</option>
-          <option value="5">自动刷新: 5s</option>
-          <option value="10">自动刷新: 10s</option>
-          <option value="0">自动刷新: 关闭</option>
+        <select id="refresh-select" class="refresh-select active" aria-label="自动刷新间隔" title="自动刷新间隔">
+          <option value="3" selected>3s</option>
+          <option value="5">5s</option>
+          <option value="10">10s</option>
+          <option value="0">暂停</option>
         </select>
       </div>
     </div>
@@ -446,25 +538,46 @@
 
     <div id="cards" class="grid"></div>
 
-    <div id="history-section" class="section" style="display:none">
-      <div class="section-title">
-        <span>近期生成速度趋势</span>
-        <span id="history-count" class="muted"></span>
+    <div id="tab-bar" class="tabs" role="tablist">
+      <button type="button" class="tab-btn active" data-tab="trends" role="tab" aria-selected="true">趋势</button>
+      <button type="button" class="tab-btn" data-tab="usage" role="tab" aria-selected="false">用量</button>
+      <button type="button" class="tab-btn" data-tab="quota" role="tab" aria-selected="false">额度</button>
+    </div>
+
+    <div id="panel-trends" class="tab-panel active" data-panel="trends">
+      <div id="history-section" class="section" style="display:none">
+        <div class="section-title">
+          <span>输出速度趋势</span>
+          <span id="history-count" class="muted"></span>
+        </div>
+        <div id="spark-detail" class="spark-detail"></div>
+        <div id="spark" class="spark"></div>
+        <details>
+          <summary>近期明细</summary>
+          <div id="history-list" class="history-list"></div>
+        </details>
       </div>
-      <div id="spark-detail" class="spark-detail"></div>
-      <div id="spark" class="spark"></div>
-      <div id="history-list" class="history-list"></div>
+
+      <div id="context-section" class="section" style="display:none"></div>
+    </div>
+
+    <div id="panel-usage" class="tab-panel" data-panel="usage">
+      <div id="usage-section" class="section" style="display:none"></div>
+      <div id="models-section" class="section" style="display:none"></div>
+    </div>
+
+    <div id="panel-quota" class="tab-panel" data-panel="quota">
+      <div id="quota-section" class="section" style="display:none">
+        <div class="section-title">
+          <span>额度重置时间</span>
+          <span id="quota-note" class="muted"></span>
+        </div>
+        <div id="quota-list" class="quota-list"></div>
+      </div>
+      <div id="quota-empty" class="section empty" style="display:none">暂无额度重置数据，运行一次 agy CLI 后自动同步。</div>
     </div>
 
     <div id="empty-box" class="section empty" style="display:none"></div>
-
-    <div id="quota-section" class="section" style="display:none">
-      <div class="section-title">
-        <span>额度重置时间</span>
-        <span id="quota-note" class="muted"></span>
-      </div>
-      <div id="quota-list" class="quota-list"></div>
-    </div>
   </div>
   <!-- INLINE_SCRIPT -->
 </body>

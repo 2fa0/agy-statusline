@@ -1,27 +1,120 @@
 # agy-statusline — Google Antigravity CLI & Desktop 状态监控套件
 
-一套轻量、零外部依赖、**100% 本地只读（Zero Network）** 的 **Google Antigravity** 状态栏与性能遥测工具，同时支持 **Antigravity CLI (`agy`)** 与 **Antigravity 2.0 桌面端（Desktop 右侧辅助栏常驻面板）**：
+> **Google Antigravity (`agy` CLI & Antigravity 2.0 Desktop)** 专属的**本地会话只读、零外部网络请求**性能与额度遥测套件。
+> 实时查看 **输出速度 (`tok/s`)**、**Prompt 缓存命中率**、**上下文窗口与压缩曲线**、**按模型用量统计** 以及 **5h / 周额度绝对重置时间**。
 
-| 形态 | 适用场景 | 核心展示指标 | 目录 / 产物 |
-| :--- | :--- | :--- | :--- |
-| **CLI 状态栏 (`agy-statusline`)** | Antigravity CLI (`agy`) 终端底部 `statusLine` | 模型剩余额度（Gemini / Argon / Claude）、上下文窗口占用（`Ctx`）、Prompt 缓存命中率（`Cache hit`）、平均输出速度（`tok/s`） | 根目录 [main.zig](./main.zig) |
-| **Desktop 右侧面板 (`AGY Desktop Status`)** | Antigravity 2.0 桌面端右侧辅助栏常驻 Tab | 生成中的实时输出速度（字/s → ≈tok/s）、上下文占用（`Ctx`）、周额度 / 5h 额度重置时间（绝对本地时间）、平均输出速度 & 速度趋势图、轮次/会话耗时、Prompt 缓存命中率 | [desktop-panel/](./desktop-panel/) |
+<p align="left">
+  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/Antigravity-CLI%20%26%20Desktop%202.0-6366f1?style=flat-square" alt="Antigravity CLI & Desktop 2.0" />
+  <img src="https://img.shields.io/badge/Network-Zero%20Network%20(100%25%20Local)-16a34a?style=flat-square" alt="Zero Network" />
+  <img src="https://img.shields.io/badge/Compliance-Official%20Extension%20API-0ea5e9?style=flat-square" alt="Official Extension API" />
+  <img src="https://img.shields.io/badge/Built%20with-Zig%20%2B%20Python-f59e0b?style=flat-square" alt="Built with Zig + Python" />
+</p>
 
-> [!NOTE]
-> **合规与隐私说明**：本仓库中的所有工具均严格基于 Google Antigravity 官方开放的扩展机制（CLI `statusLine` 扩展、Desktop `Plugin` / `UI Sidecar` / `Lifecycle Hooks`）构建。**全程零外部网络请求、不读取任何 OAuth Token 或 API 凭据、不调用或探测任何未公开的内部 RPC 接口、不修改客户端文件、不绕过任何 Google / Antigravity 配额或权限限制**。所有统计数据仅以只读方式（SQLite `mode=ro` & `PRAGMA query_only = ON`）解析本地已落盘的会话记录。
+## 实景预览（CLI & Desktop 双端并排）
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <strong>Antigravity CLI (<code>agy</code>) 终端状态栏</strong><br />
+      <sub>Zig 单二进制 · 零依赖 · 终端底部原生集成</sub>
+    </td>
+    <td width="50%" align="center">
+      <strong>Antigravity 2.0 Desktop 右侧常驻面板</strong><br />
+      <sub>官方 <code>AUX_PANE</code> Sidecar · 实时速度 · 交互式趋势图</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="./desktop-panel/assets/cli-preview.svg" alt="agy-statusline CLI 终端状态栏预览" width="100%" />
+    </td>
+    <td width="50%">
+      <img src="./desktop-panel/assets/desktop-preview.svg" alt="AGY Desktop Status 右侧常驻面板预览" width="100%" />
+    </td>
+  </tr>
+</table>
+
+---
+
+## 为什么选择 agy-statusline？（核心差异一览）
+
+| 维度 | 默认 Antigravity / 常见外部脚本 | `agy-statusline` |
+| :--- | :--- | :--- |
+| **双端原生覆盖** | 仅支持单端，或依赖额外悬浮窗/外部浏览器 | **CLI + Desktop 双端同源**：终端 `statusLine`（Zig）+ 桌面端右侧常驻 `AUX_PANE` 面板 |
+| **生成中实时速度** | 仅在整轮结束后查看耗时，或根本无速度显示 | **流式实时测速 (`≈ tok/s`)**：生成中 1s 轮询估算，结束后自动切换精确均值 + 12 次趋势柱状图（`<50 tok/s` 黄底告警） |
+| **额度重置时间** | 仅显示相对倒计时（如“剩 2 天 4 小时”） | **绝对本地重置时间**：直接换算为 `重置于 11/23 周一 11:29`，并自动区分 Gemini / Argon / Claude 3p 额度池 |
+| **上下文与压缩真相** | 只看当前占比，难以定位何时触发压缩 | **120 次交互式上下文曲线 + `CHECKPOINT` 压缩标记**（`Compact: N`），不猜阈值、不伪造数据 |
+| **缓存与模型拆分** | 缺少 Prompt 缓存命中率或按模型分拆 | **加权缓存命中率（`Cache hit` / `S.Cache`）+ 按模型统计 Token / 命中率 / 均速** |
+| **资源开销** | 常驻后台进程或依赖重型运行时 | **CLI 零依赖单文件**；桌面端常驻 Node + Python worker，使用文件指纹缓存与日志增量解析；空闲降频、隐藏暂停轮询，后台进程仍保留 |
+
+---
+
+## 数据访问与隐私说明
+
+> [!IMPORTANT]
+> **零外部网络请求 · 会话数据只读（Zero Network & Local Read-Only）**
+>
+> 1. **仅使用官方扩展入口**：通过 Google Antigravity 官方支持的扩展机制构建——CLI 使用 `statusLine` 扩展协议，Desktop 使用官方 `Plugin` / `UI Sidecar`（`SIDECAR_UI_ENTRYPOINT_AUX_PANE`）与 `Lifecycle Hooks`。
+> 2. **全程零外部网络请求**：不发起任何 HTTP / HTTPS / WebSocket 外联请求，不上传、不遥测任何对话或环境信息。
+> 3. **零凭据 / Token 接触**：不读取任何 OAuth Token、Cookie、Session Key 或 API 凭据。桌面端额度仅读取 CLI 状态栏自己落盘的本地快照 `quota.json`（仅含百分比与重置时间戳，不含任何账号或凭据）。
+> 4. **不探测内部接口、不修改客户端**：不调用或探测任何未公开的内部 RPC 接口，不修改 Antigravity 客户端任何文件，不绕过任何 Google / Antigravity 配额或权限限制。
+> 5. **严格本地只读**：SQLite 会话库连接强制使用 `mode=ro` 与 `PRAGMA query_only = ON`。
+>
+> *注：本地日志与 SQLite/protobuf 数据格式属于宿主内部落盘格式，而非稳定公开 API，宿主版本升级可能导致部分字段不可用。*
+
+---
+
+## 30 秒快速安装
+
+### 1. 安装 Desktop 右侧面板（macOS / Linux 一行命令）
+
+无需克隆代码、无需安装 Node.js 或编译前端（已内置预构建单文件 UI，需要已安装 `python3`）：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-panel/install.sh | bash
+```
+
+安装后重启 Antigravity Desktop，在任意对话右上角辅助栏点击 **`+` → `AGY Status`** 即可打开。
+
+### 2. 安装 CLI 状态栏（macOS / Linux 一行命令）
+
+使用 `curl` 下载到 `~/.gemini/antigravity-cli/`（相比浏览器下载，通常不会附加下载隔离属性）：
+
+- **macOS (Apple Silicon / arm64)**：
+  ```sh
+  mkdir -p ~/.gemini/antigravity-cli && curl -fsSL https://github.com/2fa0/agy-statusline/releases/latest/download/agy-statusline-macos-arm64.tar.gz | tar -xz -C ~/.gemini/antigravity-cli && chmod +x ~/.gemini/antigravity-cli/agy-statusline
+  ```
+- **Linux (x64)**：
+  ```sh
+  mkdir -p ~/.gemini/antigravity-cli && curl -fsSL https://github.com/2fa0/agy-statusline/releases/latest/download/agy-statusline-linux-x64.tar.gz | tar -xz -C ~/.gemini/antigravity-cli && chmod +x ~/.gemini/antigravity-cli/agy-statusline
+  ```
+
+随后在 `~/.gemini/antigravity-cli/settings.json` 中加入：
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.gemini/antigravity-cli/agy-statusline",
+    "stack_with_default": true
+  }
+}
+```
+
+> Windows 用户或需更多安装方式，请继续阅读下方完整说明。
 
 ---
 
 ## 一、Antigravity 2.0 桌面端右侧面板（`AGY Desktop Status`）
 
-在 Antigravity 2.0 桌面端右侧辅助栏提供常驻监控卡片与可交互速度趋势图（与对话画布同屏并排展示，不遮挡会话），支持**自动跟随当前活跃会话**、**自适应刷新（活跃时按所选的 `3s` / `5s` / `10s` 间隔刷新，空闲 15s，面板隐藏时暂停；也可选择 `关闭`）**、**深浅色主题自适应**以及手动切换历史会话。
+在 Antigravity 2.0 桌面端右侧辅助栏提供常驻监控卡片与可交互趋势图（与对话画布同屏并排展示，不遮挡会话），支持**自动跟随当前活跃会话**、**自适应刷新（活跃时按 `3s` / `5s` / `10s` 刷新，空闲 15s，面板隐藏时暂停；也可选择 `关闭`）**、**深浅色主题自适应**以及手动切换历史会话。
 
 > [!NOTE]
 > 入口为官方 `SIDECAR_UI_ENTRYPOINT_AUX_PANE`。Antigravity 2.x 的 sidecar UI 只有 `AUX_PANE` / `FULL_PANE` / `SIDEBAR` 三种入口，**不支持顶栏挂载**，因此无法把状态条贴到窗口上边栏。
 
 ### 生成中实时速度（`实时输出速度`）
 
-模型正在回话时，面板会把“平均输出速度”卡片切成实时模式：标题变成 `实时输出速度` 并打上呼吸点，数值是**正在生成的这一步**的速度，浅色页头也会多一个 `生成中 · Ns` 的胶囊：
+模型正在回话时，面板会把“输出速度”卡片切成实时模式：标题变成 `实时输出速度` 并打上呼吸点，数值是**正在生成的这一步**的速度，浅色页头也会多一个 `生成中 · Ns` 的胶囊：
 
 ```
 实时输出速度                                    tok/s
@@ -35,7 +128,7 @@
 
 ### 额度重置时间（不再自己换算 “还剩 2 天 4 小时”）
 
-面板里的 **额度重置时间** 区块把周额度 / 5h 额度的重置写成具体本地时间，例如：
+面板里的 **额度** 标签页把周额度 / 5h 额度的重置写成具体本地时间，例如：
 
 ```
 Gemini  周额度    88%   重置于 11/23 周一 11:29 · 剩 3 天 1 小时
@@ -48,20 +141,19 @@ Gemini  5h 额度   96%   重置于 今天 11:29 · 剩 1 小时 58 分
 - 只包含百分比与重置时间戳，**不含 token、账号或任何凭据**；
 - 长时间没跑过 `agy` CLI 时，面板会按 5h / 7 天的周期把重置时间推算到下一次，并标注「快照 X 天前 · 时间按周期推算」，百分比也会标记为旧数据。
 
+### 会话用量、上下文趋势与模型统计
 
-![AGY Desktop Status 右侧常驻面板预览](./desktop-panel/assets/desktop-preview.svg)
+桌面面板包含三组深度统计，均只读取本地记录，不调用内部 RPC：
 
-### 傻瓜式安装（三种方式任选其一）
+- **上下文趋势与压缩事件**：显示最近最多 120 次已完成请求的输入上下文曲线，虚线标出 `status=DONE` 的 `CHECKPOINT`。压缩次数覆盖整份日志；上下文变小不自动算作压缩，也不预设 256k 等压缩阈值。可展开近期记录查看本地时间与数值。
+- **最近回复请求 / 会话累计**：在 **用量** 标签页并列展示 token 用量和缓存命中率。累计包含已完成的 `PLANNER_RESPONSE` 与 `CHECKPOINT`；token 按日志的 `input_tokens + cache_read_tokens + output_tokens` 相加，不包含未记录的缓存写入。重复发送的输入会按每次请求累计，并非去重后的上下文大小。
+- **按模型统计**：分别展示 token、缓存命中率和平均输出速度；合并同模型的思考档位后缀，缺失模型归入“未知模型”，不使用当前模型回填历史。速度来自本地数据库中能匹配模型的有效样本，按输出总量 / 耗时总量计算，并注明样本数。
 
-#### 方式 1：一行命令自动安装（macOS / Linux，最推荐）
+只有输入、缓存读取、输出三个字段均有效的请求才进入累计，界面显示“已记录 / 总请求数”覆盖情况。会话缓存命中率为有效请求的缓存读取总量 /（未缓存输入总量 + 缓存读取总量），不是各次百分比的平均。日志缺失时显示未知；缺少速度数据不从日志时间差猜测。
 
-无需克隆代码、无需安装 Node.js 或编译前端（已内置预构建单文件 UI，仅需系统自带的 `python3`）：
+### 桌面端更多安装与卸载方式
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-panel/install.sh | bash
-```
-
-#### 方式 2：从 Releases 下载插件包安装（macOS / Linux / Windows）
+#### 从 Releases 下载插件包安装（macOS / Linux / Windows）
 
 1. 前往 [Releases](https://github.com/2fa0/agy-statusline/releases) 页面下载桌面端插件包：
    - macOS / Linux：`agy-desktop-status-plugin.tar.gz`
@@ -80,7 +172,7 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-pa
      powershell -ExecutionPolicy Bypass -File .\install.ps1
      ```
 
-#### 方式 3：克隆源码安装（适合开发者自定义修改）
+#### 克隆源码安装（适合开发者自定义修改）
 
 ```sh
 git clone https://github.com/2fa0/agy-statusline.git
@@ -88,13 +180,7 @@ cd agy-statusline/desktop-panel
 ./install.sh --link   # 使用软链接安装，本地修改即时生效（默认也是软链接；加 --copy 则为独立拷贝）
 ```
 
-### 如何打开面板
-
-1. 安装完成后，**打开或重启 Antigravity Desktop**；
-2. 在任意对话窗口右上角辅助栏点击 **`+` 菜单** → 选择 **`AGY Status`**；
-3. 面板默认自动跟随当前活跃会话，活跃时按所选的 3/5/10 秒间隔刷新，空闲时自动降频到 15 秒。
-
-### 如何卸载桌面端插件
+#### 卸载桌面端插件
 
 - **macOS / Linux**：
   ```sh
@@ -113,43 +199,21 @@ cd agy-statusline/desktop-panel
 
 轻量、零依赖的 **Google Antigravity CLI (`agy`)** 自定义 `statusLine` 工具（基于 Zig 编写，支持 **macOS / Linux / Windows**），在终端宽度不足时自动折行对齐。
 
-![agy-statusline CLI 终端状态栏预览](./desktop-panel/assets/cli-preview.svg)
-
 ### 展示功能与特性
 
 - **缓存命中率与读取量**（`Cache hit` / `Cache read`）：命中率按 `缓存读取 /（未缓存输入 + 缓存读取）` 计算；缺失数据、输入为零或缓存写入非零时显示 `--`。该口径取决于模型和 AGY 提供的字段语义。
 - **上下文占用**（`Ctx: 已用/总上下文`）：优先使用当前轮 `current_usage` 中的输入与缓存 token 之和（缺失时回退到 `total_input_tokens`），对比 `context_window_size` 展示。
 - **平均输出速度**（`Last avg speed`）：最近一次已完成模型请求的平均输出速度，包含思考 token；通过只读查询当前会话数据库（`~/.gemini/antigravity-cli/conversations/<conversation_id>.db`）中的生成元数据计算，非实时速度；数据缺失、耗时过短或数值异常时显示 `--`。速度低于 `50 token/s` 时主状态栏切换为黄底黑字提示。
+- **压缩与会话日志累计**（`Compact: N` / `Log` / `S.Cache`）：显示压缩次数 `Compact: N`；终端宽度足够时再显示 `Log: … tok` 与 `S.Cache: …%`，分别代表与桌面端相同日志口径的会话累计 token 和加权缓存命中率（用量不完整时附带覆盖数量，例如 `2/3`）。
 - **模型剩余额度**（按 AGY 实际返回的 `quota` 字段动态展示，自动兼容 Free / Plus / Pro / Ultra 各档位）：
   - **Gemini**（青色背景）：展示 `5h · weekly` 双窗口（若仅有周额度则显示单值）。
   - **Argon**（亮青色背景）：Pro 套餐下独立计算周额度时单独展示；Ultra / Plus / Free 套餐无独立 Argon 池时自动隐藏。
   - **Claude / 第三方模型**（橙色背景，匹配 `3p` / `claude` / `gpt` / `anthropic`）：展示 `5h · weekly` 双窗口；无第三方池时自动隐藏。
   - 同时把本次 `quota` 快照（百分比 + 重置时间）写入 `~/.gemini/agy-statusline/quota.json`，供桌面端面板换算成绝对本地重置时间；路径可用 `AGY_STATUSLINE_QUOTA_FILE` 覆盖。
 
-### 使用方法
+### CLI 手动下载与配置说明
 
-#### 1. 下载可执行文件
-
-**方式 A：命令行 `curl` 一键下载（macOS / Linux 推荐）**
-
-使用 `curl` 下载并解压到 `~/.gemini/antigravity-cli/`，在 macOS 上**不会产生浏览器隔离属性（`com.apple.quarantine`）**，可直接避开 Gatekeeper 弹窗拦截：
-
-- **macOS (Apple Silicon / arm64)**：
-  ```sh
-  mkdir -p ~/.gemini/antigravity-cli
-  curl -fsSL https://github.com/2fa0/agy-statusline/releases/latest/download/agy-statusline-macos-arm64.tar.gz \
-    | tar -xz -C ~/.gemini/antigravity-cli
-  chmod +x ~/.gemini/antigravity-cli/agy-statusline
-  ```
-- **Linux (x64)**：
-  ```sh
-  mkdir -p ~/.gemini/antigravity-cli
-  curl -fsSL https://github.com/2fa0/agy-statusline/releases/latest/download/agy-statusline-linux-x64.tar.gz \
-    | tar -xz -C ~/.gemini/antigravity-cli
-  chmod +x ~/.gemini/antigravity-cli/agy-statusline
-  ```
-
-**方式 B：从 Releases 页面手动下载（macOS / Linux / Windows）**
+#### 1. 从 Releases 页面手动下载（macOS / Linux / Windows）
 
 前往本仓库的 [Releases](https://github.com/2fa0/agy-statusline/releases) 页面，下载对应平台的压缩包并解压：
 
@@ -164,10 +228,14 @@ tar -xzf agy-statusline-macos-arm64.tar.gz
 chmod +x agy-statusline
 ```
 
-> **macOS 提示**：Release 包中的 macOS 二进制已内置规范的 ad-hoc 代码签名（不会触发 Apple Silicon 的 `SIGKILL`）。但若通过**浏览器**手动下载，macOS 会附加 `com.apple.quarantine` 隔离属性导致首次运行被 Gatekeeper 拦截，执行以下命令清除即可：
-> ```sh
-> xattr -dr com.apple.quarantine /path/to/agy-statusline
-> ```
+> [!TIP]
+> **macOS 安装与签名说明**：
+> - **推荐优先使用上方的 `curl` 一行命令安装**：`curl` 通常不会附加 `com.apple.quarantine` 下载隔离属性。Release 内置 ad-hoc 代码签名，满足 Apple Silicon 的基本签名要求；这不等于 Developer ID 签名或 Apple 公证，也不能保证所有系统策略下均可运行。
+> - **若通过浏览器手动下载**：macOS 会附加 `com.apple.quarantine` 属性，导致首次运行被 Gatekeeper 拦截（由 `agy` 在后台静默调用时甚至不会弹窗，仅表现为状态栏无输出）。请执行以下命令清除隔离属性：
+>   ```sh
+>   xattr -dr com.apple.quarantine /path/to/agy-statusline
+>   ```
+> - **Intel Mac (`x86_64`) 或 macOS 13 以下系统**：Release 暂仅提供 `macos-arm64` 产物，请参考下方「从源码构建 CLI」使用 `./build.sh` 本地编译。
 
 #### 2. 配置 AGY CLI
 

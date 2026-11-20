@@ -1,3 +1,5 @@
+export {};
+
 interface GenHistoryItem {
   idx: number;
   speedTokS: number | null;
@@ -47,6 +49,31 @@ interface LiveState {
   observedAt?: string;
 }
 
+interface UsageSummary {
+  inputTokens: number | null;
+  cacheReadTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  cacheHitPct: number | null;
+  requestCount?: number;
+  recordedCount?: number;
+}
+
+interface ModelUsage extends UsageSummary {
+  model: string;
+  avgSpeedTokS?: number | null;
+  speedSamples?: number;
+}
+
+interface ContextPoint {
+  request: number;
+  stepIdx: number | null;
+  at: string | null;
+  model: string;
+  contextUsed: number | null;
+  compaction: boolean;
+}
+
 interface StatusSnapshot {
   found: boolean;
   conversationId: string;
@@ -71,6 +98,11 @@ interface StatusSnapshot {
   inputTokens?: number | null;
   outputTokens?: number | null;
   usageSource?: string;
+  latestUsage?: UsageSummary | null;
+  sessionUsage?: UsageSummary | null;
+  modelUsage?: ModelUsage[];
+  contextHistory?: ContextPoint[];
+  compactionCount?: number | null;
   history?: GenHistoryItem[];
   recentConversations?: RecentConversation[];
   quota?: QuotaSnapshot | null;
@@ -91,9 +123,11 @@ declare global {
 }
 
 const STORAGE_KEY_INTERVAL = 'agy_status_refresh_sec';
+const STORAGE_KEY_TAB = 'agy_status_active_tab';
 const ALLOWED_INTERVALS = new Set([0, 3, 5, 10]);
+const ALLOWED_TABS = new Set(['trends', 'usage', 'quota']);
 // Adaptive polling: follow the session closely while it is generating and back
-// off when it is idle, so an open-but-quiet panel stops costing anything.
+// off when it is idle to reduce repeated reads and rendering.
 const IDLE_POLL_MS = 15000;
 const IDLE_AFTER_SEC = 45;
 const LIVE_POLL_MS = 1000;
@@ -103,7 +137,10 @@ const refreshSelect = document.getElementById('refresh-select') as HTMLSelectEle
 const liveDot = document.getElementById('live-dot') as HTMLSpanElement;
 const metaStrip = document.getElementById('meta-strip') as HTMLDivElement;
 const cardsEl = document.getElementById('cards') as HTMLDivElement;
+const tabBar = document.getElementById('tab-bar') as HTMLDivElement;
+const tabPanels = Array.from(document.querySelectorAll<HTMLElement>('.tab-panel'));
 const quotaSection = document.getElementById('quota-section') as HTMLDivElement;
+const quotaEmpty = document.getElementById('quota-empty') as HTMLDivElement;
 const quotaNote = document.getElementById('quota-note') as HTMLSpanElement;
 const quotaListEl = document.getElementById('quota-list') as HTMLDivElement;
 const historySection = document.getElementById('history-section') as HTMLDivElement;
@@ -112,15 +149,47 @@ const sparkDetailEl = document.getElementById('spark-detail') as HTMLDivElement;
 const sparkEl = document.getElementById('spark') as HTMLDivElement;
 const historyListEl = document.getElementById('history-list') as HTMLDivElement;
 const emptyBox = document.getElementById('empty-box') as HTMLDivElement;
+const usageSection = document.getElementById('usage-section') as HTMLDivElement;
+const contextSection = document.getElementById('context-section') as HTMLDivElement;
+const modelsSection = document.getElementById('models-section') as HTMLDivElement;
 
 let selectedConversation = 'auto';
 let refreshIntervalSec = loadSavedInterval();
+let activeTab = loadSavedTab();
 let inFlight = false;
 let timerId: number | null = null;
 let currentHistory: GenHistoryItem[] = [];
+let currentContextPoints: ContextPoint[] = [];
 let currentDefaultModel = '';
 let activeHistoryIdx: number | null = null;
 let lastSnapshot: StatusSnapshot | null = null;
+
+function loadSavedTab(): string {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_TAB);
+    if (saved && ALLOWED_TABS.has(saved)) return saved;
+  } catch {
+    // ignore storage errors
+  }
+  return 'trends';
+}
+
+function setActiveTab(tab: string): void {
+  activeTab = ALLOWED_TABS.has(tab) ? tab : 'trends';
+  try {
+    localStorage.setItem(STORAGE_KEY_TAB, activeTab);
+  } catch {
+    // ignore storage errors
+  }
+  tabBar.querySelectorAll<HTMLButtonElement>('.tab-btn').forEach((btn) => {
+    const isActive = btn.dataset.tab === activeTab;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+  tabPanels.forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.panel === activeTab);
+  });
+}
 
 function loadSavedInterval(): number {
   try {
@@ -240,10 +309,12 @@ function renderQuota(quota: QuotaSnapshot | null | undefined): void {
   const windows = (quota?.windows || []).filter((w) => w && typeof w === 'object');
   if (!quota || windows.length === 0) {
     quotaSection.style.display = 'none';
+    quotaEmpty.style.display = 'block';
     quotaListEl.innerHTML = '';
     return;
   }
   quotaSection.style.display = 'flex';
+  quotaEmpty.style.display = 'none';
 
   const age = formatAge(quota.observedAgeSec);
   const observedAt = formatSnapshotTime(quota.observedAt);
@@ -367,8 +438,142 @@ function getPaneConversationId(): string {
   return (window.sidecar?.conversationId || urlParams.get('conversationId') || '').trim();
 }
 
+function usageBody(usage: UsageSummary | null | undefined): string {
+  const pct = usage?.cacheHitPct;
+  return `<div class="usage-total">${formatTokens(usage?.totalTokens)} <small>tok</small></div>
+    <div class="stats-note">入 ${formatTokens(usage?.inputTokens)} · 读 ${formatTokens(usage?.cacheReadTokens)} · 出 ${formatTokens(usage?.outputTokens)}</div>
+    <div class="stats-note">缓存命中 ${typeof pct === 'number' ? `${pct.toFixed(1)}%` : '--'}</div>`;
+}
+
+function pointLabel(point: ContextPoint): string {
+  const time = point.at ? new Date(point.at).toLocaleString() : '时间未知';
+  return `#${point.request} · ${time} · ${point.compaction ? '已压缩' : `${point.model} · ${formatExactTokens(point.contextUsed)}`}`;
+}
+
+function renderSessionStats(snap: StatusSnapshot): void {
+  for (const section of [usageSection, contextSection, modelsSection]) {
+    section.style.display = snap.found ? 'flex' : 'none';
+  }
+  if (!snap.found) return;
+  const usage = snap.sessionUsage;
+  const coverage = usage ? `${usage.recordedCount}/${usage.requestCount} 次请求有完整用量` : '日志未采集';
+  const usageTip = '累计包含已完成的回复与压缩请求；按日志中的输入、缓存读取、输出相加，不含未记录的缓存写入。缓存命中率按总量加权。';
+  usageSection.innerHTML = `<div class="section-title" title="${usageTip}"><span>Token 与缓存</span><span class="muted">${escapeHtml(coverage)}</span></div>
+    <div class="usage-grid">
+      <div><div class="stats-label">最近回复</div>${usageBody(snap.latestUsage)}</div>
+      <div><div class="stats-label">会话累计</div>${usageBody(usage)}</div>
+    </div>`;
+
+  const points = snap.contextHistory || [];
+  const count = snap.compactionCount;
+  const values = points.filter((p) => typeof p.contextUsed === 'number');
+  const max = Math.max(1, ...values.map((p) => p.contextUsed as number));
+  const left = 10;
+  const right = 350;
+  const top = 16;
+  const bottom = 92;
+  const span = right - left;
+  const x = (i: number) => (points.length <= 1 ? (left + right) / 2 : left + (i * span) / (points.length - 1));
+  const y = (value: number) => bottom - (value / max) * (bottom - top);
+  const paths: string[] = [];
+  let run: string[] = [];
+  const flush = () => {
+    if (run.length) paths.push(`<polyline class="ctx-line" points="${run.join(' ')}"/>`);
+    run = [];
+  };
+  points.forEach((point, i) => {
+    if (point.contextUsed === null || point.compaction) { flush(); return; }
+    run.push(`${x(i).toFixed(1)},${y(point.contextUsed).toFixed(1)}`);
+  });
+  flush();
+
+  const savedReq = Number(contextSection.dataset?.activeReq);
+  const activePoint =
+    (Number.isFinite(savedReq) ? points.find((p) => p.request === savedReq) : undefined) ||
+    points[points.length - 1];
+  const activeReq = activePoint?.request ?? null;
+
+  const guides = points.map((point, i) => {
+    const px = x(i).toFixed(1);
+    const isAct = point.request === activeReq ? ' active' : '';
+    return `<line class="ctx-guide${isAct}" data-req="${point.request}" x1="${px}" x2="${px}" y1="${top}" y2="${bottom}"/>`;
+  }).join('');
+
+  const marks = points.map((point, i) => {
+    const px = x(i).toFixed(1);
+    const isAct = point.request === activeReq;
+    if (point.compaction) {
+      return `<line class="ctx-compaction" x1="${px}" x2="${px}" y1="${top}" y2="${bottom}" stroke-dasharray="3 3"><title>${escapeHtml(pointLabel(point))}</title></line>`;
+    }
+    if (point.contextUsed !== null) {
+      const py = y(point.contextUsed).toFixed(1);
+      return `<circle class="ctx-dot${isAct ? ' active' : ''}" data-req="${point.request}" cx="${px}" cy="${py}" r="${isAct ? 3.5 : 2}"><title>${escapeHtml(pointLabel(point))}</title></circle>`;
+    }
+    return '';
+  }).join('');
+
+  const stepW = points.length > 0 ? span / points.length : span;
+  const hits = points.map((point, i) => {
+    const px = x(i);
+    const hx = Math.max(0, px - stepW / 2).toFixed(1);
+    const hw = Math.max(6, stepW).toFixed(1);
+    return `<rect class="ctx-hit" data-req="${point.request}" x="${hx}" y="${top - 4}" width="${hw}" height="${bottom - top + 8}"/>`;
+  }).join('');
+
+  const detailHtml = activePoint
+    ? (() => {
+        const timeStr = activePoint.at ? new Date(activePoint.at).toLocaleTimeString() : '';
+        const modelStr = activePoint.model || '';
+        const valStr = activePoint.compaction
+          ? '已压缩'
+          : activePoint.contextUsed !== null
+            ? formatExactTokens(activePoint.contextUsed)
+            : '--';
+        return `<span><strong>#${activePoint.request}</strong>${modelStr ? `<span class="muted"> · ${escapeHtml(modelStr)}</span>` : ''}</span>
+          <span><span class="tag ${activePoint.compaction ? 'warn' : ''}">${escapeHtml(valStr)}</span>${timeStr ? `<span class="muted"> · ${escapeHtml(timeStr)}</span>` : ''}</span>`;
+      })()
+    : '';
+
+  const recordsOpen = contextSection.querySelector('details')?.open;
+  const contextTip = '最近最多 120 次请求；纵轴自动缩放，不代表模型容量。虚线为日志明确记录的压缩。';
+  contextSection.innerHTML = `<div class="section-title" title="${contextTip}"><span>上下文趋势</span><span>压缩 ${count ?? '--'} 次</span></div>
+    ${points.length ? `<div id="context-detail" class="spark-detail">${detailHtml}</div>
+    <svg class="context-chart" viewBox="0 0 360 112" role="img" aria-label="最近 ${points.length} 次请求的上下文使用趋势；虚线表示已发生的压缩，纵轴按记录自动缩放">
+      <line class="ctx-grid" x1="${left}" x2="${right}" y1="${top}" y2="${top}"/>
+      <line class="ctx-grid" x1="${left}" x2="${right}" y1="${((top + bottom) / 2).toFixed(1)}" y2="${((top + bottom) / 2).toFixed(1)}"/>
+      <line class="ctx-grid" x1="${left}" x2="${right}" y1="${bottom}" y2="${bottom}"/>
+      <text x="${left}" y="11">${values.length ? formatTokens(max) : '--'} tok</text>
+      <text x="${right}" y="11" text-anchor="end">最近 ${points.length} 次</text>
+      ${guides}${paths.join('')}${marks}${hits}
+      <text x="${left}" y="106">#${points[0].request}</text>
+      <text x="${right}" y="106" text-anchor="end">#${points[points.length - 1].request}</text>
+    </svg>` : '<div class="stats-note">暂无上下文记录</div>'}
+    <details ${recordsOpen ? 'open' : ''}><summary>近期记录</summary><div class="context-records">${points.slice(-12).reverse().map((p) => `<div>${escapeHtml(pointLabel(p))}</div>`).join('') || '暂无记录'}</div></details>`;
+
+  const models = snap.modelUsage || [];
+  const modelsTip = '同一模型的思考档位合并；速度按有效样本的输出总量 / 耗时总量计算。';
+  modelsSection.innerHTML = `<div class="section-title" title="${modelsTip}"><span>按模型统计</span></div>
+    ${models.map((model) => {
+      const pct = model.cacheHitPct;
+      const speedStr = typeof model.avgSpeedTokS === 'number' ? `${model.avgSpeedTokS.toFixed(1)} tok/s` : '--';
+      return `<div class="model-stat">
+        <div class="model-stat-head">
+          <strong>${escapeHtml(model.model)}</strong>
+          <span class="muted">${model.recordedCount}/${model.requestCount} 次请求有完整用量</span>
+        </div>
+        <div class="model-stat-metrics">
+          <div class="usage-total">${formatTokens(model.totalTokens)} <small>tok</small></div>
+          <span class="muted" title="${model.speedSamples ?? 0} 个有效速度样本">平均输出速度 ${speedStr}</span>
+        </div>
+        <div class="stats-note">入 ${formatTokens(model.inputTokens)} · 读 ${formatTokens(model.cacheReadTokens)} · 出 ${formatTokens(model.outputTokens)} · 命中 ${typeof pct === 'number' ? `${pct.toFixed(1)}%` : '--'}</div>
+      </div>`;
+    }).join('') || '<div class="stats-note">暂无模型用量记录</div>'}`;
+}
+
 function renderSnapshot(snap: StatusSnapshot): void {
   syncSessionSelect(snap.recentConversations);
+  currentContextPoints = snap.contextHistory || [];
+  renderSessionStats(snap);
   const paneConv = getPaneConversationId();
   const isLive = Boolean(snap.hookConnected || paneConv);
   liveDot.classList.toggle('live', isLive);
@@ -395,28 +600,29 @@ function renderSnapshot(snap: StatusSnapshot): void {
   }
 
   emptyBox.style.display = 'none';
+  tabBar.style.display = 'grid';
+  tabPanels.forEach((p) => { p.style.display = ''; });
+  setActiveTab(activeTab);
 
-  const pills: string[] = [];
-  if (snap.shortId) pills.push(`<span class="pill" title="会话 UUID: ${escapeHtml(snap.conversationId)}">会话 ${escapeHtml(snap.shortId)}</span>`);
-  if (snap.modelName) pills.push(`<span class="pill">${escapeHtml(snap.modelName)}</span>`);
-  if (snap.workspaceName) pills.push(`<span class="pill">${escapeHtml(snap.workspaceName)}</span>`);
+  const metaParts: string[] = [];
+  if (snap.workspaceName) metaParts.push(snap.workspaceName);
+  if (snap.modelName) metaParts.push(snap.modelName);
   if (typeof snap.turnCount === 'number' && snap.turnCount > 0) {
-    const stepTip = snap.stepCount ? `共 ${snap.stepCount} 个执行步骤` : '';
-    pills.push(`<span class="pill" title="${escapeHtml(stepTip)}">${snap.turnCount} 轮</span>`);
+    metaParts.push(`${snap.turnCount} 轮`);
   }
   const live = snap.live;
   const liveActive = Boolean(live?.active);
-  if (liveActive) {
-    const secs = live?.elapsedSec;
-    const liveTip = `正在生成：第 ${live?.stepIdx ?? '?'} 步，已流式输出 ${live?.outputChars ?? '?'} 字`;
-    pills.push(
-      `<span class="pill live" title="${escapeHtml(liveTip)}"><i class="live-pulse"></i>生成中${
-        typeof secs === 'number' ? ` · ${secs.toFixed(0)}s` : ''
-      }</span>`,
-    );
-  }
+  const liveBadge = liveActive
+    ? `<span class="pill live" title="正在生成：第 ${live?.stepIdx ?? '?'} 步，已流式输出 ${live?.outputChars ?? '?'} 字"><i class="live-pulse"></i>生成中${
+        typeof live?.elapsedSec === 'number' ? ` · ${live.elapsedSec.toFixed(0)}s` : ''
+      }</span>`
+    : '';
   const updatedHtml = updatedText ? `<span class="updated-tag" title="上次刷新时间">${escapeHtml(updatedText)}</span>` : '';
-  metaStrip.innerHTML = `<div class="pills-wrap">${pills.join('')}</div>${updatedHtml}`;
+  const metaTip = [
+    snap.shortId ? `会话 ${snap.shortId}` : '',
+    snap.stepCount ? `${snap.stepCount} 步` : '',
+  ].filter(Boolean).join(' · ');
+  metaStrip.innerHTML = `<div class="meta-main" title="${escapeHtml(metaTip)}">${liveBadge}<span class="meta-text">${escapeHtml(metaParts.join(' · ') || '活跃会话')}</span></div>${updatedHtml}`;
 
   const speedText =
     snap.lastAvgSpeed !== null && snap.lastAvgSpeed !== undefined
@@ -452,19 +658,18 @@ function renderSnapshot(snap: StatusSnapshot): void {
   const speedCard = liveActive
     ? `<div class="card live" title="${escapeHtml(liveCardTip)}">
       <div class="card-label">
-        <span><i class="live-pulse"></i>实时输出速度</span>
-        <span>${typeof liveEst === 'number' ? 'tok/s' : 'streaming'}</span>
+        <span><i class="live-pulse"></i>实时速度</span>
       </div>
       <div class="card-value">${escapeHtml(liveSpeedText)}</div>
       <div class="card-sub">${escapeHtml(liveSubParts.join(' · ') || '正在接收输出…')}</div>
     </div>`
     : `<div class="card ${snap.lowSpeedWarning ? 'warn' : ''}" title="${escapeHtml(speedCardTip)}">
       <div class="card-label">
-        <span>平均输出速度</span>
-        <span>${snap.lowSpeedWarning ? '偏慢' : 'tok/s'}</span>
+        <span>输出速度</span>
+        ${snap.lowSpeedWarning ? '<span>偏慢</span>' : ''}
       </div>
       <div class="card-value">${escapeHtml(speedText)}</div>
-      <div class="card-sub">输出 ${escapeHtml(outTokText)} · 耗时 ${escapeHtml(genDurText)}</div>
+      <div class="card-sub">${escapeHtml(outTokText)} · ${escapeHtml(genDurText)}</div>
     </div>`;
 
   const turnDurText = formatDuration(snap.turnDurationSec);
@@ -490,8 +695,8 @@ function renderSnapshot(snap: StatusSnapshot): void {
       : '--';
   const cacheSub =
     snap.cacheReadTokens !== null && snap.cacheReadTokens !== undefined
-      ? `Read ${formatTokens(snap.cacheReadTokens)} · In ${formatTokens(snap.inputTokens)}`
-      : '本地库暂无输入/缓存字段';
+      ? `读 ${formatTokens(snap.cacheReadTokens)} · 入 ${formatTokens(snap.inputTokens)}`
+      : '--';
   const cacheCardTip = `缓存读取: ${formatExactTokens(snap.cacheReadTokens)} · 未缓存输入: ${formatExactTokens(
     snap.inputTokens,
   )} · 缓存写入: ${formatExactTokens(snap.cacheWriteTokens)}`;
@@ -499,17 +704,9 @@ function renderSnapshot(snap: StatusSnapshot): void {
   cardsEl.innerHTML = `
     ${speedCard}
 
-    <div class="card" title="${escapeHtml(turnCardTip)}">
-      <div class="card-label">
-        <span>轮次 / 会话耗时</span>
-      </div>
-      <div class="card-value">${escapeHtml(turnDurText)}</div>
-      <div class="card-sub">会话总计 ${escapeHtml(sessionDurText)}</div>
-    </div>
-
     <div class="card" title="${escapeHtml(ctxCardTip)}">
       <div class="card-label">
-        <span>上下文占用</span>
+        <span>上下文</span>
         <span>${snap.contextPct !== null && snap.contextPct !== undefined ? `${snap.contextPct.toFixed(1)}%` : ''}</span>
       </div>
       <div class="card-value">${escapeHtml(ctxMain)}</div>
@@ -520,10 +717,18 @@ function renderSnapshot(snap: StatusSnapshot): void {
 
     <div class="card" title="${escapeHtml(cacheCardTip)}">
       <div class="card-label">
-        <span>Cache 命中率</span>
+        <span>缓存命中</span>
       </div>
       <div class="card-value">${escapeHtml(cacheHitMain)}</div>
       <div class="card-sub">${escapeHtml(cacheSub)}</div>
+    </div>
+
+    <div class="card" title="${escapeHtml(turnCardTip)}">
+      <div class="card-label">
+        <span>轮次耗时</span>
+      </div>
+      <div class="card-value">${escapeHtml(turnDurText)}</div>
+      <div class="card-sub">累计 ${escapeHtml(sessionDurText)}</div>
     </div>
   `;
 
@@ -612,6 +817,46 @@ historyListEl.addEventListener('click', (e) => {
   const row = (e.target as HTMLElement).closest<HTMLElement>('.history-row');
   if (row && row.dataset.idx) {
     highlightHistoryItem(Number(row.dataset.idx));
+  }
+});
+
+function highlightContextPoint(req: number): void {
+  const point = currentContextPoints.find((p) => p.request === req);
+  if (!point) return;
+  contextSection.dataset.activeReq = String(req);
+  const detail = document.getElementById('context-detail');
+  if (detail) {
+    const timeStr = point.at ? new Date(point.at).toLocaleTimeString() : '';
+    const modelStr = point.model || '';
+    const valStr = point.compaction
+      ? '已压缩'
+      : point.contextUsed !== null
+        ? formatExactTokens(point.contextUsed)
+        : '--';
+    detail.innerHTML = `<span><strong>#${point.request}</strong>${modelStr ? `<span class="muted"> · ${escapeHtml(modelStr)}</span>` : ''}</span>
+      <span><span class="tag ${point.compaction ? 'warn' : ''}">${escapeHtml(valStr)}</span>${timeStr ? `<span class="muted"> · ${escapeHtml(timeStr)}</span>` : ''}</span>`;
+  }
+  contextSection.querySelectorAll<SVGElement>('.ctx-guide').forEach((el) => {
+    el.classList.toggle('active', Number(el.dataset.req) === req);
+  });
+  contextSection.querySelectorAll<SVGCircleElement>('.ctx-dot').forEach((el) => {
+    const isAct = Number(el.dataset.req) === req;
+    el.classList.toggle('active', isAct);
+    el.setAttribute('r', isAct ? '3.5' : '2');
+  });
+}
+
+contextSection.addEventListener('mouseover', (e) => {
+  const hit = (e.target as Element).closest<SVGElement>('.ctx-hit');
+  if (hit && hit.dataset.req) {
+    highlightContextPoint(Number(hit.dataset.req));
+  }
+});
+
+contextSection.addEventListener('click', (e) => {
+  const hit = (e.target as Element).closest<SVGElement>('.ctx-hit');
+  if (hit && hit.dataset.req) {
+    highlightContextPoint(Number(hit.dataset.req));
   }
 });
 
@@ -715,7 +960,15 @@ refreshSelect.addEventListener('change', () => {
   resetTimer();
 });
 
+tabBar.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.tab-btn');
+  if (btn && btn.dataset.tab) {
+    setActiveTab(btn.dataset.tab);
+  }
+});
+
 async function boot(): Promise<void> {
+  setActiveTab(activeTab);
   syncSidecarThemeFromBackground();
   new MutationObserver(() => {
     syncSidecarThemeFromBackground();

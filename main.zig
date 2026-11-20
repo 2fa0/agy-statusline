@@ -97,6 +97,144 @@ fn lastSpeed(allocator: Allocator, id: []const u8) ?f64 {
     if (len <= 0) return null;
     return metadataSpeed(ptr[0..@intCast(len)]);
 }
+// Transcript totals use logged input + cache reads + output, including completed
+// CHECKPOINT requests. Cache writes are not exposed consistently in this log.
+const TranscriptEntry = struct {
+    type: []const u8 = "",
+    status: []const u8 = "",
+    input_tokens: std.json.Value = .null,
+    cache_read_tokens: std.json.Value = .null,
+    output_tokens: std.json.Value = .null,
+};
+
+fn loggedTokens(value: std.json.Value) ?i64 {
+    return switch (value) {
+        .integer => |n| if (n >= 0 and n <= 9_007_199_254_740_991) n else null,
+        else => null,
+    };
+}
+const SessionStats = struct {
+    requests: usize = 0,
+    recorded: usize = 0,
+    input: i64 = 0,
+    cached: i64 = 0,
+    output: i64 = 0,
+    compactions: usize = 0,
+
+    fn ingest(self: *SessionStats, entry: TranscriptEntry) void {
+        if (!std.mem.eql(u8, entry.status, "DONE")) return;
+        const checkpoint = std.mem.eql(u8, entry.type, "CHECKPOINT");
+        if (!checkpoint and !std.mem.eql(u8, entry.type, "PLANNER_RESPONSE")) return;
+        if (checkpoint) self.compactions += 1;
+        self.requests += 1;
+        const input = loggedTokens(entry.input_tokens) orelse return;
+        const cached = loggedTokens(entry.cache_read_tokens) orelse return;
+        const output = loggedTokens(entry.output_tokens) orelse return;
+        self.recorded += 1;
+        self.input +|= input;
+        self.cached +|= cached;
+        self.output +|= output;
+    }
+};
+
+const SessionCache = struct {
+    version: u32 = 1,
+    inode: u64 = 0,
+    size: u64 = 0,
+    mtime: i128 = 0,
+    offset: u64 = 0,
+    boundary_hash: u64 = 0,
+    stats: SessionStats = .{},
+};
+
+fn transcriptBoundaryHash(file: std.fs.File, offset: u64) !u64 {
+    // Sample both ends to catch truncate-and-regrow between refreshes.
+    var sample: [256]u8 = undefined;
+    const len: usize = @intCast(@min(offset, sample.len));
+    if (try file.preadAll(sample[0..len], 0) != len) return error.EndOfStream;
+    var hash = std.hash.Wyhash.init(0);
+    hash.update(sample[0..len]);
+    if (try file.preadAll(sample[0..len], offset - len) != len) return error.EndOfStream;
+    hash.update(sample[0..len]);
+    return hash.final();
+}
+
+fn appendSessionStats(reader: anytype, cache: *SessionCache) !void {
+    var line = std.ArrayList(u8).init(std.heap.page_allocator);
+    defer line.deinit();
+    while (true) {
+        // Leave an incomplete final line for the next refresh.
+        reader.readUntilDelimiterArrayList(&line, '\n', 16 * 1024 * 1024) catch |err| {
+            if (err == error.EndOfStream) return;
+            return err;
+        };
+        cache.offset += line.items.len + 1;
+        const parsed = std.json.parseFromSlice(TranscriptEntry, std.heap.page_allocator, line.items, .{ .ignore_unknown_fields = true }) catch continue;
+        defer parsed.deinit();
+        cache.stats.ingest(parsed.value);
+    }
+}
+
+fn updateSessionStats(file: std.fs.File, previous: ?SessionCache) !SessionCache {
+    const st = try file.stat();
+    var cache: SessionCache = .{};
+    if (previous) |old| {
+        if (old.version == 1 and old.inode == st.inode and old.offset <= old.size and
+            old.size <= st.size and (old.mtime == st.mtime or old.size < st.size) and
+            old.boundary_hash == try transcriptBoundaryHash(file, old.offset)) cache = old;
+    }
+    if (cache.inode == st.inode and cache.size == st.size and cache.mtime == st.mtime) return cache;
+    try file.seekTo(cache.offset);
+    var limited = std.io.limitedReader(file.reader(), st.size - cache.offset);
+    var buffered = std.io.bufferedReader(limited.reader());
+    try appendSessionStats(buffered.reader(), &cache);
+    cache.inode = st.inode;
+    cache.size = st.size;
+    cache.mtime = st.mtime;
+    cache.boundary_hash = try transcriptBoundaryHash(file, cache.offset);
+    return cache;
+}
+
+fn sessionStats(allocator: Allocator, id: []const u8) ?SessionStats {
+    if (id.len != 36) return null;
+    for (id) |ch| if (!std.ascii.isHex(ch) and ch != '-') { return null; };
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return null;
+    const path = std.fmt.allocPrint(allocator, "{s}/.gemini/antigravity-cli/brain/{s}/.system_generated/logs/transcript.jsonl", .{home, id}) catch return null;
+    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+    const cache_path = std.fmt.allocPrint(allocator, "{s}/.gemini/agy-statusline/sessions/{s}.json", .{home, id}) catch return null;
+    const raw = std.fs.cwd().readFileAlloc(allocator, cache_path, 4096) catch null;
+    const previous = if (raw) |data| std.json.parseFromSlice(SessionCache, allocator, data, .{}) catch null else null;
+    const cache = updateSessionStats(file, if (previous) |p| p.value else null) catch return null;
+    if (previous == null or !std.meta.eql(previous.?.value, cache)) {
+        // A failed cache write must not hide otherwise readable statistics.
+        var out = std.ArrayList(u8).init(allocator);
+        std.json.stringify(cache, .{}, out.writer()) catch return cache.stats;
+        var dest = std.fs.cwd().atomicFile(cache_path, .{ .make_path = true }) catch return cache.stats;
+        defer dest.deinit();
+        dest.file.writeAll(out.items) catch return cache.stats;
+        dest.finish() catch return cache.stats;
+    }
+    return cache.stats;
+}
+
+fn appendSessionMetrics(allocator: Allocator, metrics: []const u8, stats: ?SessionStats, width: usize) ![]const u8 {
+    const reset = "\x1b[0m\n";
+    const prefix = metrics[0 .. metrics.len - reset.len];
+    const cp = if (stats) |s| try std.fmt.allocPrint(allocator, " | Compact: {d}", .{s.compactions}) else " | Compact: --";
+    const compact = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{prefix, cp, reset});
+    if (width > 0 and visibleLen(compact) > width) return metrics;
+    const s = stats orelse return compact;
+    if (s.recorded == 0) return compact;
+    const total = s.input +| s.cached +| s.output;
+    const coverage = if (s.recorded < s.requests) try std.fmt.allocPrint(allocator, " ({d}/{d})", .{s.recorded, s.requests}) else "";
+    const input = @as(f64, @floatFromInt(s.input)) + @as(f64, @floatFromInt(s.cached));
+    const cache = if (input > 0) try std.fmt.allocPrint(allocator, "{d:.1}%", .{100 * @as(f64, @floatFromInt(s.cached)) / input}) else "--";
+    const full = try std.fmt.allocPrint(allocator, "{s}{s} | Log: {s} tok{s} | S.Cache: {s}{s}", .{prefix, cp, try formatTokens(allocator, total), coverage, cache, reset});
+    return if (width > 0 and visibleLen(full) <= width) full else compact;
+}
+
 fn formatTokens(allocator: Allocator, value: i64) ![]const u8 {
     const n = if (value >= 1000) @divTrunc(value, 1000) else value;
     const raw = try std.fmt.allocPrint(allocator, "{d}", .{n});
@@ -306,7 +444,7 @@ pub fn main() !void {
     writeQuotaSnapshot(a, if (state) |s| s.value.quota else null);
     const width = if (state) |s| @min(s.value.terminal_width orelse 0, 1000) else 0;
     const color = if (speed != null and speed.? < 50) "\x1b[43;30m" else "\x1b[44;97m";
-    const metrics = try renderMetrics(a, cw, speed, color);
+    const metrics = try appendSessionMetrics(a, try renderMetrics(a, cw, speed, color), if (state) |s| sessionStats(a, s.value.conversation_id) else null, width);
     const quota_line = try renderQuotaLine(a, quota, color);
     const writer = std.io.getStdOut().writer();
     if (quota_line) |ql| {
@@ -323,7 +461,8 @@ pub fn main() !void {
 }
 
 test "formatting and speed" {
-    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator); defer arena.deinit();
+    const a = arena.allocator();
     const text = try formatTokens(a, 1_234_567); defer a.free(text);
     try std.testing.expectEqualStrings("1,234K", text);
     const data = [_]u8{0x0a,0x08,0x22,0x02,0x18,0x64,0x62,0x02,0x08,0x02};
@@ -348,5 +487,89 @@ test "quota summary and rendering" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.85), quota.claude.weekly.?, 1e-6);
     const line = try render(a, .{}, 60, quota);
     try std.testing.expectEqualStrings("\x1b[44;97mCache hit: -- | Ctx: -- | Last avg speed: 60 token/s | \x1b[46;30m Gemini 98% · 99% \x1b[106;30m Argon 100% \x1b[48;5;208;30m Claude 100% · 85% \x1b[44;97m\x1b[0m\n", line);
-    try std.testing.expectEqual(@as(usize, 102), visibleLen(line));
+    try std.testing.expectEqual(@as(usize, 104), visibleLen(line));
+}
+
+
+test "transcript totals and width-aware session metrics" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator); defer arena.deinit();
+    const a = arena.allocator();
+    const log =
+        \\{"type":"PLANNER_RESPONSE","status":"DONE","input_tokens":100,"cache_read_tokens":900,"output_tokens":100}
+        \\{"type":"PLANNER_RESPONSE","status":"DONE","input_tokens":900,"cache_read_tokens":100,"output_tokens":100}
+        \\{"type":"CHECKPOINT","status":"DONE"}
+        \\{"type":"PLANNER_RESPONSE","status":"GENERATING","input_tokens":999}
+        \\{"type":"PLANNER_RESPONSE","status":"DONE","input_tokens":"invalid","cache_read_tokens":0,"output_tokens":5}
+        \\{broken
+    ;
+    var stream = std.io.fixedBufferStream(log);
+    var cache: SessionCache = .{};
+    try appendSessionStats(stream.reader(), &cache);
+    const stats = cache.stats;
+    try std.testing.expectEqual(@as(usize, 1), stats.compactions);
+    try std.testing.expectEqual(@as(usize, 4), stats.requests);
+    try std.testing.expectEqual(@as(usize, 2), stats.recorded);
+    const base = try renderMetrics(a, .{}, null, "");
+    const wide = try appendSessionMetrics(a, base, stats, 300);
+    try std.testing.expect(std.mem.indexOf(u8, wide, "Compact: 1 | Log: 2K tok (2/4) | S.Cache: 50.0%") != null);
+    const narrow = try appendSessionMetrics(a, base, stats, 70);
+    try std.testing.expect(std.mem.indexOf(u8, narrow, "Compact: 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, narrow, "Log:") == null);
+    const missing = try appendSessionMetrics(a, base, null, 300);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "Compact: --") != null);
+    const context = try renderMetrics(a, .{ .total_input_tokens = 123000, .context_window_size = 256000 }, null, "");
+    for ([_]?SessionStats{ stats, null }) |s| {
+        const small = try appendSessionMetrics(a, context, s, 60);
+        try std.testing.expect(visibleLen(small) <= 60);
+        try std.testing.expectEqualStrings(context, small);
+    }
+}
+
+test "session cache follows appends, partial lines, truncation and replacement" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile("transcript.jsonl", .{ .read = true });
+    defer file.close();
+    const reply = "{\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"input_tokens\":100,\"cache_read_tokens\":900,\"output_tokens\":100}\n";
+    const checkpoint = "{\"type\":\"CHECKPOINT\",\"status\":\"DONE\"}\n";
+    try file.writeAll(reply);
+    const first = try updateSessionStats(file, null);
+    try std.testing.expectEqual(@as(usize, 1), first.stats.requests);
+    try std.testing.expectEqual(@as(i64, 900), first.stats.cached);
+    try std.testing.expectEqualDeep(first, try updateSessionStats(file, first));
+
+    try file.seekFromEnd(0);
+    try file.writeAll(checkpoint[0..10]);
+    const partial = try updateSessionStats(file, first);
+    try std.testing.expectEqual(first.offset, partial.offset);
+    try std.testing.expectEqualDeep(first.stats, partial.stats);
+    try file.seekFromEnd(0);
+    try file.writeAll(checkpoint[10..]);
+    const appended = try updateSessionStats(file, partial);
+    try std.testing.expectEqual(@as(usize, 2), appended.stats.requests);
+    try std.testing.expectEqual(@as(usize, 1), appended.stats.compactions);
+    try std.testing.expectEqualDeep(appended, try updateSessionStats(file, appended));
+
+    try file.setEndPos(0);
+    try file.seekTo(0);
+    try file.writeAll(checkpoint);
+    const truncated = try updateSessionStats(file, appended);
+    try std.testing.expectEqual(@as(usize, 1), truncated.stats.requests);
+    try std.testing.expectEqual(@as(usize, 0), truncated.stats.recorded);
+
+    const replacement = try tmp.dir.createFile("replacement.jsonl", .{ .read = true });
+    defer replacement.close();
+    try replacement.writeAll(reply);
+    try tmp.dir.rename("replacement.jsonl", "transcript.jsonl");
+    const replaced = try updateSessionStats(replacement, truncated);
+    try std.testing.expectEqual(@as(usize, 1), replaced.stats.recorded);
+    try std.testing.expectEqual(@as(usize, 0), replaced.stats.compactions);
+
+    // Truncation may be followed by enough writes to exceed the old size.
+    try replacement.setEndPos(0);
+    try replacement.seekTo(0);
+    for (0..4) |_| try replacement.writeAll(checkpoint);
+    const regrown = try updateSessionStats(replacement, replaced);
+    try std.testing.expectEqual(@as(usize, 4), regrown.stats.compactions);
+    try std.testing.expectEqual(@as(usize, 0), regrown.stats.recorded);
 }

@@ -203,6 +203,107 @@ class DesktopPanelTests(unittest.TestCase):
             self.assertAlmostEqual(snap["cacheHitPct"], 80.0, places=1)
             self.assertEqual(snap["cacheReadTokens"], 800)
 
+    def test_session_usage_models_and_explicit_compactions(self) -> None:
+        from telemetry import TranscriptTracker
+
+        rows = [
+            {"type": "PLANNER_RESPONSE", "status": "DONE", "model": "gemini-demo-high", "input_tokens": 10, "cache_read_tokens": 90, "output_tokens": 20},
+            {"type": "PLANNER_RESPONSE", "status": "DONE", "model": "gemini-demo-low", "input_tokens": 810, "cache_read_tokens": 90, "output_tokens": 80},
+            {"type": "CHECKPOINT", "status": "DONE", "input_tokens": 100, "cache_read_tokens": 0, "output_tokens": 10},
+            {"type": "PLANNER_RESPONSE", "status": "DONE", "model": "claude-demo", "input_tokens": 5, "cache_read_tokens": 5, "output_tokens": 10},
+            {"type": "PLANNER_RESPONSE", "status": "DONE", "model": "claude-demo", "input_tokens": 1, "cache_read_tokens": 0},
+            {"type": "PLANNER_RESPONSE", "status": "GENERATING", "input_tokens": 999},
+            {"type": "CHECKPOINT", "status": "ERROR"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "transcript.jsonl"
+            self._write_transcript(path, rows)
+            tracker = TranscriptTracker(path)
+            snap = tracker.update()
+            self.assertEqual(snap, parse_transcript_timing(path))
+            self.assertEqual(snap, tracker.update())  # no duplicate accumulation
+            self.assertEqual(snap["compactionCount"], 1)
+            usage = snap["sessionUsage"]
+            self.assertEqual((usage["requestCount"], usage["recordedCount"]), (5, 4))
+            self.assertEqual(usage["totalTokens"], 1230)
+            self.assertAlmostEqual(usage["cacheHitPct"], 185 / 1110 * 100)
+            models = {x["model"]: x for x in snap["modelUsage"]}
+            self.assertEqual(models["gemini-demo"]["totalTokens"], 1100)
+            self.assertAlmostEqual(models["gemini-demo"]["cacheHitPct"], 18)
+            self.assertEqual(models["未知模型"]["totalTokens"], 110)
+            self.assertEqual(models["claude-demo"]["recordedCount"], 1)
+            self.assertIsNone(snap["latestUsage"]["totalTokens"])
+            history = snap["contextHistory"]
+            self.assertIsNone(history[2]["contextUsed"])
+            self.assertTrue(history[2]["compaction"])
+            self.assertFalse(history[3]["compaction"])  # a context drop alone is not compression
+            self.assertEqual(history[3]["contextUsed"], 10)
+            # A split append is ingested once, only after the line completes.
+            extra = json.dumps({"type": "CHECKPOINT", "status": "DONE"})
+            with path.open("a") as fh:
+                fh.write(extra[:10])
+            self.assertEqual(tracker.update(), snap)
+            with path.open("a") as fh:
+                fh.write(extra[10:] + "\n")
+            self.assertEqual(tracker.update()["compactionCount"], 2)
+            self._write_transcript(path, rows[:1])
+            reset = tracker.update()
+            self.assertEqual(reset["compactionCount"], 0)
+            self.assertEqual(reset["sessionUsage"]["requestCount"], 1)
+
+    def test_usage_rejects_missing_negative_and_noninteger_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "transcript.jsonl"
+            for invalid in (None, -1, True, "100", 1.5):
+                self._write_transcript(path, [{"type": "PLANNER_RESPONSE", "status": "DONE", "input_tokens": invalid, "cache_read_tokens": 0, "output_tokens": 5}])
+                snap = parse_transcript_timing(path)
+                self.assertIsNone(snap["sessionUsage"]["totalTokens"])
+                self.assertIsNone(snap["contextHistory"][0]["contextUsed"])
+                self.assertEqual(snap["modelUsage"][0]["model"], "未知模型")
+
+    def test_history_is_bounded_but_totals_cover_entire_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "transcript.jsonl"
+            self._write_transcript(path, [{"type": "PLANNER_RESPONSE", "status": "DONE", "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 1}] * 130)
+            snap = parse_transcript_timing(path)
+            self.assertEqual(len(snap["contextHistory"]), 120)
+            self.assertEqual(snap["contextHistory"][0]["request"], 11)
+            self.assertEqual(snap["sessionUsage"]["totalTokens"], 130)
+            self.assertIsNone(snap["sessionUsage"]["cacheHitPct"])
+            self.assertEqual(snap["contextHistory"][-1]["contextUsed"], 0)
+
+    def test_model_speed_uses_all_metadata_samples_and_weighted_duration(self) -> None:
+        cid = "12345678-1234-1234-1234-123456789abc"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "conversations").mkdir()
+            conn = sqlite3.connect(root / "conversations" / f"{cid}.db")
+            conn.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+            for idx in range(14):
+                output, duration = (100, 2) if idx < 13 else (600, 3)
+                blob = field_bytes(1, field_bytes(4, field_varint(3, output)) + field_bytes(12, field_varint(1, duration)) + field_bytes(19, b"gemini-demo"))
+                conn.execute("INSERT INTO gen_metadata VALUES (?, ?)", (idx, blob))
+            conn.commit()
+            conn.close()
+            path = root / "brain" / cid / ".system_generated/logs/transcript.jsonl"
+            self._write_transcript(path, [
+                {"type": "PLANNER_RESPONSE", "status": "DONE", "model": "gemini-demo-high", "input_tokens": 1, "cache_read_tokens": 0, "output_tokens": 5},
+                {"type": "PLANNER_RESPONSE", "status": "DONE", "model": "other-model", "input_tokens": 1, "cache_read_tokens": 0, "output_tokens": 5},
+            ])
+            snap = build_status_snapshot(cid, desktop_root=root)
+            self.assertEqual(len(snap["history"]), 12)
+            model, other = snap["modelUsage"]
+            self.assertEqual(model["speedSamples"], 14)
+            self.assertAlmostEqual(model["avgSpeedTokS"], round(1900 / 29, 1))
+            self.assertIsNone(other["avgSpeedTokS"])
+            self.assertEqual(other["speedSamples"], 0)
+            self.assertEqual(snap["compactionCount"], 0)
+            # Missing transcripts do not look like zero usage or zero compressions.
+            path.unlink()
+            missing = build_status_snapshot(cid, desktop_root=root)
+            self.assertIsNone(missing["sessionUsage"])
+            self.assertIsNone(missing["compactionCount"])
+
     def test_dist_html_bundle_is_valid_single_document(self) -> None:
         html_path = PANEL_DIR / "dist" / "index.html"
         self.assertTrue(html_path.is_file())
