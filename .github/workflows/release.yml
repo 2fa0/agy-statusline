@@ -34,13 +34,14 @@ jobs:
         run: |
           cp VERSION desktop-panel/VERSION  # backend.zig embeds it via @embedFile
           rm -rf .zig-cache
-          zig build-exe desktop-panel/backend.zig \
-            -cflags -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -- \
-            sqlite-amalgamation-3490100/sqlite3.c \
+          zig cc -c sqlite-amalgamation-3490100/sqlite3.c \
             -I sqlite-amalgamation-3490100 \
-            -target x86_64-linux-musl -O ReleaseSafe -lc \
-            -femit-bin=agy-desktop-backend
-          strip agy-desktop-backend
+            -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION \
+            -target x86_64-linux-musl -O2 -o sqlite3.o
+          zig build-obj desktop-panel/backend.zig \
+            -target x86_64-linux-musl -O ReleaseSafe -lc -fcompiler-rt \
+            -femit-bin=backend.o
+          zig cc backend.o sqlite3.o -target x86_64-linux-musl -s -lc -o agy-desktop-backend
       - uses: actions/upload-artifact@v4
         with:
           name: agy-desktop-backend-linux-x64
