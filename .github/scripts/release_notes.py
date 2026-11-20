@@ -54,23 +54,16 @@ TRAILING_VERSION = re.compile(r"\s*[(\[]?(?:v|release[- ])?\d+\.\d+\.\d+[)\]]?\s
 INSTALL_HINTS = r"""### 📥 安装 / 升级 Install & Upgrade
 
 ```sh
-# macOS (Apple Silicon)
-mkdir -p ~/.gemini/antigravity-cli && \
-  curl -fsSL https://github.com/{repo}/releases/latest/download/agy-statusline-macos-arm64.tar.gz \
-  | tar -xz -C ~/.gemini/antigravity-cli && chmod +x ~/.gemini/antigravity-cli/agy-statusline
+# macOS (Apple Silicon) / Linux (x64) 一键安装（同时装好 CLI + Desktop 面板并校验 SHA256）
+curl -fsSL https://raw.githubusercontent.com/{repo}/main/install.sh | bash
 
-# Linux (x64)
-mkdir -p ~/.gemini/antigravity-cli && \
-  curl -fsSL https://github.com/{repo}/releases/latest/download/agy-statusline-linux-x64.tar.gz \
-  | tar -xz -C ~/.gemini/antigravity-cli && chmod +x ~/.gemini/antigravity-cli/agy-statusline
-
-# Desktop 右侧面板 plugin
-curl -fsSL https://raw.githubusercontent.com/{repo}/main/desktop-panel/install.sh | bash
+# 仅装一端或自检诊断
+curl -fsSL https://raw.githubusercontent.com/{repo}/main/install.sh | bash -s -- --panel-only
+curl -fsSL https://raw.githubusercontent.com/{repo}/main/install.sh | bash -s -- --doctor
 ```
 
 > **macOS 提示**：二进制内置 ad-hoc 签名（非 Developer ID 签名、未经 Apple 公证）。
-> 若从浏览器下载后被 Gatekeeper 拦截，改用上面的 `curl` 命令，或执行
-> `xattr -dr com.apple.quarantine /path/to/agy-statusline`。
+> `install.sh` 会自动清除 `com.apple.quarantine` 并做可执行自检；若通过浏览器手动下载后被 Gatekeeper 拦截，可执行 `xattr -dr com.apple.quarantine /path/to/binary`。
 """
 
 

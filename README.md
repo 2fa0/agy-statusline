@@ -9,6 +9,7 @@
   <img src="https://img.shields.io/badge/Network-Zero%20Network%20(100%25%20Local)-16a34a?style=flat-square" alt="Zero Network" />
   <img src="https://img.shields.io/badge/Compliance-Official%20Extension%20API-0ea5e9?style=flat-square" alt="Official Extension API" />
   <img src="https://img.shields.io/badge/Built%20with-Zig-f59e0b?style=flat-square" alt="Built with Zig" />
+  <img src="https://img.shields.io/badge/Memory-~3--7%20MB%20RSS-10b981?style=flat-square" alt="Memory ~3-7 MB RSS" />
 </p>
 
 ## 实景预览（CLI & Desktop 双端并排）
@@ -26,10 +27,10 @@
   </tr>
   <tr>
     <td width="50%">
-      <img src="./desktop-panel/assets/cli-preview.svg" alt="agy-statusline CLI 终端状态栏预览" width="100%" />
+      <img src="./desktop-panel/assets/cli-preview.png" alt="agy-statusline CLI 终端状态栏实景预览" width="100%" />
     </td>
     <td width="50%">
-      <img src="./desktop-panel/assets/desktop-preview.svg" alt="AGY Desktop Status 右侧常驻面板预览" width="100%" />
+      <img src="./desktop-panel/assets/desktop-preview.png" alt="AGY Desktop Status 右侧常驻面板实景预览" width="100%" />
     </td>
   </tr>
 </table>
@@ -45,7 +46,7 @@
 | **额度重置时间** | 仅显示相对倒计时（如“剩 2 天 4 小时”） | **绝对本地重置时间**：直接换算为 `重置于 11/23 周一 11:29`，并自动区分 Gemini / Argon / Claude 3p 额度池 |
 | **上下文与压缩真相** | 只看当前占比，难以定位何时触发压缩 | **120 次交互式上下文曲线 + `CHECKPOINT` 压缩标记**（`Compact: N`），不猜阈值、不伪造数据 |
 | **缓存与模型拆分** | 缺少 Prompt 缓存命中率或按模型分拆 | **加权缓存命中率（`Cache hit` / `S.Cache`）+ 按模型统计 Token / 命中率 / 均速** |
-| **资源开销** | 常驻后台进程或依赖重型运行时 | **CLI 零依赖单文件**；桌面端单 Zig 后台，无 Node/Python 运行时；文件指纹缓存、分块增量解析，空闲降频、隐藏暂停轮询 |
+| **极致资源开销** | 常驻 Node.js / Python 运行时（常驻内存动辄数十至上百 MB） | **同类插件独一档轻量化**：CLI 单二进制约 `582 KB`、用完即退零常驻；桌面端单 Zig 原生后台约 `2.1 MB`（内嵌 `40 KB` 单文件前端），**实测运行期常驻内存仅约 `3.3–6.8 MB RSS`**；配合文件指纹缓存、分块增量解析与空闲降频 / 隐藏暂停轮询 |
 
 ---
 
@@ -58,7 +59,7 @@
 > 2. **全程零外部网络请求**：不发起任何 HTTP / HTTPS / WebSocket 外联请求，不上传、不遥测任何对话或环境信息。
 > 3. **零凭据 / Token 接触**：不读取任何 OAuth Token、Cookie、Session Key 或 API 凭据。桌面端额度仅读取 CLI 状态栏自己落盘的本地快照 `quota.json`（仅含百分比与重置时间戳，不含任何账号或凭据）。
 > 4. **不探测内部接口、不修改客户端**：不调用或探测任何未公开的内部 RPC 接口，不修改 Antigravity 客户端任何文件，不绕过任何 Google / Antigravity 配额或权限限制。
-> 5. **严格本地只读**：SQLite 会话库连接强制使用 `mode=ro` 与 `PRAGMA query_only = ON`。
+> 5. **严格本地只读**：SQLite 会话库连接强制使用 `mode=ro` 与 `PRAGMA query_only = ON`（仅当打开已关闭且无 `-wal` 的归档 WAL 数据库时安全回退 `immutable=1` 只读模式）。
 >
 > *注：本地日志与 SQLite/protobuf 数据格式属于宿主内部落盘格式，而非稳定公开 API，宿主版本升级可能导致部分字段不可用。*
 
@@ -137,22 +138,22 @@ xattr -dr com.apple.quarantine ~/.gemini/antigravity-cli
 
 ## 一、Antigravity 2.0 桌面端右侧面板（`AGY Desktop Status`）
 
-在 Antigravity 2.0 桌面端右侧辅助栏提供常驻监控卡片与可交互趋势图（与对话画布同屏并排展示，不遮挡会话），支持**自动跟随当前活跃会话**、**自适应刷新（活跃时按 `3s` / `5s` / `10s` 刷新，空闲 15s，面板隐藏时暂停；也可选择 `关闭`）**、**深浅色主题自适应**以及手动切换历史会话。
+在 Antigravity 2.0 桌面端右侧辅助栏提供常驻监控卡片与可交互趋势图（与对话画布同屏并排展示，不遮挡会话），支持**自动跟随当前活跃会话**、**自适应刷新（活跃时按 `3s` / `5s` / `10s` 刷新，空闲 15s，面板隐藏时暂停；也可选择 `暂停`）**、**深浅色主题自适应**以及手动切换历史会话。
 
 > [!NOTE]
 > 入口为官方 `SIDECAR_UI_ENTRYPOINT_AUX_PANE`。Antigravity 2.x 的 sidecar UI 只有 `AUX_PANE` / `FULL_PANE` / `SIDEBAR` 三种入口，**不支持顶栏挂载**，因此无法把状态条贴到窗口上边栏。
 
-### 生成中实时速度（`实时输出速度`）
+### 生成中实时速度（`实时速度`）
 
-模型正在回话时，面板会把“输出速度”卡片切成实时模式：标题变成 `实时输出速度` 并打上呼吸点，数值是**正在生成的这一步**的速度，浅色页头也会多一个 `生成中 · Ns` 的胶囊：
+模型正在回话时，面板会把“输出速度”卡片切成实时模式：标题变成 `实时速度` 并打上呼吸点，数值是**正在生成的这一步**的速度，页头也会多一个 `生成中 · Ns` 的胶囊：
 
 ```
-实时输出速度                                    tok/s
+实时速度
 ≈ 110.7 tok/s
 已输出 339 字 · 128 字/s · 2.6s
 ```
 
-原理：AGY 在生成过程中会先写入这条未完成的 step 行（`status = GENERATING`），并随着流式文本增长不断重写 `steps.step_payload`。面板只读这一行算出字符增长速率，再用同一会话已完成步骤的「字数 / 输出 token」比例换算成 `≈ tok/s`（实测中文约 `1.15~1.3 字/token`）。**真 token 数只在整步完成后落库**，所以生成中的 tok/s 是估算值（带 `≈`），完成后自动回到精确的平均速度与历史趋势。
+原理：AGY 在生成过程中会先写入这条未完成的 step 行（`PENDING` / `RUNNING` / `GENERATING`），并随着流式文本增长不断重写 `steps.step_payload`。面板只读这一行算出字符增长速率，再用同一会话已完成步骤的「字数 / 输出 token」比例换算成 `≈ tok/s`（实测中文约 `1.15~1.3 字/token`）。**真 token 数只在整步完成后落库**，所以生成中的 tok/s 是估算值（带 `≈`），完成后自动回到精确的平均速度与历史趋势。
 
 生成期间面板会提高到 **1s 一轮**轮询（仍是本地只读，不联网）；上下文占用（`Ctx`）是 prompt 侧实测值，只在每一步完成后刷新，卡片 tooltip 会写明。
 
@@ -161,15 +162,17 @@ xattr -dr com.apple.quarantine ~/.gemini/antigravity-cli
 面板里的 **额度** 标签页把周额度 / 5h 额度的重置写成具体本地时间，例如：
 
 ```
-Gemini  周额度    88%   重置于 11/23 周一 11:29 · 剩 3 天 1 小时
-Gemini  5h 额度   96%   重置于 今天 11:29 · 剩 1 小时 58 分
+Gemini
+5小时   今天 11:29       周限   周一 11/23 11:29
 ```
+
+（鼠标悬浮即可查看 `重置于 ... · 距重置 ...` 明细。）
 
 数据来源说明（**不联网、不读凭据**）：桌面端本身不向插件暴露额度信息，因此 CLI 状态栏在每次渲染时会把 AGY 递交给它的 `quota` 字段（`remaining_fraction` + `reset_in_seconds`）写成本地快照：
 
 - 默认路径：`~/.gemini/agy-statusline/quota.json`（可用 `AGY_STATUSLINE_QUOTA_FILE` 环境变量改写）；
 - 只包含百分比与重置时间戳，**不含 token、账号或任何凭据**；
-- 长时间没跑过 `agy` CLI 时，面板会按 5h / 7 天的周期把重置时间推算到下一次，并标注「快照 X 天前 · 时间按周期推算」，百分比也会标记为旧数据。
+- 长时间没跑过 `agy` CLI 时，面板会按 5h / 7 天的周期把重置时间推算到下一次，并在右上角标注「`时间 · 推算`」（悬浮提示「按 5h / 7 天周期推算」）。
 
 ### 会话用量、上下文趋势与模型统计
 
@@ -185,8 +188,8 @@ Gemini  5h 额度   96%   重置于 今天 11:29 · 剩 1 小时 58 分
 
 #### 从 Releases 下载插件包安装（macOS / Linux / Windows）
 
-> [!WARNING]
-> 浏览器下载会附加 `com.apple.quarantine` 属性，直接双击/执行解压出来的 `agy-desktop-backend` 会被 Gatekeeper 拦截（本项目仅 ad-hoc 签名，未公证）。即使是用浏览器下载的，也请 **运行 `./install.sh` 安装**——它会自动清除隔离属性；不要直接执行二进制。
+> [!NOTE]
+> 通过浏览器下载的压缩包会带 `com.apple.quarantine`，请通过下面的 `./install.sh` 安装（会自动清理隔离标记）；切勿直接双击运行解压出的二进制。详见上方 [macOS 安全机制说明](#macos-安全机制说明重要)。
 
 1. 前往 [Releases](https://github.com/2fa0/agy-statusline/releases) 页面下载桌面端插件包：
    - macOS / Linux：`agy-desktop-status-plugin.tar.gz`
@@ -268,12 +271,7 @@ chmod +x agy-statusline
 ```
 
 > [!TIP]
-> **macOS 安装与签名说明**：
-> - **推荐优先使用上方的 `curl` 一行命令安装**：`curl` 从不写入 `com.apple.quarantine`，Gatekeeper 因此不会评估这些二进制。Release 内置 ad-hoc 代码签名，满足 Apple Silicon 的基本执行要求；这不等于 Developer ID 签名或 Apple 公证，也不能保证所有系统策略下均可运行。
-> - **若通过浏览器手动下载**：macOS 会附加 `com.apple.quarantine`，首次运行会被 Gatekeeper 拦截。由 `agy` 在后台静默调用时甚至不会弹窗，仅表现为**状态栏无输出**。先执行 `agy-statusline --version` 确认能跑，若被拦则：
->   ```sh
->   xattr -dr com.apple.quarantine /path/to/agy-statusline
->   ```
+> - **macOS 浏览器下载**：若被 Gatekeeper 拦截（后台静默调用时表现为状态栏无输出），请先执行 `xattr -dr com.apple.quarantine /path/to/agy-statusline` 再用 `--version` 自检，原因详见 [macOS 安全机制说明](#macos-安全机制说明重要)。
 > - **Intel Mac (`x86_64`) 或 macOS 13 以下系统**：Release 仅提供 `macos-arm64` 产物，请参考下方「从源码构建 CLI」使用 `./build.sh` 本地编译。
 
 #### 2. 配置 AGY CLI

@@ -2,13 +2,13 @@
 
 专为 **Antigravity 2.0 桌面端** 打造的只读性能与上下文遥测面板（不与 CLI 版 Zig 代码耦合）。基于官方 **Plugin + UI Sidecar (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`) + Lifecycle Hooks** 架构（单 Zig 可执行文件，HTTP 服务、遥测采集和生命周期 hook 均为原生代码），在对话窗口右侧辅助栏里作为常驻 Tab 与会话同屏展示：
 
-- **实时输出速度（生成中）**：模型回话时卡片自动切成实时模式：`≈ 110.7 tok/s`、`已输出 339 字 · 128 字/s · 2.6s`，并在页头挂上 `生成中 · Ns` 胶囊。数据来自 AGY 正在写入的未完成 step 行（`status = GENERATING`，`steps.step_payload` 随流式文本增长），按同一会话已完成步骤的「字数 / 输出 token」比例换算；生成中 1s 一轮轮询，结束后回到精确的平均速度与历史趋势。
+- **实时速度（生成中）**：模型回话时卡片自动切成实时模式：`≈ 110.7 tok/s`、`已输出 339 字 · 128 字/s · 2.6s`，并在页头挂上 `生成中 · Ns` 胶囊。数据来自 AGY 正在写入的未完成 step 行（`PENDING` / `RUNNING` / `GENERATING`，`steps.step_payload` 随流式文本增长），按同一会话已完成步骤的「字数 / 输出 token」比例换算；生成中 1s 一轮轮询，结束后回到精确的平均速度与历史趋势。
 - **平均输出速度 (`Last avg speed`)**：最近一次模型生成的输出速度（`tok/s`），低于 `50 tok/s` 自动黄色高亮提示，附带最近 12 次生成的**可交互速度柱状趋势图**（鼠标悬浮柱子或下方列表行即可联动高亮并查看单次输出 token 数、耗时与模型明细）。
-- **额度重置时间（`周额度` / `5h 额度`）**：同时给出剩余百分比与**具体本地重置时间**（如 `重置于 11/23 周一 11:29 · 剩 3 天 1 小时`），不用再自己把 “还剩 2 天 4 小时” 换算成时间点。数据来自 CLI 状态栏写下的本地快照 `~/.gemini/agy-statusline/quota.json`（可用 `AGY_STATUSLINE_QUOTA_FILE` 覆盖）；快照过期时按 5h / 7 天周期推算并标注。
+- **额度重置时间（`周限` / `5小时`）**：直接换算成**具体本地重置时间**（如 `今天 11:29`、`周一 11/23 11:29`，悬浮可看 `重置于 ... · 距重置 ...`），不用再自己把 “还剩 2 天 4 小时” 换算成时间点。数据来自 CLI 状态栏写下的本地快照 `~/.gemini/agy-statusline/quota.json`（可用 `AGY_STATUSLINE_QUOTA_FILE` 覆盖）；快照过期时按 5h / 7 天周期推算并标注「推算」。
 - **轮次 / 会话耗时**：基于本地 `transcript.jsonl` 时间戳计算当前轮次耗时与整个会话总耗时。
 - **上下文占用 (`Ctx`)** & **Cache 命中率 (`Cache hit`)**：只读解析本地会话库中的输入、缓存读取与缓存写入字段（若本地未落盘对应字段则显示 `--`，不伪造数据）。
 
-![AGY Desktop Status 面板预览](./assets/desktop-preview.svg)
+![AGY Desktop Status 面板实景预览](./assets/desktop-preview.png)
 
 
 ### 会话用量、上下文趋势与模型统计
@@ -21,15 +21,15 @@
 
 只有输入、缓存读取、输出三个字段均有效的请求才进入累计，界面显示“已记录 / 总请求数”覆盖情况。会话缓存命中率为有效请求的缓存读取总量 /（未缓存输入总量 + 缓存读取总量），不是各次百分比的平均。日志缺失时显示未知；缺少速度数据不从日志时间差猜测。
 
-CLI 在终端宽度足够时显示 `Compact: N`，空间不足时省略；宽度足够时再显示 `Log: … tok` 与 `S.Cache: …%`，分别代表相同日志口径的会话累计 token 和加权缓存命中率。用量不完整时附带覆盖数量（例如 `2/3`）。 会话累计值与读取位置缓存在 `~/.gemini/agy-statusline/sessions/`，后续只读取追加的完整日志行；缓存不保存会话正文，缺失或失效时自动重建。
+> 配套的 CLI 终端状态栏（`agy-statusline`）采用相同日志口径，详情见根目录 [README.md](../README.md)。
 
 插件通过宿主扩展入口加载；本地日志和 SQLite/protobuf 数据格式本身不属于我们能保证稳定的公开接口，宿主升级可能导致字段不可用。
 
 ## 合规与安全保障
 
 - **扩展入口**：使用 Antigravity 插件机制（`plugin.json`、`sidecars/status/sidecar.json`、`hooks.json`）。
-- **只读与零网络（Local Read-Only · Zero Network）**：SQLite 连接强制使用 `mode=ro` 与 `PRAGMA query_only = ON`；无任何外部网络请求、不读取 OAuth Token 或凭据、不探测未公开的内部 RPC 接口、不绕过任何配额或权限限制。
-- **额度来源透明**：桌面端本身不向插件暴露额度，面板只读取 CLI 状态栏自己写下的 `quota.json`（仅百分比与重置时间戳，无凭据）；文件不存在时就显示「未采集」。
+- **只读与零网络（Local Read-Only · Zero Network）**：SQLite 连接强制使用 `mode=ro` 与 `PRAGMA query_only = ON`（仅在打开已关闭且无 `-wal` 的归档 WAL 数据库时安全回退 `immutable=1`）；无任何外部网络请求、不读取 OAuth Token 或凭据、不探测未公开的内部 RPC 接口、不绕过任何配额或权限限制。
+- **额度来源透明**：桌面端本身不向插件暴露额度，面板只读取 CLI 状态栏自己写下的 `quota.json`（仅百分比与重置时间戳，无凭据）；文件不存在时提示「暂无额度重置数据，运行一次 agy CLI 后自动同步。」。
 - **开箱即用**：Release 包内含 macOS arm64 / Linux x64 / Windows x64 原生后台，前端单文件 HTML 嵌入二进制，普通用户无需安装 Node.js、Python 或 Zig。macOS 使用系统 SQLite；Linux/Windows 发布构建静态链接 SQLite。
 
 ---
@@ -97,13 +97,13 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 
 > 右侧辅助栏是官方 API 中唯一能与对话画布同屏并排的位置。Antigravity 2.x 的 sidecar UI 只有 `AUX_PANE` / `FULL_PANE` / `SIDEBAR` 三种入口，**没有顶栏（title bar）挂载点**，所以状态条无法真正贴到窗口上边栏。
 
-### 性能设计
+### 性能设计（极低内存占用）
 
-面板默认活跃时每 3 秒刷新一次，空闲时降频；遥测侧通过以下方式减少开销：
+面板默认活跃时每 3 秒刷新一次，空闲时降频；通过原生 Zig 后台与有界增量解析实现同类插件独一档的资源控制（macOS arm64 实测二进制约 `2.1 MB`、内嵌 `40 KB` 单文件前端，运行期常驻内存仅约 `3.3–6.8 MB RSS`）：
 
-- **单原生后台**：`agy-desktop-backend serve` 在宿主指定的端口仅监听 `127.0.0.1`，直接处理 `/api/status`。没有 Node/Python 常驻进程；hook 通过同一二进制的 `hook` 子命令短暂运行。
+- **单原生后台**：`agy-desktop-backend serve` 在宿主指定的端口仅监听 `127.0.0.1`，直接处理 `/api/status`。彻底摆脱 Node.js / Python 常驻运行时；hook 通过同一二进制的 `hook` 子命令短暂运行。
 - **有界缓存**：只保留当前会话的解析结果。数据库及 WAL 的身份、mtime、ctime 和大小不变时复用结果；会话列表、hook 状态和额度每次独立读取，失败后重试。查询完成后关闭数据库连接。
-- **流式解析**：日志按字节 offset 增量逐行读取，临时 JSON 内存在每行结束时释放；首次扫描不会把整份日志载入内存。曲线最多保留 120 点，生成明细最多 12 条；截断、替换或会话切换会重建统计。单行上限 16 MiB，超过时该次遥测请求返回错误。
+- **流式解析**：日志变化时分块校验已读取的内容，仅对新增完整行解析 JSON；文件未变化时复用统计。校验使用固定大小缓冲区，临时 JSON 内存在每行结束时释放；首次扫描不会把整份日志载入内存。曲线最多保留 120 点，生成明细最多 12 条；改写、截断、替换或会话切换会重建统计。单行上限 16 MiB，超过时该次遥测请求返回错误。
 - **自适应刷新**：活跃时按所选的 3/5/10s 间隔刷新，空闲 45s 后自动降到 15s，面板隐藏时暂停轮询，后台进程与缓存仍保留。
 
 ### 卸载
@@ -128,7 +128,7 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 
 产物为 `sidecars/status/agy-desktop-backend`。macOS 构建自动添加 ad-hoc 签名；这不等于 Developer ID 签名或 Apple 公证，下载分发仍可能受 Gatekeeper 限制。GitHub Actions 同时生成 Linux/Windows 静态 SQLite 后台，安装脚本选择当前平台的二进制。
 
-如果你修改了 `ui/src/app.ts`、`ui/src/template.html` 或 `ui/src/preload.js`，可以在本地（需 Node.js >= 20）重新打包单文件 `dist/index.html`：
+如果你修改了 `ui/src/app.ts` 或 `ui/src/template.html`，可以在本地（需 Node.js >= 20）重新打包单文件 `dist/index.html`（`ui/src/preload.js` 由 `backend.zig` 直接 `@embedFile` 嵌入，改完直接跑 `./build.sh` 即可）：
 
 ```sh
 cd ui
