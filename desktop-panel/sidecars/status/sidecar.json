@@ -1,6 +1,8 @@
 {
-  "command": "node",
-  "args": ["main.mjs"],
+  "command": "./agy-desktop-backend",
+  "args": [
+    "serve"
+  ],
   "restart_policy": "always",
   "display_name": "AGY Status",
   "description": "Read-only telemetry monitor: live streaming speed, quota reset times, context usage, turn/session duration, and prompt cache hit rate.",

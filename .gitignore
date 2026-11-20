@@ -9,3 +9,11 @@ zig-out/
 node_modules/
 __pycache__/
 *.pyc
+
+# Platform-specific native desktop build outputs
+desktop-panel/sidecars/status/agy-desktop-backend
+desktop-panel/sidecars/status/agy-desktop-backend.exe
+desktop-panel/bin/
+
+# Generated from the repository root VERSION file; never edit by hand.
+/desktop-panel/VERSION

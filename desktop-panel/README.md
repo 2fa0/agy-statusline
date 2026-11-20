@@ -1,6 +1,6 @@
 # AGY Desktop Status — Antigravity 2.0 右侧辅助栏常驻状态面板插件
 
-专为 **Antigravity 2.0 桌面端** 打造的只读性能与上下文遥测面板（不与 CLI 版 Zig 代码耦合）。基于官方 **Plugin + UI Sidecar (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`) + Lifecycle Hooks** 架构（Node sidecar + 常驻 Python 采集 worker，无独立 MCP 服务），在对话窗口右侧辅助栏里作为常驻 Tab 与会话同屏展示：
+专为 **Antigravity 2.0 桌面端** 打造的只读性能与上下文遥测面板（不与 CLI 版 Zig 代码耦合）。基于官方 **Plugin + UI Sidecar (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`) + Lifecycle Hooks** 架构（单 Zig 可执行文件，HTTP 服务、遥测采集和生命周期 hook 均为原生代码），在对话窗口右侧辅助栏里作为常驻 Tab 与会话同屏展示：
 
 - **实时输出速度（生成中）**：模型回话时卡片自动切成实时模式：`≈ 110.7 tok/s`、`已输出 339 字 · 128 字/s · 2.6s`，并在页头挂上 `生成中 · Ns` 胶囊。数据来自 AGY 正在写入的未完成 step 行（`status = GENERATING`，`steps.step_payload` 随流式文本增长），按同一会话已完成步骤的「字数 / 输出 token」比例换算；生成中 1s 一轮轮询，结束后回到精确的平均速度与历史趋势。
 - **平均输出速度 (`Last avg speed`)**：最近一次模型生成的输出速度（`tok/s`），低于 `50 tok/s` 自动黄色高亮提示，附带最近 12 次生成的**可交互速度柱状趋势图**（鼠标悬浮柱子或下方列表行即可联动高亮并查看单次输出 token 数、耗时与模型明细）。
@@ -30,13 +30,27 @@ CLI 在终端宽度足够时显示 `Compact: N`，空间不足时省略；宽度
 - **扩展入口**：使用 Antigravity 插件机制（`plugin.json`、`sidecars/status/sidecar.json`、`hooks.json`）。
 - **只读与零网络（Local Read-Only · Zero Network）**：SQLite 连接强制使用 `mode=ro` 与 `PRAGMA query_only = ON`；无任何外部网络请求、不读取 OAuth Token 或凭据、不探测未公开的内部 RPC 接口、不绕过任何配额或权限限制。
 - **额度来源透明**：桌面端本身不向插件暴露额度，面板只读取 CLI 状态栏自己写下的 `quota.json`（仅百分比与重置时间戳，无凭据）；文件不存在时就显示「未采集」。
-- **开箱即用**：运行时仅依赖 Antigravity 内置 Node (`sidecar_sdk`) 与已安装的 `python3`（零第三方 Python 运行时依赖），前端单文件 HTML 已预构建在 `dist/index.html` 中，普通用户无需安装 Node.js 或执行 `npm build`。
+- **开箱即用**：Release 包内含 macOS arm64 / Linux x64 / Windows x64 原生后台，前端单文件 HTML 嵌入二进制，普通用户无需安装 Node.js、Python 或 Zig。macOS 使用系统 SQLite；Linux/Windows 发布构建静态链接 SQLite。
 
 ---
 
 ## 傻瓜式安装与使用
 
-### 方式 A：一行命令自动安装（macOS / Linux）
+### 方式 A：一行命令自动安装（推荐，macOS / Linux）
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash
+```
+
+这是仓库根目录的 **统一安装器**，默认同时装好 CLI 状态栏和本面板插件；只装面板用：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash -s -- --panel-only
+```
+
+它会下载对应平台的原生后台、按 `SHA256SUMS.txt` 校验完整性、剥掉解包文件上的 `com.apple.quarantine`（并回读确认），然后用 `agy-desktop-backend --version` 自检——如果被 Gatekeeper 拦截，你会当场看到错误和修复命令，而不是一个白屏面板。升级就是再跑一次同一条命令。
+
+只想装插件本身（不装 CLI 状态栏）也可以直接用插件自带的安装脚本：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-panel/install.sh | bash
@@ -47,12 +61,33 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-pa
 - **macOS / Linux**：
   ```sh
   chmod +x ./install.sh
-  ./install.sh          # 本地源码目录默认软链接安装；也可传 --copy 独立复制文件
+  ./install.sh
   ```
+  不传参数时自动推断：在 git 仓库内（开发 clone）默认软链接，方便修改即时生效；在解压出来的发布包里默认复制成独立目录，避免插件指向一个你随后会删掉的下载目录。也可以手动指定 `--link` / `--copy`。
+
+  > [!WARNING]
+  > 用浏览器下载的压缩包会带 `com.apple.quarantine`。**不要直接双击或执行解压出来的 `agy-desktop-backend`**，那会被 Gatekeeper 拦下（本项目仅 ad-hoc 签名，未公证）。请务必通过 `./install.sh` 安装，它会自动清除隔离属性。
 - **Windows (PowerShell)**：
   ```powershell
   powershell -ExecutionPolicy Bypass -File .\install.ps1
   ```
+
+### 面板白屏或装不上时
+
+```sh
+./install.sh --doctor        # 源码目录下
+# 或
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash -s -- --doctor
+```
+
+会打印平台、插件目录、`quarantine` 状态、代码签名、签名完整性、二进制自检，以及系统安全环境（Gatekeeper 开关、是否受 MDM 纳管、是否被要求 Developer ID）。macOS 上最常见的几个原因：
+
+| 现象 | 原因 | 修复 |
+| :--- | :--- | :--- |
+| 面板白屏，后台无输出 | 二进制带 `quarantine`，被 Gatekeeper `SIGKILL` | `xattr -dr com.apple.quarantine ~/.gemini/config/plugins/agy-desktop-status` |
+| 面板白屏，签名完整性显示「损坏/缺失」 | 二进制被其他工具改写，签名失效 | 重跑安装器覆盖安装 |
+| 面板白屏，且 `Developer ID 策略` 显示「要求 Developer ID」 | 设备受 IT 托管，ad-hoc 被拒 | 联系 IT 按 CDHash 加白名单，或改用自建签名 |
+| 面板白屏，但自检正常 | 宿主未重启，仍持有旧进程 | 完全退出并重启 Antigravity Desktop |
 
 ### 打开右侧常驻面板
 
@@ -66,9 +101,9 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-pa
 
 面板默认活跃时每 3 秒刷新一次，空闲时降频；遥测侧通过以下方式减少开销：
 
-- **常驻 worker**：`telemetry.py --serve` 只启动一次，之后走 JSON-lines 请求，避免每次轮询重复启动 Python；具体耗时取决于日志大小、数据库变化与缓存命中情况；worker 崩溃时自动回退到一次性子进程，不会白屏。
-- **指纹缓存**：`db` / `-wal` / `transcript` / `active_session.json` 的文件身份、mtime 和 size 全未变化时复用遥测快照；会话列表独立更新，读取失败的结果不缓存。
-- **transcript 增量解析**：按字节 offset 只读新增行，避免每次重新解析完整日志；首次读取仍需处理已有内容。
+- **单原生后台**：`agy-desktop-backend serve` 在宿主指定的端口仅监听 `127.0.0.1`，直接处理 `/api/status`。没有 Node/Python 常驻进程；hook 通过同一二进制的 `hook` 子命令短暂运行。
+- **有界缓存**：只保留当前会话的解析结果。数据库及 WAL 的身份、mtime、ctime 和大小不变时复用结果；会话列表、hook 状态和额度每次独立读取，失败后重试。查询完成后关闭数据库连接。
+- **流式解析**：日志按字节 offset 增量逐行读取，临时 JSON 内存在每行结束时释放；首次扫描不会把整份日志载入内存。曲线最多保留 120 点，生成明细最多 12 条；截断、替换或会话切换会重建统计。单行上限 16 MiB，超过时该次遥测请求返回错误。
 - **自适应刷新**：活跃时按所选的 3/5/10s 间隔刷新，空闲 45s 后自动降到 15s，面板隐藏时暂停轮询，后台进程与缓存仍保留。
 
 ### 卸载
@@ -81,27 +116,50 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-pa
   ```powershell
   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
   ```
-
 ---
 
-## 开发者指南：从源码重新构建前端 UI & 运行测试
+## 开发者指南：构建原生后台与前端
 
-如果你修改了 `ui/src/app.ts` 或 `ui/src/template.html`，可以在本地（需 Node.js >= 20）重新打包单文件 `dist/index.html`：
+先构建后台（Zig 0.14.1、系统 C 编译器和 SQLite 开发库）：
+
+```sh
+./build.sh
+```
+
+产物为 `sidecars/status/agy-desktop-backend`。macOS 构建自动添加 ad-hoc 签名；这不等于 Developer ID 签名或 Apple 公证，下载分发仍可能受 Gatekeeper 限制。GitHub Actions 同时生成 Linux/Windows 静态 SQLite 后台，安装脚本选择当前平台的二进制。
+
+如果你修改了 `ui/src/app.ts`、`ui/src/template.html` 或 `ui/src/preload.js`，可以在本地（需 Node.js >= 20）重新打包单文件 `dist/index.html`：
 
 ```sh
 cd ui
-npm install
+npm ci        # 首次或依赖变更时
 npm run build
 ```
 
-运行后端与协议单元测试：
+前端构建后再运行 `./build.sh`，将更新后的页面嵌入后台。运行原生集成测试与旧实现的差异对照测试（Python 仅作为开发测试驱动）：
 
 ```sh
 python3 -m unittest discover -s tests
 ```
 
-安装 UI 开发依赖后，运行 worker 恢复和刷新间隔的回归测试：
+安装 UI 开发依赖后，运行前端刷新间隔与统计展示回归测试：
 
 ```sh
 node --test tests/test_sidecar.mjs
 ```
+
+`tests/reference/` 保存迁移前的 Python 实现，仅用于核对统计口径，不进入发布包。可通过 `AGY_DESKTOP_BACKEND` 指定测试二进制。
+
+### 版本号
+
+仓库根目录的 `VERSION` 是唯一来源。`backend.zig` 通过 `@embedFile("VERSION")` 嵌入它，但 `@embedFile` 无法越出自身包根，所以 `./build.sh`（以及 CI）会先把它镜像到 `desktop-panel/VERSION`。`plugin.json`、`ui/package.json` 和 `ui/package-lock.json` 由 `tests/test_version.py` 校验一致；改版本时先改 `VERSION`，再同步这几处，测试会挡住遗漏。
+
+### 本地诊断
+
+```sh
+./sidecars/status/agy-desktop-backend --version        # 自检：能打印版本即说明签名/quarantine 正常
+./sidecars/status/agy-desktop-backend status --conversation-id auto
+./sidecars/status/agy-desktop-backend --serve  # stdin/stdout JSON-lines，适合基准测试
+```
+
+源码软链接安装（`install.sh --link`）在重新编译 `./build.sh` 后即时生效。前端桥接只处理主题、会话绑定、鉴权请求与宿主快捷键，不调用 Agent 或凭据 API。

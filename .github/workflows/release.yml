@@ -30,6 +30,19 @@ jobs:
             -target x86_64-linux-musl -O ReleaseFast -lc \
             -femit-bin=agy-statusline
           tar -czf agy-statusline-linux-x64.tar.gz agy-statusline
+      - name: Build native desktop backend (linux-x64)
+        run: |
+          cp VERSION desktop-panel/VERSION  # backend.zig embeds it via @embedFile
+          zig build-exe desktop-panel/backend.zig \
+            -cflags -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -- \
+            sqlite-amalgamation-3490100/sqlite3.c \
+            -I sqlite-amalgamation-3490100 \
+            -target x86_64-linux-musl -O ReleaseSafe -fstrip -lc \
+            -femit-bin=agy-desktop-backend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-desktop-backend-linux-x64
+          path: agy-desktop-backend
       - uses: actions/upload-artifact@v4
         with:
           name: agy-statusline-linux-x64
@@ -49,6 +62,40 @@ jobs:
           codesign --force --sign - --identifier io.github.2fa0.agy-statusline agy-statusline
           codesign --verify --verbose agy-statusline
           tar -czf agy-statusline-macos-arm64.tar.gz agy-statusline
+      - name: Build and sign native desktop backend (macOS)
+        run: |
+          cp VERSION desktop-panel/VERSION  # backend.zig embeds it via @embedFile
+          zig build-obj desktop-panel/backend.zig -target aarch64-macos.13.0 -O ReleaseSafe -fstrip -lc -fcompiler-rt -femit-bin=desktop.o
+          clang desktop.o -arch arm64 -mmacosx-version-min=13.0 -lsqlite3 -o agy-desktop-backend
+          codesign --force --sign - --identifier io.github.2fa0.agy-desktop-status agy-desktop-backend
+          codesign --verify --verbose agy-desktop-backend
+      - name: Verify installers end to end (local mode + quarantine self-heal)
+        run: |
+          bash -n install.sh
+          bash -n desktop-panel/install.sh
+          export HOME="$(mktemp -d)"
+          ./install.sh --cli-only
+          "${HOME}/.gemini/antigravity-cli/agy-statusline" --version
+
+          # Simulate a browser download: the plugin's backend carries quarantine.
+          # Never *execute* a quarantined binary here -- a runner with a GUI
+          # session can raise a modal Gatekeeper dialog and hang the job -- so we
+          # assert the end state instead: quarantine gone and binary runnable.
+          mkdir -p desktop-panel/sidecars/status
+          cp agy-desktop-backend desktop-panel/sidecars/status/agy-desktop-backend
+          xattr -w com.apple.quarantine "0081;00000000;Safari;" desktop-panel/sidecars/status/agy-desktop-backend
+          ./install.sh --panel-only
+          installed="${HOME}/.gemini/config/plugins/agy-desktop-status/sidecars/status/agy-desktop-backend"
+          if xattr -p com.apple.quarantine "${installed}" >/dev/null 2>&1; then
+            echo "::error::quarantine survived the install; Gatekeeper self-heal is broken"
+            exit 1
+          fi
+          "${installed}" --version
+          ./install.sh --doctor
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-desktop-backend-macos-arm64
+          path: agy-desktop-backend
       - uses: actions/upload-artifact@v4
         with:
           name: agy-statusline-macos-arm64
@@ -74,25 +121,49 @@ jobs:
             -target x86_64-windows-gnu -O ReleaseFast -lc \
             -femit-bin=agy-statusline.exe
           zip -q agy-statusline-windows-x64.zip agy-statusline.exe
+      - name: Build native desktop backend (windows-x64)
+        run: |
+          cp VERSION desktop-panel/VERSION  # backend.zig embeds it via @embedFile
+          zig build-exe desktop-panel/backend.zig \
+            -cflags -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -- \
+            sqlite-amalgamation-3490100/sqlite3.c \
+            -I sqlite-amalgamation-3490100 \
+            -target x86_64-windows-gnu -O ReleaseSafe -fstrip -lc \
+            -femit-bin=agy-desktop-backend.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-desktop-backend-windows-x64
+          path: agy-desktop-backend.exe
       - uses: actions/upload-artifact@v4
         with:
           name: agy-statusline-windows-x64
           path: agy-statusline-windows-x64.zip
 
   package-desktop-plugin:
+    needs: [build-linux-x64, build-macos-arm64, build-windows-x64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agy-desktop-backend-*
+          path: native-backends
+      - name: Prepare native backend for tests
+        run: chmod +x native-backends/agy-desktop-backend-linux-x64/agy-desktop-backend
       - name: Build and test AGY Desktop Status plugin
         run: |
           cd desktop-panel/ui
           npm ci
           npm run build
+          git diff --exit-code -- ../dist/index.html
           cd ..
-          python3 -m unittest discover -s tests
+          AGY_DESKTOP_BACKEND="$GITHUB_WORKSPACE/native-backends/agy-desktop-backend-linux-x64/agy-desktop-backend" python3 -m unittest discover -s tests
+          node --test tests/test_sidecar.mjs
+      - name: Verify VERSION is the single source of truth
+        run: python3 -m unittest discover -s desktop-panel/tests -p 'test_version.py'
       - name: Package desktop plugin archives
         run: |
           mkdir -p staging/agy-desktop-status
@@ -101,8 +172,13 @@ jobs:
             --exclude 'tests' \
             --exclude '__pycache__' \
             --exclude '.DS_Store' \
+            --exclude 'VERSION' \
             desktop-panel/ staging/agy-desktop-status/
-          chmod +x staging/agy-desktop-status/install.sh staging/agy-desktop-status/hooks/track_active.py
+          for platform in macos-arm64 linux-x64 windows-x64; do
+            mkdir -p "staging/agy-desktop-status/bin/$platform"
+            cp native-backends/agy-desktop-backend-$platform/* "staging/agy-desktop-status/bin/$platform/"
+          done
+          chmod +x staging/agy-desktop-status/install.sh staging/agy-desktop-status/bin/macos-arm64/agy-desktop-backend staging/agy-desktop-status/bin/linux-x64/agy-desktop-backend
           tar -C staging -czf agy-desktop-status-plugin.tar.gz agy-desktop-status
           (cd staging && zip -qr ../agy-desktop-status-plugin.zip agy-desktop-status)
       - uses: actions/upload-artifact@v4
@@ -130,6 +206,11 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Generate release checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           # Our own grouped notes; GitHub's generator would only list PRs and
@@ -141,3 +222,4 @@ jobs:
             dist/agy-statusline-windows-x64.zip
             dist/agy-desktop-status-plugin.tar.gz
             dist/agy-desktop-status-plugin.zip
+            dist/SHA256SUMS.txt

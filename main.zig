@@ -1,5 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+
+/// Single source of truth: the repository root VERSION file.
+const version = @embedFile("VERSION");
 extern "c" fn sqlite3_open_v2([*:0]const u8, *?*anyopaque, c_int, ?[*:0]const u8) c_int;
 extern "c" fn sqlite3_close(?*anyopaque) c_int;
 extern "c" fn sqlite3_prepare_v2(?*anyopaque, [*:0]const u8, c_int, *?*anyopaque, ?*?[*:0]const u8) c_int;
@@ -436,6 +439,14 @@ fn writePaddedLine(writer: anytype, line: []const u8, width: usize) !void {
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator); defer arena.deinit();
     const a = arena.allocator();
+    // Present so installers and `--doctor` can probe that the binary executes at
+    // all (a Gatekeeper denial shows up as SIGKILL before any stdout).
+    for (try std.process.argsAlloc(a)) |arg| {
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
+            try std.io.getStdOut().writeAll("agy-statusline " ++ version ++ "\n");
+            return;
+        }
+    }
     const input = std.io.getStdIn().reader().readAllAlloc(a, 1024 * 1024) catch "";
     const state = std.json.parseFromSlice(State, a, input, .{ .ignore_unknown_fields = true }) catch null;
     const cw = if (state) |s| s.value.context_window else ContextWindow{};

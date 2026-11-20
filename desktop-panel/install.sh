@@ -13,11 +13,51 @@ Usage: ./install.sh [OPTIONS]
 Install or uninstall the AGY Desktop Status right-pane plugin for Antigravity 2.0 Desktop.
 
 Options:
-  --copy         Copy plugin files into ${TARGET_DIR} (default when run standalone)
+  --copy         Copy plugin files into ${TARGET_DIR} (default for release archives)
   --link         Symlink ${TARGET_DIR} to the local source directory (best for development)
   --uninstall    Remove ${TARGET_DIR}
   -h, --help     Show this help message
+
+Without --copy/--link the mode is inferred: a git checkout is linked, anything
+else (e.g. an extracted release archive) is copied, so the plugin never points at
+a directory you are about to delete.
 EOF
+}
+
+strip_quarantine() {
+  [[ "$(uname -s)" = "Darwin" ]] || return 0
+  [[ -e "$1" ]] || return 0
+  xattr -dr com.apple.quarantine "$1" 2>/dev/null || true
+}
+
+# Integrity check against the release's SHA256SUMS.txt. This is separate from
+# Gatekeeper: it catches truncated or tampered downloads.
+verify_checksum() { # <archive> <release-base-url>
+  local file="$1" base="$2" sums expected actual
+  sums="$(mktemp "${TMPDIR:-/tmp}/agy-sums.XXXXXX")"
+  if ! curl -fsSL "${base}/SHA256SUMS.txt" -o "${sums}" 2>/dev/null; then
+    rm -f "${sums}"
+    echo "Warning: this release has no SHA256SUMS.txt; skipping integrity check." >&2
+    return 0
+  fi
+  expected="$(awk '$2 == "agy-desktop-status-plugin.tar.gz" || $2 == "*agy-desktop-status-plugin.tar.gz" {print $1; exit}' "${sums}")"
+  rm -f "${sums}"
+  if [[ -z "${expected}" ]]; then
+    echo "Warning: SHA256SUMS.txt does not list the plugin archive; skipping." >&2
+    return 0
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "${file}" | awk '{print $1}')"
+  else
+    actual="$(shasum -a 256 "${file}" | awk '{print $1}')"
+  fi
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "Error: checksum mismatch for the plugin archive." >&2
+    echo "  expected ${expected}" >&2
+    echo "  actual   ${actual}" >&2
+    return 1
+  fi
+  echo "Checksum verified."
 }
 
 MODE="auto"
@@ -48,15 +88,33 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "Warning: 'python3' was not found in PATH. AGY Desktop Status requires Python 3." >&2
-fi
+# Release archives contain all supported native targets. Source installations
+# use the binary produced by ./build.sh; no interpreter is needed at runtime.
+prepare_backend() {
+  local plugin_dir="$1" platform arch native_source
+  arch="$(uname -m)"
+  case "$(uname -s)-${arch}" in
+    Darwin-arm64) platform="macos-arm64" ;;
+    Linux-x86_64) platform="linux-x64" ;;
+    *) platform="local" ;;
+  esac
+  native_source="${plugin_dir}/bin/${platform}/agy-desktop-backend"
+  if [[ -f "${native_source}" ]]; then
+    cp "${native_source}" "${plugin_dir}/sidecars/status/agy-desktop-backend"
+  fi
+  if [[ ! -f "${plugin_dir}/sidecars/status/agy-desktop-backend" ]]; then
+    echo "Error: native backend missing for $(uname -s)/${arch}." >&2
+    echo "Build the source first with Zig 0.14.1 and SQLite: ./build.sh" >&2
+    return 1
+  fi
+  chmod +x "${plugin_dir}/sidecars/status/agy-desktop-backend"
+}
 
 SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
 LOCAL_DIR=""
 if [[ -n "${SCRIPT_SOURCE}" && -f "${SCRIPT_SOURCE}" ]]; then
   CANDIDATE_DIR="$(cd "$(dirname "${SCRIPT_SOURCE}")" && pwd)"
-  if [[ -f "${CANDIDATE_DIR}/plugin.json" && -f "${CANDIDATE_DIR}/telemetry.py" ]]; then
+  if [[ -f "${CANDIDATE_DIR}/plugin.json" && -f "${CANDIDATE_DIR}/backend.zig" ]]; then
     LOCAL_DIR="${CANDIDATE_DIR}"
   elif [[ -f "${CANDIDATE_DIR}/desktop-panel/plugin.json" ]]; then
     LOCAL_DIR="${CANDIDATE_DIR}/desktop-panel"
@@ -66,14 +124,35 @@ fi
 mkdir -p "${HOME}/.gemini/config/plugins"
 
 if [[ -n "${LOCAL_DIR}" ]]; then
-  rm -rf "${TARGET_DIR}"
-  if [[ "${MODE}" == "copy" ]]; then
+  # Inferred mode: only a real git checkout wants a live symlink. An extracted
+  # release archive must be copied -- the user will delete the download folder.
+  if [[ "${MODE}" == "auto" ]]; then
+    if [[ -d "${LOCAL_DIR}/.git" || -d "$(dirname "${LOCAL_DIR}")/.git" ]]; then
+      MODE="link"
+    else
+      MODE="copy"
+    fi
+  fi
+  prepare_backend "${LOCAL_DIR}"
+  if [[ "${LOCAL_DIR}" == "${TARGET_DIR}" ]]; then
+    strip_quarantine "${TARGET_DIR}"
+    echo "Updated native backend in place at ${TARGET_DIR}"
+  elif [[ "${MODE}" == "copy" ]]; then
+    rm -rf "${TARGET_DIR}"
     mkdir -p "${TARGET_DIR}"
-    rsync -a --exclude 'node_modules' --exclude '.DS_Store' --exclude '__pycache__' "${LOCAL_DIR}/" "${TARGET_DIR}/"
-    chmod +x "${TARGET_DIR}/install.sh" "${TARGET_DIR}/hooks/track_active.py" 2>/dev/null || true
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --exclude 'node_modules' --exclude '.DS_Store' --exclude '__pycache__' --exclude 'tests' "${LOCAL_DIR}/" "${TARGET_DIR}/"
+    else
+      cp -R "${LOCAL_DIR}/." "${TARGET_DIR}/"
+      rm -rf "${TARGET_DIR}/ui/node_modules" "${TARGET_DIR}/tests" "${TARGET_DIR}/__pycache__"
+    fi
+    strip_quarantine "${TARGET_DIR}"
+    chmod +x "${TARGET_DIR}/install.sh" "${TARGET_DIR}/sidecars/status/agy-desktop-backend"
     echo "Copied ${LOCAL_DIR} -> ${TARGET_DIR}"
   else
+    rm -rf "${TARGET_DIR}"
     ln -s "${LOCAL_DIR}" "${TARGET_DIR}"
+    strip_quarantine "${TARGET_DIR}/sidecars/status/agy-desktop-backend"
     echo "Linked ${TARGET_DIR} -> ${LOCAL_DIR}"
   fi
 else
@@ -87,17 +166,15 @@ else
   fi
   echo "Downloading AGY Desktop Status plugin from ${ARCHIVE_URL} ..."
   if curl -fsSL "${ARCHIVE_URL}" -o "${TMP_DIR}/plugin.tar.gz"; then
+    verify_checksum "${TMP_DIR}/plugin.tar.gz" "${ARCHIVE_URL%/*}"
     tar -xzf "${TMP_DIR}/plugin.tar.gz" -C "${TMP_DIR}"
     EXTRACTED_DIR="${TMP_DIR}/agy-desktop-status"
     if [[ ! -f "${EXTRACTED_DIR}/plugin.json" ]]; then
       EXTRACTED_DIR="${TMP_DIR}"
     fi
   else
-    echo "Release archive not found; falling back to main branch archive..."
-    MAIN_URL="https://github.com/${REPO_SLUG}/archive/refs/heads/main.tar.gz"
-    curl -fsSL "${MAIN_URL}" -o "${TMP_DIR}/main.tar.gz"
-    tar -xzf "${TMP_DIR}/main.tar.gz" -C "${TMP_DIR}"
-    EXTRACTED_DIR="$(find "${TMP_DIR}" -maxdepth 3 -name "plugin.json" -exec dirname {} \; | head -n 1)"
+    echo "Error: native release archive unavailable. Download a release, or clone and build the source." >&2
+    exit 1
   fi
 
   if [[ -z "${EXTRACTED_DIR}" || ! -f "${EXTRACTED_DIR}/plugin.json" ]]; then
@@ -105,10 +182,12 @@ else
     exit 1
   fi
 
+  prepare_backend "${EXTRACTED_DIR}"
   rm -rf "${TARGET_DIR}"
   mkdir -p "${TARGET_DIR}"
   cp -R "${EXTRACTED_DIR}/." "${TARGET_DIR}/"
-  chmod +x "${TARGET_DIR}/install.sh" "${TARGET_DIR}/server.py" "${TARGET_DIR}/hooks/track_active.py" 2>/dev/null || true
+  strip_quarantine "${TARGET_DIR}"
+  chmod +x "${TARGET_DIR}/install.sh" "${TARGET_DIR}/sidecars/status/agy-desktop-backend"
   echo "Installed AGY Desktop Status to ${TARGET_DIR}"
 fi
 

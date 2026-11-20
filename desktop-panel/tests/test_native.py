@@ -1,0 +1,315 @@
+"""Native runtime regressions. Python is a test driver, never a plugin dependency."""
+import json
+import os
+import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+PANEL = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PANEL / 'tests' / 'reference'))
+import telemetry as reference
+from test_desktop_panel import field_bytes, field_varint
+
+BINARY = Path(os.environ.get('AGY_DESKTOP_BACKEND', str(PANEL / 'sidecars' / 'status' / ('agy-desktop-backend.exe' if os.name == 'nt' else 'agy-desktop-backend')))).resolve()
+CID = '12345678-1234-1234-1234-123456789abc'
+
+
+def blob(tokens=100, seconds=2, model=b'gemini-demo', duration11=None):
+    chat = field_bytes(4, field_varint(2, 20) + field_varint(3, tokens) + field_varint(5, 80))
+    if seconds is not None:
+        chat += field_bytes(12, field_varint(1, seconds))
+    if duration11 is not None:
+        chat += field_bytes(11, field_varint(1, duration11))
+    return field_bytes(1, chat + field_bytes(19, model))
+
+
+class NativeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not BINARY.is_file():
+            raise RuntimeError(f'Build the Zig backend first: {BINARY}')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='agy-native-test-')
+        self.root = Path(self.tmp.name)
+        self.data = self.root / 'plugin_data' / 'agy-desktop-status'
+        self.data.mkdir(parents=True)
+        (self.root / 'conversations').mkdir()
+        self.path = self.root / 'conversations' / f'{CID}.db'
+        self.log = self.root / 'brain' / CID / '.system_generated' / 'logs' / 'transcript.jsonl'
+        self.env = dict(os.environ, AGY_STATUSLINE_QUOTA_FILE=str(self.root / 'quota.json'))
+        self.processes = []
+
+    def tearDown(self):
+        for proc in self.processes:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream:
+                    stream.close()
+        self.tmp.cleanup()
+
+    def args(self):
+        return ['--desktop-root', str(self.root), '--data-dir', str(self.data)]
+
+    def snapshot(self, cid=CID):
+        p = subprocess.run([str(BINARY), 'status', '--conversation-id', cid, *self.args()], env=self.env, text=True, capture_output=True, check=True)
+        return json.loads(p.stdout)
+
+    def worker(self):
+        p = subprocess.Popen([str(BINARY), '--serve', *self.args()], env=self.env, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.processes.append(p)
+        return p
+
+    def query(self, proc, cid=CID):
+        proc.stdin.write(json.dumps({'conversationId': cid}) + '\n')
+        proc.stdin.flush()
+        return json.loads(proc.stdout.readline())
+
+    def transcript(self, rows):
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        self.log.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+
+    def database(self, entries=(None,), wal=False):
+        db = sqlite3.connect(self.path)
+        if wal:
+            db.execute('PRAGMA journal_mode=WAL')
+        db.execute('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB)')
+        for idx, entry in enumerate(entries):
+            db.execute('INSERT INTO gen_metadata VALUES(?,?)', (idx, blob() if entry is None else entry))
+        db.commit()
+        return db
+
+    def reference(self):
+        with unittest.mock.patch.dict(os.environ, self.env):
+            return reference.build_status_snapshot(CID, self.data, self.root)
+
+    def assert_snapshot_matches(self, actual, expected):
+        # Dynamic clock fields are checked separately; normalized timestamps may
+        # use UTC rather than preserving the original log's timezone notation.
+        dynamic = {'generatedAt', 'observedAt', 'observedAgeSec', 'resetInSec', 'elapsedSec', 'cacheHit'}
+        def compare(a, e, path=''):
+            if isinstance(e, dict):
+                for key in e:
+                    if key in dynamic:
+                        continue
+                    self.assertIn(key, a, path)
+                    compare(a[key], e[key], path + '.' + key)
+            elif isinstance(e, list):
+                self.assertEqual(len(a), len(e), path)
+                for idx, (x, y) in enumerate(zip(a, e)):
+                    compare(x, y, f'{path}[{idx}]')
+            elif isinstance(e, str) and 'T' in e and e.endswith(('+00:00', 'Z')):
+                self.assertAlmostEqual(datetime.fromisoformat(a.replace('Z', '+00:00')).timestamp(), datetime.fromisoformat(e.replace('Z', '+00:00')).timestamp(), places=5, msg=path)
+            elif isinstance(e, (float, int)) and not isinstance(e, bool):
+                self.assertAlmostEqual(a, e, places=6, msg=path)
+            else:
+                self.assertEqual(a, e, path)
+        compare(actual, expected)
+
+    def test_runtime_configuration_is_native_only(self):
+        manifest = json.loads((PANEL / 'sidecars' / 'status' / 'sidecar.json').read_text())
+        self.assertEqual(manifest['command'], './agy-desktop-backend')
+        self.assertEqual(manifest['args'], ['serve'])
+        hooks = (PANEL / 'hooks.json').read_text()
+        self.assertNotIn('python', hooks)
+        self.assertIn('agy-desktop-backend hook', hooks)
+        self.assertFalse((PANEL / 'telemetry.py').exists())
+        self.assertFalse((PANEL / 'sidecars' / 'status' / 'main.mjs').exists())
+
+    def test_resolves_host_sidecar_data_environment(self):
+        (self.data / 'active_session.json').write_text(json.dumps({'activeConversationId': CID, 'sessions': {}}))
+        env = dict(self.env, ANTIGRAVITY_EXECUTABLE_DATA_DIR=str(self.root / 'sidecar_data' / 'agy-desktop-status' / 'status' / 'data'))
+        env.pop('AGY_DESKTOP_DATA_DIR', None)
+        env.pop('PLUGIN_DATA', None)
+        proc = subprocess.run([str(BINARY), 'status'], env=env, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(proc.stdout)['conversationId'], CID)
+
+    @unittest.skipIf(os.name == 'nt', 'Unix installer')
+    def test_release_installer_selects_native_binary(self):
+        source = (PANEL / 'install.sh').read_text()
+        prepare = source[source.index('prepare_backend() {'):source.index('\nSCRIPT_SOURCE=')]
+        import platform
+        target = {('Darwin', 'arm64'): 'macos-arm64', ('Linux', 'x86_64'): 'linux-x64'}.get((platform.system(), platform.machine()), 'local')
+        (self.root / 'bin' / target).mkdir(parents=True)
+        (self.root / 'sidecars' / 'status').mkdir(parents=True)
+        import shutil
+        shutil.copyfile(BINARY, self.root / 'bin' / target / 'agy-desktop-backend')
+        proc = subprocess.run(['bash', '-c', prepare + '\nprepare_backend "$1"', '_', str(self.root)], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        installed = self.root / 'sidecars' / 'status' / 'agy-desktop-backend'
+        self.assertTrue(os.access(installed, os.X_OK))
+        self.assertEqual(installed.read_bytes(), BINARY.read_bytes())
+
+    def test_empty_and_invalid_conversations(self):
+        self.assertFalse(self.snapshot('auto')['found'])
+        self.assertEqual(self.snapshot('../../etc/passwd')['conversationId'], '')
+        self.assertFalse(self.snapshot()['found'])
+        self.assertIsNone(self.snapshot()['sessionUsage'])
+
+    def test_all_stats_match_python_reference(self):
+        db = self.database([blob(100, 2), blob(600, 3, b'claude-demo')]); db.close()
+        self.transcript([
+            {'type': 'USER_INPUT', 'created_at': '2026-11-20T01:00:00.123456Z'},
+            {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'created_at': '2026-11-20T01:00:04.123456Z', 'model': 'gemini-demo-high', 'input_tokens': 10, 'cache_read_tokens': 90, 'output_tokens': 100},
+            {'type': 'CHECKPOINT', 'status': 'DONE', 'created_at': '2026-11-20T01:00:05Z', 'input_tokens': 50, 'cache_read_tokens': 0, 'output_tokens': 5},
+            {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'created_at': '2026-11-20T01:00:08Z', 'model': 'claude-demo', 'input_tokens': 100, 'cache_read_tokens': 0, 'output_tokens': 600},
+            {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'input_tokens': False, 'cache_read_tokens': 0, 'output_tokens': 4},
+        ])
+        self.assert_snapshot_matches(self.snapshot(), self.reference())
+
+    def test_schema_variants_and_partial_protobuf(self):
+        for col, idx in [('metadata', 'idx'), ('data', 'step_idx')]:
+            with self.subTest(col=col):
+                self.path.unlink(missing_ok=True)
+                db = self.database([blob(seconds=None, duration11=5) + b'\xff'])
+                db.execute(f'CREATE TABLE steps({idx} INTEGER PRIMARY KEY,{col} BLOB)')
+                usage = field_bytes(9, field_varint(2, 200) + field_varint(5, 800) + field_varint(3, 50))
+                db.execute(f'INSERT INTO steps VALUES(1,?)', (usage,)); db.commit(); db.close()
+                self.assert_snapshot_matches(self.snapshot(), self.reference())
+
+    def test_invalid_counts_empty_metadata_and_unknown_payloads(self):
+        db = self.database([field_bytes(1, b'')]); db.close()
+        for invalid in (None, -1, True, "100", 1.5, 2**53, 2**53 - 1):
+            with self.subTest(invalid=invalid):
+                self.transcript([{'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'input_tokens': invalid, 'cache_read_tokens': 0, 'output_tokens': 2, 'content': 'x' * (256 * 1024)}])
+                self.assert_snapshot_matches(self.snapshot(), self.reference())
+
+    def test_all_speed_samples_and_bounded_context(self):
+        db = self.database([blob(100 if i < 13 else 600, 2 if i < 13 else 3) for i in range(14)]); db.close()
+        self.transcript([{'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'model': 'gemini-demo-low', 'input_tokens': 0, 'cache_read_tokens': 0, 'output_tokens': 1}] * 130)
+        snap = self.snapshot()
+        self.assertEqual(len(snap['contextHistory']), 120)
+        self.assertEqual(len(snap['history']), 12)
+        self.assertEqual(snap['modelUsage'][0]['speedSamples'], 14)
+        self.assertEqual(snap['modelUsage'][0]['avgSpeedTokS'], round(1900 / 29, 1))
+        self.assert_snapshot_matches(snap, self.reference())
+
+    def test_incremental_partial_lines_truncate_regrow_and_switch(self):
+        first = {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'input_tokens': 1, 'cache_read_tokens': 0, 'output_tokens': 2}
+        self.transcript([first]); p = self.worker()
+        self.assertEqual(self.query(p)['sessionUsage']['totalTokens'], 3)
+        extra = json.dumps({'type': 'CHECKPOINT', 'status': 'DONE'})
+        with self.log.open('a') as f:
+            f.write(extra[:12])
+        self.assertEqual(self.query(p)['compactionCount'], 0)
+        with self.log.open('a') as f:
+            f.write(extra[12:] + '\n')
+        self.assertEqual(self.query(p)['compactionCount'], 1)
+        self.assertEqual(self.query(p)['sessionUsage']['requestCount'], 2)
+        self.transcript([first] * 8)
+        self.assertEqual(self.query(p)['sessionUsage']['requestCount'], 8)
+        replacement = self.log.with_suffix('.next')
+        old = self.log.stat()
+        replacement.write_text(json.dumps({'type': 'USER_INPUT'}) + '\n')
+        os.utime(replacement, ns=(old.st_atime_ns, old.st_mtime_ns)); replacement.replace(self.log)
+        self.assertEqual(self.query(p)['stepCount'], 1)
+        other = '00000000-0000-0000-0000-000000000000'
+        self.assertFalse(self.query(p, other)['found'])
+        self.assertEqual(self.query(p)['stepCount'], 1)
+
+    def test_wal_schema_changes_locks_and_database_replacement(self):
+        db = self.database(wal=True); p = self.worker()
+        self.assertEqual(self.query(p)['outputTokens'], 100)
+        db.execute('UPDATE gen_metadata SET data=? WHERE idx=0', (blob(200),)); db.commit()
+        self.assertEqual(self.query(p)['outputTokens'], 200)
+        db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,metadata BLOB)')
+        db.execute('INSERT INTO steps VALUES(1,?)', (field_bytes(9, field_varint(2, 300)),)); db.commit()
+        self.assertEqual(self.query(p)['inputTokens'], 300)
+        db.close()
+        new_path = self.path.with_suffix('.next')
+        new_db = sqlite3.connect(new_path); new_db.execute('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB)')
+        new_db.execute('INSERT INTO gen_metadata VALUES(0,?)', (blob(900),)); new_db.commit(); new_db.close()
+        new_path.replace(self.path)
+        self.assertEqual(self.query(p)['outputTokens'], 900)
+        writer = sqlite3.connect(self.path)
+        writer.execute('BEGIN EXCLUSIVE')
+        # An invalidated snapshot must retry after a temporary lock.
+        self.transcript([{'type': 'USER_INPUT'}])
+        self.path.touch()
+        self.assertIsNone(self.query(p)['outputTokens'])
+        writer.rollback(); writer.close()
+        self.assertEqual(self.query(p)['outputTokens'], 900)
+
+    def test_live_unicode_rate_and_step_reset(self):
+        db = self.database()
+        db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,status INTEGER,step_type INTEGER,step_payload BLOB,metadata BLOB)')
+        payload = lambda text: field_bytes(20, field_bytes(1, text.encode()))
+        db.execute('INSERT INTO steps VALUES(1,8,1,?,NULL)', (payload('你好'),)); db.commit()
+        self.transcript([{'type': 'USER_INPUT', 'created_at': datetime.now(timezone.utc).isoformat()}])
+        p = self.worker(); snap = self.query(p)
+        self.assertTrue(snap['live']['active']); self.assertEqual(snap['live']['outputChars'], 2)
+        self.assertIsNone(snap['live']['charsPerSec']); time.sleep(.08)
+        db.execute('UPDATE steps SET step_payload=?', (payload('你好世界'),)); db.commit()
+        self.assertGreater(self.query(p)['live']['charsPerSec'], 0)
+        db.execute('UPDATE steps SET idx=2'); db.commit()
+        self.assertIsNone(self.query(p)['live']['charsPerSec'])
+        db.execute('UPDATE steps SET status=3'); db.commit(); db.close()
+        self.assertFalse(self.query(p)['live']['active'])
+
+    def test_quota_roll_forward_and_most_constrained_bucket(self):
+        now = int(time.time())
+        content = {'source': 'agy-statusline', 'observed_at': now - 10 * 86400, 'buckets': [
+            {'key': 'gemini-weekly', 'remaining_fraction': .8, 'reset_at': now - 604200},
+            {'key': 'gemini-flash-weekly', 'remaining_fraction': .2, 'reset_at': now - 604200},
+            {'key': 'claude-5h', 'remaining_fraction': .5},
+            {'key': 'argon-weekly', 'remaining_fraction': False},
+        ]}
+        (self.root / 'quota.json').write_text(json.dumps(content))
+        self.assert_snapshot_matches(self.snapshot(), self.reference())
+        quota = self.snapshot()['quota']
+        self.assertTrue(quota['stale']); self.assertTrue(quota['windows'][0]['approx'])
+        self.assertEqual(quota['windows'][0]['remainingPct'], 20)
+
+    def test_hook_preserves_metadata_limits_sessions_and_allows_stop(self):
+        def invoke(data):
+            p = subprocess.run([str(BINARY), 'hook', *self.args()], env=self.env, input=json.dumps(data), text=True, capture_output=True, check=True)
+            return json.loads(p.stdout)
+        invoke({'conversationId': CID, 'hookEventName': 'SessionStart', 'modelName': 'demo', 'cwd': '/project'})
+        self.assertEqual(invoke({'conversationId': CID, 'hookEventName': 'Stop'}), {'decision': 'allow'})
+        state = json.loads((self.data / 'active_session.json').read_text())
+        self.assertEqual(state['sessions'][CID]['modelName'], 'demo')
+        self.assertEqual(state['sessions'][CID]['cwd'], '/project')
+        for i in range(32):
+            invoke({'conversationId': f'00000000-0000-0000-0000-{i:012d}'})
+        self.assertEqual(len(json.loads((self.data / 'active_session.json').read_text())['sessions']), 30)
+        self.assertEqual(invoke({'hookEventName': 'Stop', 'conversationId': '../../invalid'}), {'decision': 'allow'})
+        self.assertEqual(self.snapshot('auto')['conversationId'], '00000000-0000-0000-0000-000000000031')
+
+    def test_http_contract_auth_embedded_assets_and_methods(self):
+        # Reserve a port only for choosing its number; the backend owns binding.
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]
+        env = dict(self.env, ANTIGRAVITY_SIDECAR_UI_TOKEN='test-token')
+        p = subprocess.Popen([str(BINARY), 'serve', '--port', str(port), *self.args()], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.processes.append(p)
+        self.assertIn('listening on 127.0.0.1:', p.stderr.readline())
+        url = f'http://127.0.0.1:{port}'
+        def request(path, **kwargs):
+            return urllib.request.urlopen(urllib.request.Request(url + path, **kwargs), timeout=5)
+        with request('/') as r:
+            html = r.read().decode(); self.assertIn('/preload.js', html); self.assertIn('context-section', html)
+        with request('/preload.js') as r:
+            self.assertIn('X-Sidecar-Token', r.read().decode())
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            request('/api/status')
+        self.assertEqual(e.exception.code, 401); e.exception.close()
+        with request('/api/status?conversationId=auto', headers={'X-Sidecar-Token': 'test-token'}) as r:
+            self.assertFalse(json.load(r)['found'])
+        for path, method, status in [('/api/status', 'POST', 405), ('/../backend.zig', 'GET', 404), ('/api/status?token=%GG', 'GET', 400)]:
+            with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as e:
+                request(path, method=method)
+            self.assertEqual(e.exception.code, status); e.exception.close()
+
+
+if __name__ == '__main__':
+    unittest.main()

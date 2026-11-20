@@ -11,7 +11,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 PANEL_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PANEL_DIR))
+REFERENCE_DIR = PANEL_DIR / "tests" / "reference"
+sys.path.insert(0, str(REFERENCE_DIR))
 
 from telemetry import (  # noqa: E402
     build_status_snapshot,
@@ -173,7 +174,7 @@ class DesktopPanelTests(unittest.TestCase):
 
             # Simulate hook execution writing active_session.json
             hook_proc = subprocess.run(
-                [sys.executable, str(PANEL_DIR / "hooks" / "track_active.py")],
+                [sys.executable, str(REFERENCE_DIR / "track_active.py")],
                 input=json.dumps(
                     {
                         "conversationId": cid,
@@ -332,7 +333,7 @@ class DesktopPanelTests(unittest.TestCase):
             proc = subprocess.run(
                 [
                     sys.executable,
-                    str(PANEL_DIR / "telemetry.py"),
+                    str(REFERENCE_DIR / "telemetry.py"),
                     "--conversation-id",
                     "auto",
                     "--data-dir",
@@ -671,7 +672,7 @@ class DesktopPanelTests(unittest.TestCase):
             proc = subprocess.Popen(
                 [
                     sys.executable,
-                    str(PANEL_DIR / "telemetry.py"),
+                    str(REFERENCE_DIR / "telemetry.py"),
                     "--serve",
                     "--data-dir",
                     str(data_dir),

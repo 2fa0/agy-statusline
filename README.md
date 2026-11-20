@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/Antigravity-CLI%20%26%20Desktop%202.0-6366f1?style=flat-square" alt="Antigravity CLI & Desktop 2.0" />
   <img src="https://img.shields.io/badge/Network-Zero%20Network%20(100%25%20Local)-16a34a?style=flat-square" alt="Zero Network" />
   <img src="https://img.shields.io/badge/Compliance-Official%20Extension%20API-0ea5e9?style=flat-square" alt="Official Extension API" />
-  <img src="https://img.shields.io/badge/Built%20with-Zig%20%2B%20Python-f59e0b?style=flat-square" alt="Built with Zig + Python" />
+  <img src="https://img.shields.io/badge/Built%20with-Zig-f59e0b?style=flat-square" alt="Built with Zig" />
 </p>
 
 ## 实景预览（CLI & Desktop 双端并排）
@@ -45,7 +45,7 @@
 | **额度重置时间** | 仅显示相对倒计时（如“剩 2 天 4 小时”） | **绝对本地重置时间**：直接换算为 `重置于 11/23 周一 11:29`，并自动区分 Gemini / Argon / Claude 3p 额度池 |
 | **上下文与压缩真相** | 只看当前占比，难以定位何时触发压缩 | **120 次交互式上下文曲线 + `CHECKPOINT` 压缩标记**（`Compact: N`），不猜阈值、不伪造数据 |
 | **缓存与模型拆分** | 缺少 Prompt 缓存命中率或按模型分拆 | **加权缓存命中率（`Cache hit` / `S.Cache`）+ 按模型统计 Token / 命中率 / 均速** |
-| **资源开销** | 常驻后台进程或依赖重型运行时 | **CLI 零依赖单文件**；桌面端常驻 Node + Python worker，使用文件指纹缓存与日志增量解析；空闲降频、隐藏暂停轮询，后台进程仍保留 |
+| **资源开销** | 常驻后台进程或依赖重型运行时 | **CLI 零依赖单文件**；桌面端单 Zig 后台，无 Node/Python 运行时；文件指纹缓存、分块增量解析，空闲降频、隐藏暂停轮询 |
 
 ---
 
@@ -66,30 +66,21 @@
 
 ## 30 秒快速安装
 
-### 1. 安装 Desktop 右侧面板（macOS / Linux 一行命令）
-
-无需克隆代码、无需安装 Node.js 或编译前端（已内置预构建单文件 UI，需要已安装 `python3`）：
+一条命令同时装好 **CLI 状态栏** 与 **Desktop 右侧面板**。脚本会下载对应平台的原生二进制、按 `SHA256SUMS.txt` 校验完整性、清除 macOS 的 `quarantine` 隔离标记（并回读确认真的清掉了），最后立即自检（被 Gatekeeper 拦截会在那一刻报错，而不是让你面对一个白屏面板）：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-panel/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash
 ```
 
-安装后重启 Antigravity Desktop，在任意对话右上角辅助栏点击 **`+` → `AGY Status`** 即可打开。
+- 只装一端：`... | bash -s -- --cli-only` 或 `--panel-only`
+- 固定版本：`AGY_STATUSLINE_TAG=v0.4.0 ... | bash`
+- **升级 / 重装：再跑一次同一条命令即可**（幂等，覆盖安装）
+- 卸载：`... | bash -s -- --uninstall`
 
-### 2. 安装 CLI 状态栏（macOS / Linux 一行命令）
+装完还剩两步：
 
-使用 `curl` 下载到 `~/.gemini/antigravity-cli/`（相比浏览器下载，通常不会附加下载隔离属性）：
-
-- **macOS (Apple Silicon / arm64)**：
-  ```sh
-  mkdir -p ~/.gemini/antigravity-cli && curl -fsSL https://github.com/2fa0/agy-statusline/releases/latest/download/agy-statusline-macos-arm64.tar.gz | tar -xz -C ~/.gemini/antigravity-cli && chmod +x ~/.gemini/antigravity-cli/agy-statusline
-  ```
-- **Linux (x64)**：
-  ```sh
-  mkdir -p ~/.gemini/antigravity-cli && curl -fsSL https://github.com/2fa0/agy-statusline/releases/latest/download/agy-statusline-linux-x64.tar.gz | tar -xz -C ~/.gemini/antigravity-cli && chmod +x ~/.gemini/antigravity-cli/agy-statusline
-  ```
-
-随后在 `~/.gemini/antigravity-cli/settings.json` 中加入：
+1. **CLI**：把下面的 `statusLine` 片段加入 `~/.gemini/antigravity-cli/settings.json`（安装脚本会打印出完整路径）
+2. **面板**：重启 Antigravity Desktop，在任意对话右上角辅助栏点击 **`+` → `AGY Status`**
 
 ```json
 {
@@ -101,7 +92,46 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-pa
 }
 ```
 
-> Windows 用户或需更多安装方式，请继续阅读下方完整说明。
+### 装不上时先跑诊断
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash -s -- --doctor
+```
+
+会打印平台、安装路径、`quarantine` 状态、代码签名与签名完整性、两个二进制的自检结果，以及**系统安全环境**（Gatekeeper 开关、设备是否受 MDM 纳管、是否被策略要求 Developer ID）——面板白屏、状态栏无输出、企业机器被拒这几类问题基本都在这里能定位。
+
+### macOS 安全机制说明（重要）
+
+本项目用 **ad-hoc 代码签名**（`codesign --sign -`），**没有 Apple Developer ID，也没有公证**。这意味着：
+
+| 安装方式 | 结果 |
+| :--- | :--- |
+| `curl ... \| bash`（推荐） | ✅ 正常。`curl` 从不写入 `quarantine` 属性，Gatekeeper 不会评估这些二进制 |
+| 浏览器下载 `.tar.gz` / `.zip` 后解压运行 | ❌ 被拦。浏览器会打上 `quarantine`，弹出「Apple 无法验证…」，而且新版 macOS 的该对话框只有「完成 / 移到废纸篓」 |
+
+即使已经被拦，修复也只要一行（安装脚本每次运行都会自动执行它）：
+
+```sh
+xattr -dr com.apple.quarantine ~/.gemini/config/plugins/agy-desktop-status
+xattr -dr com.apple.quarantine ~/.gemini/antigravity-cli
+```
+
+> ad-hoc 签名在 Apple Silicon 上是**必需**的（完全未签名的 arm64 二进制会被直接 `Killed: 9`），但它不等于公证，也无法通过 Gatekeeper 的浏览器下载路径。想让「下载双击安装」也能用，只有走 Developer ID + 公证一条路。
+
+#### 这套机制能保证什么、不能保证什么
+
+**能保证**（有实测）：在默认 macOS 配置下走文档里的安装路径，不会因「arm64 未签名」或「quarantine 触发 Gatekeeper」被拦；即使被拦，安装那一刻就会报错并给出修复命令。
+
+**不能保证**（遇到时不是安装器的 bug）：
+
+| 情况 | 说明 |
+| :--- | :--- |
+| 企业 MDM / 配置档 | 若 `com.apple.security.syspolicy` 要求 Developer ID，ad-hoc 无论有无隔离标记都会被拒。`--doctor` 会直接报告这一点；需联系 IT 按 CDHash 加白名单 |
+| 第三方安全软件 / EDR | 它们有独立于 Gatekeeper 的白名单，报错界面也不是 Apple 的 |
+| 未来的 macOS | 若评估扩展到非隔离文件，ad-hoc 会整体失效，只能靠公证 |
+| 用户后续重新引入隔离属性 | 浏览器重下、AirDrop、从备份恢复都会重新打上；重跑安装器即可修复 |
+
+> Windows 用户请使用 PowerShell 安装脚本，详见下方各章节。
 
 ---
 
@@ -155,6 +185,9 @@ Gemini  5h 额度   96%   重置于 今天 11:29 · 剩 1 小时 58 分
 
 #### 从 Releases 下载插件包安装（macOS / Linux / Windows）
 
+> [!WARNING]
+> 浏览器下载会附加 `com.apple.quarantine` 属性，直接双击/执行解压出来的 `agy-desktop-backend` 会被 Gatekeeper 拦截（本项目仅 ad-hoc 签名，未公证）。即使是用浏览器下载的，也请 **运行 `./install.sh` 安装**——它会自动清除隔离属性；不要直接执行二进制。
+
 1. 前往 [Releases](https://github.com/2fa0/agy-statusline/releases) 页面下载桌面端插件包：
    - macOS / Linux：`agy-desktop-status-plugin.tar.gz`
    - Windows：`agy-desktop-status-plugin.zip`
@@ -177,8 +210,11 @@ Gemini  5h 额度   96%   重置于 今天 11:29 · 剩 1 小时 58 分
 ```sh
 git clone https://github.com/2fa0/agy-statusline.git
 cd agy-statusline/desktop-panel
-./install.sh --link   # 使用软链接安装，本地修改即时生效（默认也是软链接；加 --copy 则为独立拷贝）
+./build.sh          # 需要 Zig 0.14.1、系统 C 编译器和 SQLite 开发库
+./install.sh --link   # 使用软链接安装，本地修改即时生效
 ```
+
+`--copy` 则复制成独立目录。不传参数时会在仓库内自动选软链接、在解压出来的发布包里自动选复制（避免把插件指向一个你随后会删掉的下载目录）。
 
 #### 卸载桌面端插件
 
@@ -215,6 +251,9 @@ cd agy-statusline/desktop-panel
 
 #### 1. 从 Releases 页面手动下载（macOS / Linux / Windows）
 
+> [!TIP]
+> 通常不需要这节：上方的 `install.sh` 一行命令会下载、校验并安装，同时清除 macOS 隔离属性。
+
 前往本仓库的 [Releases](https://github.com/2fa0/agy-statusline/releases) 页面，下载对应平台的压缩包并解压：
 
 - **Linux (x64)**: `agy-statusline-linux-x64.tar.gz`
@@ -230,12 +269,12 @@ chmod +x agy-statusline
 
 > [!TIP]
 > **macOS 安装与签名说明**：
-> - **推荐优先使用上方的 `curl` 一行命令安装**：`curl` 通常不会附加 `com.apple.quarantine` 下载隔离属性。Release 内置 ad-hoc 代码签名，满足 Apple Silicon 的基本签名要求；这不等于 Developer ID 签名或 Apple 公证，也不能保证所有系统策略下均可运行。
-> - **若通过浏览器手动下载**：macOS 会附加 `com.apple.quarantine` 属性，导致首次运行被 Gatekeeper 拦截（由 `agy` 在后台静默调用时甚至不会弹窗，仅表现为状态栏无输出）。请执行以下命令清除隔离属性：
+> - **推荐优先使用上方的 `curl` 一行命令安装**：`curl` 从不写入 `com.apple.quarantine`，Gatekeeper 因此不会评估这些二进制。Release 内置 ad-hoc 代码签名，满足 Apple Silicon 的基本执行要求；这不等于 Developer ID 签名或 Apple 公证，也不能保证所有系统策略下均可运行。
+> - **若通过浏览器手动下载**：macOS 会附加 `com.apple.quarantine`，首次运行会被 Gatekeeper 拦截。由 `agy` 在后台静默调用时甚至不会弹窗，仅表现为**状态栏无输出**。先执行 `agy-statusline --version` 确认能跑，若被拦则：
 >   ```sh
 >   xattr -dr com.apple.quarantine /path/to/agy-statusline
 >   ```
-> - **Intel Mac (`x86_64`) 或 macOS 13 以下系统**：Release 暂仅提供 `macos-arm64` 产物，请参考下方「从源码构建 CLI」使用 `./build.sh` 本地编译。
+> - **Intel Mac (`x86_64`) 或 macOS 13 以下系统**：Release 仅提供 `macos-arm64` 产物，请参考下方「从源码构建 CLI」使用 `./build.sh` 本地编译。
 
 #### 2. 配置 AGY CLI
 
@@ -275,5 +314,8 @@ Windows 示例（注意路径分隔符转义或使用正斜杠）：
 
 - **macOS**（使用系统 clang 和 SQLite）：
   在本目录运行 `./build.sh`；如果 Zig 不在 `PATH` 中，运行 `ZIG=/path/to/zig ./build.sh`。
+  构建完可以直接在仓库根目录运行 `./install.sh`（本地源码模式）把 CLI 和面板一起装好，无需联网。
 - **Release 静态构建**（Linux x64 / Windows x64）：
   参考 [`.github/workflows/release.yml`](.github/workflows/release.yml) 中使用 SQLite amalgamation 静态链接的方式。
+
+两个二进制都支持 `--version`，版本号来自仓库根目录的 `VERSION` 文件（单一来源，`./install.sh --doctor` 会交叉核对）。

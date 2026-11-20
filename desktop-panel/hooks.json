@@ -3,28 +3,28 @@
     "SessionStart": [
       {
         "type": "command",
-        "command": "python3 ./hooks/track_active.py",
+        "command": "./sidecars/status/agy-desktop-backend hook",
         "timeout": 5
       }
     ],
     "PreInvocation": [
       {
         "type": "command",
-        "command": "python3 ./hooks/track_active.py",
+        "command": "./sidecars/status/agy-desktop-backend hook",
         "timeout": 5
       }
     ],
     "PostInvocation": [
       {
         "type": "command",
-        "command": "python3 ./hooks/track_active.py",
+        "command": "./sidecars/status/agy-desktop-backend hook",
         "timeout": 5
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "python3 ./hooks/track_active.py",
+        "command": "./sidecars/status/agy-desktop-backend hook",
         "timeout": 5
       }
     ]
