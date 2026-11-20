@@ -149,6 +149,15 @@ fn socketTimeout(stream: std.net.Stream) void {
     }
 }
 fn serve(a: A, cfg: telemetry.Config, port_arg: ?u16) !void {
+    if (builtin.os.tag != .windows) {
+        // Prevent client disconnects during HTTP writes from killing the sidecar.
+        const act: std.posix.Sigaction = .{
+            .handler = .{ .handler = std.posix.SIG.IGN },
+            .mask = std.posix.empty_sigset,
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.PIPE, &act, null);
+    }
     const port = port_arg orelse try std.fmt.parseInt(u16, c.env(a, "ANTIGRAVITY_SIDECAR_WEB_PORT") orelse return error.MissingSidecarPort, 10);
     const token = c.env(a, "ANTIGRAVITY_SIDECAR_UI_TOKEN");
     var html: []const u8 = html_bundle;

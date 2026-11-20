@@ -1,10 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 /// Single source of truth: the repository root VERSION file.
 const version = @embedFile("VERSION");
 extern "c" fn sqlite3_open_v2([*:0]const u8, *?*anyopaque, c_int, ?[*:0]const u8) c_int;
 extern "c" fn sqlite3_close(?*anyopaque) c_int;
+extern "c" fn sqlite3_errcode(?*anyopaque) c_int;
 extern "c" fn sqlite3_prepare_v2(?*anyopaque, [*:0]const u8, c_int, *?*anyopaque, ?*?[*:0]const u8) c_int;
 extern "c" fn sqlite3_step(?*anyopaque) c_int;
 extern "c" fn sqlite3_column_blob(?*anyopaque, c_int) ?[*]const u8;
@@ -82,23 +84,79 @@ fn metadataSpeed(data: []const u8) ?f64 {
     const speed = @as(f64, @floatFromInt(output)) / seconds;
     return if (speed > 0 and speed < 1000) speed else null;
 }
+fn fileUri(allocator: Allocator, path: []const u8, query: []const u8) ![:0]const u8 {
+    var out = std.ArrayList(u8).init(allocator);
+    try out.appendSlice(if (std.mem.startsWith(u8, path, "/")) "file://" else "file:///");
+    for (path) |ch| {
+        const byte: u8 = if (builtin.os.tag == .windows and ch == '\\') '/' else ch;
+        switch (byte) {
+            '%' => try out.appendSlice("%25"),
+            '?' => try out.appendSlice("%3F"),
+            '#' => try out.appendSlice("%23"),
+            else => try out.append(byte),
+        }
+    }
+    try out.append('?');
+    try out.appendSlice(query);
+    return out.toOwnedSliceSentinel(0);
+}
+fn isWalHeader(path: []const u8) bool {
+    const file = std.fs.cwd().openFile(path, .{}) catch return false;
+    defer file.close();
+    var hdr: [20]u8 = undefined;
+    const len = file.readAll(&hdr) catch return false;
+    return len == hdr.len and (hdr[18] == 2 or hdr[19] == 2);
+}
+fn querySpeed(target: [:0]const u8, flags: c_int, err_out: *c_int, speed_out: *?f64) bool {
+    speed_out.* = null;
+    err_out.* = 0;
+    var db: ?*anyopaque = null;
+    if (sqlite3_open_v2(target, &db, flags, null) != 0) {
+        if (db != null) {
+            err_out.* = sqlite3_errcode(db);
+            _ = sqlite3_close(db);
+        }
+        return false;
+    }
+    defer _ = sqlite3_close(db);
+    var stmt: ?*anyopaque = null;
+    if (sqlite3_prepare_v2(db, "SELECT data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC LIMIT 1", -1, &stmt, null) != 0) {
+        err_out.* = sqlite3_errcode(db);
+        return false;
+    }
+    defer _ = sqlite3_finalize(stmt);
+    const rc = sqlite3_step(stmt);
+    if (rc == 101) return true;
+    if (rc != 100) {
+        err_out.* = sqlite3_errcode(db);
+        return false;
+    }
+    const ptr = sqlite3_column_blob(stmt, 0) orelse return true;
+    const len = sqlite3_column_bytes(stmt, 0);
+    if (len > 0) speed_out.* = metadataSpeed(ptr[0..@intCast(len)]);
+    return true;
+}
 fn lastSpeed(allocator: Allocator, id: []const u8) ?f64 {
     if (id.len != 36) return null;
     for (id) |ch| if (!std.ascii.isHex(ch) and ch != '-') { return null; };
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch
         std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return null;
-    const path = std.fmt.allocPrintZ(allocator, "{s}/.gemini/antigravity-cli/conversations/{s}.db", .{ home, id }) catch return null;
-    var db: ?*anyopaque = null;
-    if (sqlite3_open_v2(path, &db, 1, null) != 0) { if (db != null) _ = sqlite3_close(db); return null; }
-    defer _ = sqlite3_close(db);
-    var stmt: ?*anyopaque = null;
-    if (sqlite3_prepare_v2(db, "SELECT data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC LIMIT 1", -1, &stmt, null) != 0) return null;
-    defer _ = sqlite3_finalize(stmt);
-    if (sqlite3_step(stmt) != 100) return null;
-    const ptr = sqlite3_column_blob(stmt, 0) orelse return null;
-    const len = sqlite3_column_bytes(stmt, 0);
-    if (len <= 0) return null;
-    return metadataSpeed(ptr[0..@intCast(len)]);
+    const path = std.fmt.allocPrint(allocator, "{s}/.gemini/antigravity-cli/conversations/{s}.db", .{ home, id }) catch return null;
+    const path_z = allocator.dupeZ(u8, path) catch return null;
+    var err: c_int = 0;
+    var speed: ?f64 = null;
+    if (querySpeed(path_z, 1, &err, &speed)) return speed;
+    // Closed WAL databases with no active -wal/-shm reject mode=ro because
+    // SQLite cannot create -shm read-only; immutable=1 is safe when -wal is absent/empty.
+    const primary = err & 0xff;
+    if (primary == 5 or primary == 6 or !isWalHeader(path)) return null;
+    const wal_path = std.fmt.allocPrint(allocator, "{s}-wal", .{path}) catch return null;
+    if (std.fs.cwd().statFile(wal_path)) |st| {
+        if (st.size > 0) return null;
+    } else |_| {}
+    const uri = fileUri(allocator, path, "immutable=1") catch return null;
+    _ = querySpeed(uri, 0x41, &err, &speed);
+    return speed;
 }
 // Transcript totals use logged input + cache reads + output, including completed
 // CHECKPOINT requests. Cache writes are not exposed consistently in this log.

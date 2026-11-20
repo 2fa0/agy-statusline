@@ -134,8 +134,7 @@ class NativeTests(unittest.TestCase):
         proc = subprocess.run([str(BINARY), 'status'], env=env, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(proc.stdout)['conversationId'], CID)
 
-    @unittest.skipIf(os.name == 'nt', 'Unix installer')
-    def test_release_installer_selects_native_binary(self):
+    def install_release_backend(self):
         source = (PANEL / 'install.sh').read_text()
         prepare = source[source.index('prepare_backend() {'):source.index('\nSCRIPT_SOURCE=')]
         import platform
@@ -150,11 +149,30 @@ class NativeTests(unittest.TestCase):
         self.assertTrue(os.access(installed, os.X_OK))
         self.assertEqual(installed.read_bytes(), BINARY.read_bytes())
 
+    @unittest.skipIf(os.name == 'nt', 'Unix installer')
+    def test_release_installer_selects_native_binary(self):
+        self.install_release_backend()
+
     def test_empty_and_invalid_conversations(self):
         self.assertFalse(self.snapshot('auto')['found'])
         self.assertEqual(self.snapshot('../../etc/passwd')['conversationId'], '')
         self.assertFalse(self.snapshot()['found'])
         self.assertIsNone(self.snapshot()['sessionUsage'])
+
+    @unittest.skipIf(os.name == 'nt', 'Unix installer')
+    def test_release_installer_replaces_running_backend(self):
+        self.install_release_backend()
+        installed = self.root / 'sidecars' / 'status' / 'agy-desktop-backend'
+        before = installed.stat().st_ino
+        p = subprocess.Popen([str(installed), '--serve', *self.args()], env=self.env, text=True,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.processes.append(p)
+        self.assertFalse(self.query(p)['found'])
+        source = (PANEL / 'install.sh').read_text()
+        prepare = source[source.index('prepare_backend() {'):source.index('\nSCRIPT_SOURCE=')]
+        subprocess.run(['bash', '-c', prepare + '\nprepare_backend "$1"', '_', str(self.root)], check=True)
+        self.assertNotEqual(installed.stat().st_ino, before)
+        self.assertFalse(self.query(p)['found'])
 
     def test_all_stats_match_python_reference(self):
         db = self.database([blob(100, 2), blob(600, 3, b'claude-demo')]); db.close()
@@ -217,6 +235,19 @@ class NativeTests(unittest.TestCase):
         self.assertFalse(self.query(p, other)['found'])
         self.assertEqual(self.query(p)['stepCount'], 1)
 
+    def test_incremental_detects_middle_rewrite_with_unchanged_boundaries(self):
+        def row(tokens):
+            return {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'input_tokens': tokens,
+                    'cache_read_tokens': 0, 'output_tokens': 1, 'content': 'x' * 400}
+        self.transcript([row(1), row(2), row(3)])
+        p = self.worker()
+        self.assertEqual(self.query(p)['sessionUsage']['inputTokens'], 6)
+        self.transcript([row(1), row(9), row(3), row(4)])
+        self.assertEqual(self.query(p)['sessionUsage']['inputTokens'], 17)
+        with self.log.open('a') as f:
+            f.write(json.dumps(row(5)) + '\n')
+        self.assertEqual(self.query(p)['sessionUsage']['inputTokens'], 22)
+
     def test_wal_schema_changes_locks_and_database_replacement(self):
         db = self.database(wal=True); p = self.worker()
         self.assertEqual(self.query(p)['outputTokens'], 100)
@@ -240,6 +271,36 @@ class NativeTests(unittest.TestCase):
         writer.rollback(); writer.close()
         self.assertEqual(self.query(p)['outputTokens'], 900)
 
+    def test_closed_wal_database_falls_back_to_immutable(self):
+        db = self.database(wal=True)
+        db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        db.close()
+        for ext in ('-wal', '-shm'):
+            Path(str(self.path) + ext).unlink(missing_ok=True)
+        snap = self.snapshot()
+        self.assertEqual(snap['outputTokens'], 100)
+        self.assert_snapshot_matches(snap, self.reference())
+
+    def test_cli_reads_closed_wal_database(self):
+        cli = PANEL.parent / ('agy-statusline.exe' if os.name == 'nt' else 'agy-statusline')
+        if not cli.is_file():
+            self.skipTest(f'{cli} not built')
+        conv = self.root / '.gemini' / 'antigravity-cli' / 'conversations'
+        conv.mkdir(parents=True)
+        db_path = conv / f'{CID}.db'
+        db = sqlite3.connect(db_path)
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB)')
+        db.execute('INSERT INTO gen_metadata VALUES(0,?)', (blob(120, 2),))
+        db.commit()
+        db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        db.close()
+        for ext in ('-wal', '-shm'):
+            Path(str(db_path) + ext).unlink(missing_ok=True)
+        env = dict(os.environ, HOME=str(self.root), USERPROFILE=str(self.root), AGY_STATUSLINE_QUOTA_FILE=str(self.root / 'quota.json'))
+        out = subprocess.run([str(cli)], input=json.dumps({'conversation_id': CID}), env=env, text=True, capture_output=True, check=True)
+        self.assertIn('Last avg speed: 60 token/s', out.stdout)
+
     def test_live_unicode_rate_and_step_reset(self):
         db = self.database()
         db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,status INTEGER,step_type INTEGER,step_payload BLOB,metadata BLOB)')
@@ -251,6 +312,11 @@ class NativeTests(unittest.TestCase):
         self.assertIsNone(snap['live']['charsPerSec']); time.sleep(.08)
         db.execute('UPDATE steps SET step_payload=?', (payload('你好世界'),)); db.commit()
         self.assertGreater(self.query(p)['live']['charsPerSec'], 0)
+        # Live snapshots must bypass the DB stat cache even if file sigs are unchanged.
+        blocker = sqlite3.connect(self.path)
+        blocker.execute('BEGIN EXCLUSIVE')
+        self.assertFalse(self.query(p)['live']['active'])
+        blocker.rollback(); blocker.close()
         db.execute('UPDATE steps SET idx=2'); db.commit()
         self.assertIsNone(self.query(p)['live']['charsPerSec'])
         db.execute('UPDATE steps SET status=3'); db.commit(); db.close()

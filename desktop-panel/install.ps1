@@ -22,29 +22,40 @@ if ($Uninstall) {
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $NativeSource = Join-Path $ScriptDir "bin\windows-x64\agy-desktop-backend.exe"
 $NativeTarget = Join-Path $ScriptDir "sidecars\status\agy-desktop-backend.exe"
-if (Test-Path $NativeSource) { Copy-Item $NativeSource $NativeTarget -Force }
-if (!(Test-Path $NativeTarget)) {
+if (!(Test-Path $NativeSource) -and !(Test-Path $NativeTarget)) {
     throw "Native Windows backend missing. Download the release plugin ZIP, or build backend.zig for Windows first."
 }
-$SidecarPath = Join-Path $ScriptDir "sidecars\status\sidecar.json"
-$Sidecar = Get-Content $SidecarPath -Raw | ConvertFrom-Json
-$Sidecar.command = "./agy-desktop-backend.exe"
-$Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-[System.IO.File]::WriteAllText($SidecarPath, ($Sidecar | ConvertTo-Json -Depth 20), $Utf8NoBom)
-$HooksPath = Join-Path $ScriptDir "hooks.json"
-$NativeHooks = (Get-Content $HooksPath -Raw).Replace("./sidecars/status/agy-desktop-backend hook", "./sidecars/status/agy-desktop-backend.exe hook")
-[System.IO.File]::WriteAllText($HooksPath, $NativeHooks, $Utf8NoBom)
+
+$InPlace = [string]::Equals([System.IO.Path]::GetFullPath($TargetDir), [System.IO.Path]::GetFullPath($ScriptDir), [System.StringComparison]::OrdinalIgnoreCase)
+$IsGitCheckout = (Test-Path (Join-Path $ScriptDir ".git")) -or (Test-Path (Join-Path (Split-Path -Parent $ScriptDir) ".git"))
+if ($Link -and $IsGitCheckout) {
+    throw "Windows requires rewriting sidecar.json and hooks.json for .exe paths; omit -Link from a git checkout so tracked files stay clean."
+}
+
+function Set-WindowsBackendCommands([string]$PluginDir) {
+    $SidecarPath = Join-Path $PluginDir "sidecars\status\sidecar.json"
+    $Sidecar = Get-Content $SidecarPath -Raw | ConvertFrom-Json
+    $Sidecar.command = "./agy-desktop-backend.exe"
+    $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($SidecarPath, ($Sidecar | ConvertTo-Json -Depth 20), $Utf8NoBom)
+    $HooksPath = Join-Path $PluginDir "hooks.json"
+    $NativeHooks = (Get-Content $HooksPath -Raw).Replace("./sidecars/status/agy-desktop-backend hook", "./sidecars/status/agy-desktop-backend.exe hook")
+    [System.IO.File]::WriteAllText($HooksPath, $NativeHooks, $Utf8NoBom)
+}
 
 New-Item -ItemType Directory -Force -Path $PluginsRoot | Out-Null
 
-$InPlace = [string]::Equals([System.IO.Path]::GetFullPath($TargetDir), [System.IO.Path]::GetFullPath($ScriptDir), [System.StringComparison]::OrdinalIgnoreCase)
 if (!$InPlace -and (Test-Path $TargetDir)) {
     Remove-Item -Recurse -Force $TargetDir
 }
 
 if ($InPlace) {
+    if (Test-Path $NativeSource) { Copy-Item $NativeSource $NativeTarget -Force }
+    Set-WindowsBackendCommands $TargetDir
     Write-Host "Updated native backend in place at $TargetDir"
 } elseif ($Link) {
+    if (Test-Path $NativeSource) { Copy-Item $NativeSource $NativeTarget -Force }
+    Set-WindowsBackendCommands $ScriptDir
     New-Item -ItemType SymbolicLink -Path $TargetDir -Target $ScriptDir | Out-Null
     Write-Host "Linked $TargetDir -> $ScriptDir"
 } else {
@@ -66,6 +77,10 @@ if ($InPlace) {
             Copy-Item -Path $_.FullName -Destination $Dest -Force
         }
     }
+    if (Test-Path $NativeSource) {
+        Copy-Item $NativeSource (Join-Path $TargetDir "sidecars\status\agy-desktop-backend.exe") -Force
+    }
+    Set-WindowsBackendCommands $TargetDir
     Write-Host "Installed $PluginName to $TargetDir"
 }
 

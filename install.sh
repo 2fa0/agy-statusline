@@ -391,7 +391,7 @@ fi
 
 PLATFORM="$(detect_platform)"
 
-if [[ -z "${PLATFORM}" ]]; then
+if [[ -z "${PLATFORM}" && -z "${LOCAL_ROOT}" ]]; then
   die "尚不支持 $(uname -s) $(uname -m) 的原生发布包。
      macOS 目前仅提供 Apple Silicon 产物（Intel Mac 请从源码构建）；
      Windows 请使用 PowerShell 安装脚本：
@@ -407,7 +407,7 @@ if [[ -z "${LOCAL_ROOT}" ]]; then
 fi
 
 step "AGY Statusline 安装"
-row "平台" "${PLATFORM}"
+row "平台" "${PLATFORM:-$(uname -s) $(uname -m)（本地构建）}"
 row "发布通道" "${RELEASE_TAG}"
 
 if [[ "${WANT_CLI}" == "0" && "${WANT_PANEL}" == "0" ]]; then

@@ -100,7 +100,8 @@ prepare_backend() {
   esac
   native_source="${plugin_dir}/bin/${platform}/agy-desktop-backend"
   if [[ -f "${native_source}" ]]; then
-    cp "${native_source}" "${plugin_dir}/sidecars/status/agy-desktop-backend"
+    install -m 755 "${native_source}" "${plugin_dir}/sidecars/status/agy-desktop-backend.new"
+    mv -f "${plugin_dir}/sidecars/status/agy-desktop-backend.new" "${plugin_dir}/sidecars/status/agy-desktop-backend"
   fi
   if [[ ! -f "${plugin_dir}/sidecars/status/agy-desktop-backend" ]]; then
     echo "Error: native backend missing for $(uname -s)/${arch}." >&2

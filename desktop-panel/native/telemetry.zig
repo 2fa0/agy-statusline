@@ -1,10 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("common.zig");
 const A = c.A;
 const V = c.V;
 extern "c" fn sqlite3_open_v2([*:0]const u8, *?*anyopaque, c_int, ?[*:0]const u8) c_int;
 extern "c" fn sqlite3_close(?*anyopaque) c_int;
 extern "c" fn sqlite3_busy_timeout(?*anyopaque, c_int) c_int;
+extern "c" fn sqlite3_errcode(?*anyopaque) c_int;
 extern "c" fn sqlite3_prepare_v2(?*anyopaque, [*:0]const u8, c_int, *?*anyopaque, ?*?[*:0]const u8) c_int;
 extern "c" fn sqlite3_step(?*anyopaque) c_int;
 extern "c" fn sqlite3_finalize(?*anyopaque) c_int;
@@ -91,7 +93,7 @@ const Transcript = struct {
     path: []const u8 = "",
     identity: c.Sig = .{},
     offset: u64 = 0,
-    boundary: u64 = 0,
+    prefix_hash: std.hash.Wyhash = std.hash.Wyhash.init(0),
     first: ?f64 = null,
     last: ?f64 = null,
     user: ?f64 = null,
@@ -145,14 +147,16 @@ const Transcript = struct {
         self.points[self.point_count] = .{ .request = self.usage.requests, .idx = c.int(item.step_index), .at = at, .model = entry.key_ptr.*, .context = if (!compact and vals[0] != null and vals[1] != null) vals[0].? +| vals[1].? else null, .compact = compact };
         self.point_count += 1;
     }
-    fn hashBoundary(file: std.fs.File, offset: u64) !u64 {
-        var buf: [256]u8 = undefined;
-        const len: usize = @intCast(@min(offset, buf.len));
+    fn hashPrefix(file: std.fs.File, offset: u64) !u64 {
+        var buf: [64 * 1024]u8 = undefined;
         var h = std.hash.Wyhash.init(0);
-        if (try file.preadAll(buf[0..len], 0) != len) return error.EndOfStream;
-        h.update(buf[0..len]);
-        if (try file.preadAll(buf[0..len], offset - len) != len) return error.EndOfStream;
-        h.update(buf[0..len]);
+        var pos: u64 = 0;
+        while (pos < offset) {
+            const len: usize = @intCast(@min(offset - pos, buf.len));
+            if (try file.preadAll(buf[0..len], pos) != len) return error.EndOfStream;
+            h.update(buf[0..len]);
+            pos += len;
+        }
         return h.final();
     }
     fn update(self: *Transcript, path: []const u8) !void {
@@ -161,7 +165,8 @@ const Transcript = struct {
         const st = try file.stat();
         const replaced = !c.eq(self.path, path) or self.identity.inode != st.inode or st.size < self.offset;
         const changed = st.mtime != self.identity.mtime or st.ctime != self.identity.ctime or st.size != self.identity.size;
-        if (replaced or (changed and (st.size <= self.identity.size or try hashBoundary(file, self.offset) != self.boundary))) {
+        // Growth alone does not prove append-only writes: the middle may have changed.
+        if (replaced or (changed and (st.size <= self.identity.size or try hashPrefix(file, self.offset) != self.prefix_hash.final()))) {
             self.reset();
             self.path = try self.arena.allocator().dupe(u8, path);
         }
@@ -177,6 +182,8 @@ const Transcript = struct {
                 if (err == error.EndOfStream) break;
                 return err;
             };
+            self.prefix_hash.update(line.items);
+            self.prefix_hash.update("\n");
             const item = std.json.parseFromSlice(TranscriptRow, line_arena.allocator(), line.items, .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch {
                 self.offset += line.items.len + 1;
                 _ = line_arena.reset(.free_all);
@@ -186,7 +193,6 @@ const Transcript = struct {
             self.offset += line.items.len + 1;
             _ = line_arena.reset(.free_all);
         }
-        self.boundary = try hashBoundary(file, self.offset);
         self.identity = .{ .inode = st.inode, .size = st.size, .mtime = st.mtime, .ctime = st.ctime, .exists = true };
     }
 };
@@ -259,30 +265,84 @@ fn stepUsage(raw: []const u8) ?[4]i64 {
     if (i == null and o == null and w == null and r == null) return null;
     return .{ i orelse 0, r orelse 0, o orelse 0, w orelse 0 };
 }
+fn fileUri(a: A, path: []const u8, query: []const u8) ![:0]const u8 {
+    var out = std.ArrayList(u8).init(a);
+    try out.appendSlice(if (std.mem.startsWith(u8, path, "/")) "file://" else "file:///");
+    for (path) |ch| {
+        const byte: u8 = if (builtin.os.tag == .windows and ch == '\\') '/' else ch;
+        switch (byte) {
+            '%' => try out.appendSlice("%25"),
+            '?' => try out.appendSlice("%3F"),
+            '#' => try out.appendSlice("%23"),
+            else => try out.append(byte),
+        }
+    }
+    try out.append('?');
+    try out.appendSlice(query);
+    return out.toOwnedSliceSentinel(0);
+}
+fn tryOpenDb(a: A, target: [:0]const u8, flags: c_int, err_out: *c_int) ?*anyopaque {
+    err_out.* = 0;
+    var db: ?*anyopaque = null;
+    if (sqlite3_open_v2(target, &db, flags, null) != 0) {
+        if (db != null) {
+            err_out.* = sqlite3_errcode(db);
+            _ = sqlite3_close(db);
+        }
+        return null;
+    }
+    _ = sqlite3_busy_timeout(db, 100);
+    var sanity = Query.init(a, db, "PRAGMA query_only=ON") catch {
+        err_out.* = sqlite3_errcode(db);
+        _ = sqlite3_close(db);
+        return null;
+    };
+    _ = sanity.next() catch {
+        err_out.* = sqlite3_errcode(db);
+        sanity.deinit();
+        _ = sqlite3_close(db);
+        return null;
+    };
+    sanity.deinit();
+    var tables = Query.init(a, db, "SELECT name FROM sqlite_master LIMIT 1") catch {
+        err_out.* = sqlite3_errcode(db);
+        _ = sqlite3_close(db);
+        return null;
+    };
+    _ = tables.next() catch {
+        err_out.* = sqlite3_errcode(db);
+        tables.deinit();
+        _ = sqlite3_close(db);
+        return null;
+    };
+    tables.deinit();
+    return db;
+}
+fn isWalHeader(path: []const u8) bool {
+    const file = std.fs.cwd().openFile(path, .{}) catch return false;
+    defer file.close();
+    var hdr: [20]u8 = undefined;
+    const len = file.readAll(&hdr) catch return false;
+    return len == hdr.len and (hdr[18] == 2 or hdr[19] == 2);
+}
+fn openReadOnlyDb(a: A, path: []const u8) !?*anyopaque {
+    var err: c_int = 0;
+    // Prefer plain mode=ro so in-flight WAL updates remain visible.
+    if (tryOpenDb(a, try a.dupeZ(u8, path), 1, &err)) |db| return db;
+    // Never bypass an active SQLITE_BUSY (5) / SQLITE_LOCKED (6) lock with immutable=1.
+    const primary = err & 0xff;
+    if (primary == 5 or primary == 6) return null;
+    // Closed WAL databases with no active -wal/-shm reject mode=ro because
+    // SQLite cannot create -shm read-only; immutable=1 is safe when -wal is absent/empty.
+    const wal_sig = c.sig(try c.fmt(a, "{s}-wal", .{path}));
+    if ((wal_sig.exists and wal_sig.size > 0) or !isWalHeader(path)) return null;
+    return tryOpenDb(a, try fileUri(a, path, "immutable=1"), 0x41, &err);
+}
 fn readDb(a: A, path: []const u8) !DbResult {
     var out = DbResult.init(a);
     if (!c.sig(path).exists) return out;
-    var db: ?*anyopaque = null;
-    const z = try a.dupeZ(u8, path);
-    // READONLY, never immutable: in-flight WAL updates must remain visible.
-    if (sqlite3_open_v2(z, &db, 1, null) != 0) {
-        if (db != null) _ = sqlite3_close(db);
-        return out;
-    }
+    const db = (try openReadOnlyDb(a, path)) orelse return out;
     defer _ = sqlite3_close(db);
-    _ = sqlite3_busy_timeout(db, 100);
-    var sanity = Query.init(a, db, "PRAGMA query_only=ON") catch return out;
-    _ = sanity.next() catch {
-        sanity.deinit();
-        return out;
-    };
-    sanity.deinit();
-    var tables = Query.init(a, db, "SELECT name FROM sqlite_master LIMIT 1") catch return out;
-    _ = tables.next() catch {
-        tables.deinit();
-        return out;
-    };
-    tables.deinit();
     out.readable = true;
     if (Query.init(a, db, "SELECT idx,data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC")) |q| {
         defer q.deinit();
@@ -398,7 +458,9 @@ pub const Runtime = struct {
     fn database(self: *Runtime, id: []const u8, path: []const u8, a: A) !DbResult {
         const sig = c.sig(path);
         const wal = c.sig(try c.fmt(a, "{s}-wal", .{path}));
-        if (self.db != null and c.eq(&self.db_id, id) and std.meta.eql(sig, self.db_sig) and std.meta.eql(wal, self.wal_sig) and self.db.?.readable) return self.db.?;
+        // Never serve an active live step from cache: streaming state and
+        // completion transitions must re-read SQLite on every poll.
+        if (self.db != null and c.eq(&self.db_id, id) and std.meta.eql(sig, self.db_sig) and std.meta.eql(wal, self.wal_sig) and self.db.?.readable and !self.db.?.live) return self.db.?;
         _ = self.db_arena.reset(.free_all);
         self.db = null;
         const result = try readDb(self.db_arena.allocator(), path);
