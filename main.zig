@@ -139,7 +139,7 @@ const SessionStats = struct {
 
 const SessionCache = struct {
     version: u32 = 1,
-    inode: u64 = 0,
+    inode: std.fs.File.INode = 0,
     size: u64 = 0,
     mtime: i128 = 0,
     offset: u64 = 0,
