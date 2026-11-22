@@ -1,9 +1,9 @@
-# agy-statusline — Google Antigravity Desktop & CLI Status Monitor
+# agy-statusline — Status & Quota Monitor for Google Antigravity
 
 [中文](./README.md) | English
 
-> A **local-only, read-only, zero-network** performance and quota telemetry suite for **Google Antigravity (Antigravity 2.0 Desktop & `agy` CLI)**.
-> Monitor **real-time output speed (`tok/s`)**, **prompt cache hit rate**, **context window & compaction curves**, **per-model token usage**, and **absolute 5h / weekly quota reset times**.
+> **Make every generation in Google Antigravity (Desktop 2.0 & `agy` CLI) transparent.**
+> Track **real-time output speed (`tok/s`)**, **prompt cache hit rate**, **context & compaction curves**, **per-model usage**, and **exact local 5h / weekly quota reset times** — 100% local, read-only, zero network.
 
 <p align="left">
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square" alt="Platform" />
@@ -14,13 +14,13 @@
   <img src="https://img.shields.io/badge/Memory-~3--7%20MB%20RSS-10b981?style=flat-square" alt="Memory ~3-7 MB RSS" />
 </p>
 
-## Live Preview (Desktop & CLI Side-by-Side)
+## Live Preview (Desktop & CLI)
 
 <table>
   <tr>
     <td width="50%" align="center">
       <strong>Antigravity 2.0 Desktop Side Panel</strong><br />
-      <sub>Official <code>AUX_PANE</code> Sidecar · Real-time Speed · Interactive Charts</sub>
+      <sub>Side-by-Side <code>AUX_PANE</code> · Live Speed · Interactive Charts</sub>
     </td>
     <td width="50%" align="center">
       <strong>Antigravity CLI (<code>agy</code>) Status Line</strong><br />
@@ -39,51 +39,47 @@
 
 ---
 
-## Why `agy-statusline`? (Key Differences)
+## Why `agy-statusline`?
 
-| Dimension | Default Antigravity / Typical Scripts | `agy-statusline` |
+| What You Care About | Default / Typical Scripts | `agy-statusline` |
 | :--- | :--- | :--- |
-| **Desktop + CLI Coverage** | Single-surface only, or relies on external floating windows / browsers | **Unified Desktop + CLI**: native Desktop `AUX_PANE` sidecar panel + terminal `statusLine` (Zig) |
-| **Real-Time Streaming Speed** | Only shows duration after a turn finishes, or no speed at all | **Live streaming speed (`≈ tok/s`)**: 1s polling while generating, then switches to exact average + 12-turn bar chart (yellow highlight when `<50 tok/s`) |
-| **Quota Reset Times** | Relative countdowns only (e.g. "2d 4h left") | **Absolute local reset time**: formatted as exact local date/time (e.g. `Mon 11/23 11:29`), automatically separating Gemini / Argon / Claude 3p pools |
-| **Context & Compaction Truth** | Current percentage only; hard to tell when compaction happened | **120-request interactive context curve + `CHECKPOINT` compaction markers** (`Compact: N`) — no guessed thresholds, no fabricated data |
-| **Cache & Per-Model Breakdown** | Missing prompt cache hit rate or per-model stats | **Weighted cache hit rate (`Cache hit` / `S.Cache`) + per-model tokens / hit rate / avg speed** |
-| **Ultra-Low Footprint** | Persistent Node.js / Python runtimes (tens to hundreds of MB RSS) | **Native Zig footprint**: ~`582 KB` CLI binary (exits immediately); ~`2.1 MB` Desktop daemon (with embedded `40 KB` UI), **~`3.3–6.8 MB RSS` measured**, with file fingerprint caching, incremental chunk parsing, and idle/hidden throttling |
+| **Desktop + CLI** | Single-surface only, or relies on external windows | **Unified Install**: native Desktop `AUX_PANE` sidecar + terminal `statusLine` |
+| **Live Speed** | Only shows total duration after a turn ends | **Real-time `≈ tok/s` while streaming**: 1s live updates, yellow alert below `50 tok/s`, plus a 12-turn bar chart |
+| **Why Is It Waiting?** | Hard to tell queueing from tool runs or errors | **4-State Chip + Plain-English Reason**: shows whether it's waiting for first token, running local tools, warming cache, or failed |
+| **Quota Reset Time** | Relative countdowns like "2d 4h left" | **Absolute Local Timestamps**: e.g. `Today 11:29` / `Mon 11/23 11:29`, separating Gemini / Argon / Claude 3p pools |
+| **Context & Cache** | Current percentage only | **120-Request Curve + Compaction Markers**: spots `CHECKPOINT` events and breaks down tokens, cache hit rate & speed per model |
+| **Footprint** | Persistent Node.js / Python runtimes (tens/hundreds of MB) | **Native Zig**: ~`582 KB` CLI (exits immediately), Desktop daemon uses only **`3.3–6.8 MB RSS`** |
 
 ---
 
-## Data Access & Privacy
+## Privacy & Security
 
 > [!IMPORTANT]
-> **Zero External Network Requests · Local Session Read-Only**
+> **100% Local Read-Only · Zero Network Requests · Zero Credential Access**
 >
-> 1. **Official Extension Entrypoints Only**: Built strictly on Google Antigravity's official extension mechanisms — `statusLine` protocol for CLI, and official `Plugin` / `UI Sidecar` (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`) + `Lifecycle Hooks` for Desktop.
-> 2. **Zero Network Traffic**: Makes no HTTP / HTTPS / WebSocket outbound requests; collects or uploads zero telemetry or conversation data.
-> 3. **Zero Credential / Token Access**: Never reads OAuth tokens, cookies, session keys, or API credentials. Desktop quota display reads only the local snapshot `quota.json` written by the CLI status line (containing only remaining percentage and reset timestamps, no account or credential info).
-> 4. **No Internal RPC Probing or Client Patching**: Never calls undocumented internal RPCs, never modifies Antigravity client files, and never bypasses any quota or permission checks.
-> 5. **Strict Local Read-Only**: SQLite connections enforce `mode=ro` and `PRAGMA query_only = ON` (safely falling back to `immutable=1` read-only mode only for archived WAL databases with no active `-wal`).
->
-> *Note: Local logs and SQLite/protobuf schemas are internal host formats rather than stable public APIs; host upgrades may affect individual fields.*
+> - **Official Extension Entrypoints Only**: Built strictly on Antigravity's official `statusLine` protocol (CLI) and `Plugin / UI Sidecar (AUX_PANE) + Lifecycle Hooks` (Desktop); never modifies client binaries or files.
+> - **Zero Outbound Network**: Makes no HTTP / HTTPS / WebSocket requests and collects or uploads zero telemetry or conversation data.
+> - **No Credentials or Tokens**: Never reads OAuth tokens, cookies, session keys, or API keys; never probes undocumented internal RPCs or bypasses quota checks.
+> - **Strict Read-Only Access**: Reads local session records with `mode=ro` / `PRAGMA query_only = ON` and the numeric-only `quota.json` snapshot (percentages and reset timestamps only) written by the CLI status line.
 
 ---
 
 ## 30-Second Quick Install
 
-One command installs both the **Desktop Side Panel** and **CLI Status Line**. It downloads the native binary for your platform, verifies `SHA256SUMS.txt`, clears macOS `quarantine` attributes (and reads back to confirm), and runs a self-check immediately:
+One command installs both the **Desktop Side Panel** and **CLI Status Line** (verifies `SHA256SUMS.txt`, clears macOS `quarantine`, and runs a self-check):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash
 ```
 
 - Install one side only: `... | bash -s -- --panel-only` or `--cli-only`
-- Pin a version: `AGY_STATUSLINE_TAG=v0.4.0 ... | bash`
-- **Upgrade / Reinstall**: run the exact same command again (idempotent overwrite)
-- Uninstall: `... | bash -s -- --uninstall`
+- Upgrade / Reinstall: run the same command again
+- Uninstall: `... | bash -s -- --uninstall` (preserves your `config.json` and `quota.json`)
 
-Two quick steps after installing:
+### Enable After Installing (2 Steps)
 
 1. **Desktop Panel**: Restart Antigravity Desktop, then click **`+` → `AGY Status`** in the top-right auxiliary pane of any conversation.
-2. **CLI**: Add the `statusLine` snippet below to `~/.gemini/antigravity-cli/settings.json` (the installer prints the exact path):
+2. **CLI Status Line**: Add this snippet to `~/.gemini/antigravity-cli/settings.json`:
 
 ```json
 {
@@ -101,138 +97,55 @@ Two quick steps after installing:
 curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash -s -- --doctor
 ```
 
-Prints platform info, install paths, `quarantine` status, code-signing integrity, binary self-check results, and macOS security environment (Gatekeeper, MDM management, Developer ID policy requirements).
+Checks install paths, binary self-tests, macOS `quarantine`, code-signing integrity, and Gatekeeper / MDM policies (supports `--doctor --json` for machine-readable error codes).
 
-Add `--json` for a machine-readable report. Every failure carries a stable code, so a script or an agent can branch on it instead of matching prose:
+---
 
-```sh
-./install.sh --doctor --json
-```
+<details>
+<summary>Advanced: <code>config.json</code>, Windows / Manual Install, macOS Signing & Building from Source</summary>
+
+### 1. Personalization (`~/.gemini/agy-statusline/config.json`)
+
+Created on first install and hot-reloaded within one poll cycle without restarting Antigravity (full defaults in [`config.example.json`](./config.example.json)):
 
 ```json
 {
-  "ok": false,
-  "platform": "Darwin arm64",
-  "codes": ["panel_missing", "version_mismatch"],
-  "remediation": { "panel_missing": "未找到面板插件；运行 ./install.sh --panel-only 安装，然后重启 Antigravity Desktop。" },
-  "checks": [{ "key": "panel.dir", "value": "...", "code": "panel_missing" }]
+  "enabled": true,
+  "layout": "compact",
+  "pollSec": 0,
+  "lowSpeedWarnTokS": 50,
+  "thresholds": { "waitSec": 20, "stallSec": 25, "toolGraceSec": 120 },
+  "modules": { "session": true, "quota": true, "history": true, "context": true, "models": true },
+  "debug": false
 }
 ```
 
-Exit code is `0` only when `ok` is `true`. Codes: `cli_missing`, `cli_quarantine`, `cli_signature_invalid`, `cli_not_runnable`, `panel_missing`, `backend_missing`, `backend_quarantine`, `backend_signature_invalid`, `backend_not_runnable`, `version_mismatch`, `mdm_requires_developer_id`, `statusline_not_configured`.
+- `layout`: `compact` shows the status chip only; `detailed` adds the full reason line below it.
+- `pollSec`: `0` uses adaptive polling (`1s` while streaming, `3–10s` active, `15s` idle, paused when hidden).
+- `modules`: toggle individual cards off (disabling `quota` skips reading `quota.json`).
 
-### macOS Security Note
+### 2. Windows & Manual Release Install
 
-This project uses **ad-hoc code signing** (`codesign --sign -`) without an Apple Developer ID or notarization:
+Download archives from [Releases](https://github.com/2fa0/agy-statusline/releases):
+- **Desktop Panel**: `agy-desktop-status-plugin.tar.gz` (macOS/Linux) or `agy-desktop-status-plugin.zip` (Windows: `powershell -ExecutionPolicy Bypass -File .\install.ps1`).
+- **CLI Status Line**: Extract the binary for your platform and point `statusLine.command` in `settings.json` to it (you can also pin a version via `AGY_STATUSLINE_TAG=v0.4.0`).
 
-| Install Method | Result |
-| :--- | :--- |
-| `curl ... \| bash` (Recommended) | ✅ Works out of the box (`curl` does not attach `quarantine`, so Gatekeeper does not block it) |
-| Browser download (`.tar.gz` / `.zip`) | ❌ Blocked by Gatekeeper unless `quarantine` is cleared |
+### 3. macOS Signing & Gatekeeper
 
-If you downloaded via browser, run:
+Binaries use **ad-hoc code signing** (no Apple Developer ID / notarization):
+- Installing via `curl ... | bash` does not attach `quarantine` and works out of the box.
+- Browser downloads attach `com.apple.quarantine` and are blocked by Gatekeeper unless cleared by `./install.sh` or `xattr -dr com.apple.quarantine ~/.gemini/config/plugins/agy-desktop-status ~/.gemini/antigravity-cli`.
+- If an enterprise MDM policy enforces Developer ID signing, `--doctor` reports `mdm_requires_developer_id` (contact IT to allowlist by CDHash).
 
-```sh
-xattr -dr com.apple.quarantine ~/.gemini/config/plugins/agy-desktop-status
-xattr -dr com.apple.quarantine ~/.gemini/antigravity-cli
-```
+### 4. Building from Source & Architecture
 
-> Windows users can use the PowerShell installer (`install.ps1`), detailed in the sections below.
-
----
-
-## 1. Antigravity 2.0 Desktop Side Panel (`AGY Desktop Status`)
-
-Provides a persistent monitoring card and interactive charts in the right auxiliary pane of Antigravity 2.0 Desktop (side-by-side with the conversation canvas, without blocking chat), featuring **auto-follow active conversation**, **adaptive refresh (`3s` / `5s` / `10s` active, `15s` idle, paused when hidden, or manual `Pause`)**, **light/dark theme adaptation**, and history switching.
-
-> [!NOTE]
-> Uses the official `SIDECAR_UI_ENTRYPOINT_AUX_PANE` entrypoint. Antigravity 2.x sidecar UI supports `AUX_PANE` / `FULL_PANE` / `SIDEBAR` only (no top-bar attachment).
-
-### Real-Time Streaming Speed
-
-While a model is actively generating, the Speed card switches to live mode (polling local DB every **1s**, zero network), estimating `≈ tok/s` from character growth rate and the session's historical char-to-token ratio, then switching back to exact average speed and historical trend bars once the step completes.
-
-### Session State: Four States, Each With a Reason
-
-The header carries a state chip. Hovering it shows the full sentence, and the state is computed in the native backend from hook events, the active step row and stream growth — the UI only renders it, so thresholds exist in exactly one place.
-
-| State | Chip | Trigger | Example explanation |
-| :--- | :--- | :--- | :--- |
-| Ready | green dot | previous turn stopped, or idle | "Session idle, waiting for input." |
-| Running | blue pulse | active step, fresh `PreInvocation`, or local tool work after `PostInvocation` | "The tool for this step is still running locally (12s)." |
-| Waiting | amber pulse | first byte > `20s`, model switch prefill, or stream silent for `25s` | "Waiting 34s for the first token: long prefill or server queueing; the connection is still alive." |
-| Failed | red pulse | turn ended with a non-cancel `terminationReason` | "Turn ended with an error (MODEL_ERROR: upstream 503)." |
-
-Four deliberate details: a user cancel is **not** an error (`CANCELLED` returns to a green dot); switching models explains the wait instead of looking stuck; a stream that stops growing for `25s` is reported as stalled while a merely slow one still reads as running; when the conversation database is locked or missing the chip falls back to "can't confirm" instead of guessing; a sidecar that stops answering replaces the strip with "backend not responding · 12s"; and every snapshot carries a `sources` block (`db` / `transcript` / `hooks` / `quota` states plus reason codes) so an unreadable source raises "incomplete data · database busy" instead of quietly rendering zeros. Thresholds live in `config.json`; the rules are covered by 16 unit tests.
-
-### Personalisation: `config.json` (no restart)
-
-The root `./install.sh` writes `~/.gemini/agy-statusline/config.json` on first install (an existing file is never overwritten, and it survives uninstall). Saves apply within one poll cycle — no Antigravity restart:
-
-| Key | Effect |
-| :--- | :--- |
-| `enabled` | `false` shows a single "disabled" line and reads neither the database nor the quota file |
-| `layout` | `compact` chip only; `detailed` adds the full reason line and the wait duration on the chip |
-| `pollSec` | default interval (`0` keeps the adaptive policy; a manual dropdown choice wins) |
-| `lowSpeedWarnTokS` | low-speed warning threshold, default `50` |
-| `thresholds` | `waitSec` / `stallSec` / `toolGraceSec` for the state machine |
-| `modules` | switch off `session` / `quota` / `history` / `context` / `models` individually |
-| `debug` | adds `session.evidence` to the JSON for troubleshooting |
-
-Out-of-range values are clamped (`pollSec: 999` → `60`), so a bad edit degrades instead of breaking. Override the path with `AGY_STATUSLINE_SETTINGS`; defaults are in [`config.example.json`](./config.example.json).
-
-### Absolute Quota Reset Times
-
-The **Quota** tab converts 5h and weekly quota windows into absolute local timestamps (e.g., `Today 11:29`, `Mon 11/23 11:29`) by reading the local `~/.gemini/agy-statusline/quota.json` snapshot written by the CLI status line (override path via `AGY_STATUSLINE_QUOTA_FILE`).
-
-### Session Usage, Context Curve & Per-Model Stats
-
-- **Context Curve & Compaction Events**: Plots up to the last 120 completed requests with dashed markers for `status=DONE` `CHECKPOINT` compactions (`Compact: N`).
-- **Turn / Session Totals**: Displays token usage (`input_tokens + cache_read_tokens + output_tokens`) and weighted prompt cache hit rate.
-- **Per-Model Breakdown**: Groups by model (merging thinking-level suffixes) and shows tokens, cache hit rate, and average output speed.
-
-### Manual Desktop Plugin Install / Uninstall
-
-1. Download from [Releases](https://github.com/2fa0/agy-statusline/releases):
-   - macOS / Linux: `agy-desktop-status-plugin.tar.gz`
-   - Windows: `agy-desktop-status-plugin.zip`
-2. Extract and run:
-   - **macOS / Linux**: `./install.sh` (uninstall: `~/.gemini/config/plugins/agy-desktop-status/install.sh --uninstall`)
-   - **Windows (PowerShell)**: `powershell -ExecutionPolicy Bypass -File .\install.ps1` (uninstall: `... -Uninstall`)
-
-What uninstall actually touches (root `./install.sh --uninstall`; the plugin-local script removes only the plugin directory):
-
-| Action | Target |
-| :--- | :--- |
-| **Removed** | `~/.gemini/config/plugins/agy-desktop-status/` |
-| **Removed** | `~/.gemini/antigravity-cli/agy-statusline` |
-| **Kept** | `~/.gemini/agy-statusline/config.json` (your settings, reused on reinstall) |
-| **Kept** | `~/.gemini/agy-statusline/quota.json` (the CLI keeps refreshing it) |
-| **Manual** | the `statusLine` entry in `settings.json` (or run `/statusline delete` inside AGY) |
-
-An open Antigravity window needs one restart before the panel disappears completely.
-
-For building from source or frontend customization, see [desktop-panel/README.md](./desktop-panel/README.md).
-
----
-
-## 2. Antigravity CLI Status Line (`agy-statusline`)
-
-Lightweight, zero-dependency custom `statusLine` binary for **Google Antigravity CLI (`agy`)** written in Zig (supporting **macOS / Linux / Windows**), with automatic responsive wrapping in narrow terminals:
-
-- **Cache Hit Rate & Reads** (`Cache hit` / `Cache read`)
-- **Context Usage** (`Ctx: used/window`)
-- **Last Turn Average Output Speed** (`Last avg speed`, switches to yellow highlight below `50 tok/s`)
-- **Compaction & Session Log Totals** (`Compact: N`, `Log`, `S.Cache`)
-- **Per-Pool Remaining Quotas**: Automatically adapts to Free / Plus / Pro / Ultra tiers for **Gemini**, **Argon**, and **Claude / 3p** pools, and writes `~/.gemini/agy-statusline/quota.json` for the Desktop panel.
-
-### Building CLI from Source
-
-Requires Zig `0.14.1`:
+Requires **Zig 0.14.1**, a system C compiler, and SQLite dev headers:
 
 ```sh
-./build.sh
-./install.sh
+./build.sh                       # Build CLI
+cd desktop-panel && ./build.sh   # Build Desktop daemon
 ```
 
-See [`.github/workflows/release.yml`](.github/workflows/release.yml) for static cross-compilation builds (Linux x64/arm64, Windows x64).
+See [`.github/workflows/release.yml`](.github/workflows/release.yml) for static cross-compilation builds and [desktop-panel/README.md](./desktop-panel/README.md) for panel architecture and metric definitions.
+
+</details>
