@@ -7,6 +7,8 @@
 - **额度重置时间（`周限` / `5小时`）**：直接换算成**具体本地重置时间**（如 `今天 11:29`、`周一 11/23 11:29`，悬浮可看 `重置于 ... · 距重置 ...`），不用再自己把 “还剩 2 天 4 小时” 换算成时间点。数据来自 CLI 状态栏写下的本地快照 `~/.gemini/agy-statusline/quota.json`（可用 `AGY_STATUSLINE_QUOTA_FILE` 覆盖）；快照过期时按 5h / 7 天周期推算并标注「推算」。
 - **轮次 / 会话耗时**：基于本地 `transcript.jsonl` 时间戳计算当前轮次耗时与整个会话总耗时。
 - **上下文占用 (`Ctx`)** & **Cache 命中率 (`Cache hit`)**：只读解析本地会话库中的输入、缓存读取与缓存写入字段（若本地未落盘对应字段则显示 `--`，不伪造数据）。
+- **数据来源可见性**：`/api/status` 的 `sources` 块分别报告 `db` / `transcript` / `hooks` / `quota` 的状态（`ok` / `empty` / `missing` / `locked` / `unreadable` / `stale` / `disabled`），`notes` 给出原因码与说明。数据库被其他窗口独占或日志读不动时，面板顶部提示「数据不完整 · 数据库被占用」，不让“缺数据”冒充“这轮没有数据”；新会话只是还没有行，不会触发告警。
+- **会话状态四态指示**：页头胶囊区分 `就绪 / 执行中 / 等待 / 异常`，并把原因写成人话（“已等待模型首字 34s：长上下文预填充或服务端排队时常见，连接仍然有效。”）。判定在原生后台完成（Hook 事件 + 活跃 step + 流式字数增长），前端只负责渲染，阈值只有一处实现；主动取消不算错误，切换模型会直接说明需要重算缓存。
 
 ![AGY Desktop Status 面板实景预览](./assets/desktop-preview.png)
 
@@ -105,6 +107,23 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 - **有界缓存**：只保留当前会话的解析结果。数据库及 WAL 的身份、mtime、ctime 和大小不变时复用结果；会话列表、hook 状态和额度每次独立读取，失败后重试。查询完成后关闭数据库连接。
 - **流式解析**：日志变化时分块校验已读取的内容，仅对新增完整行解析 JSON；文件未变化时复用统计。校验使用固定大小缓冲区，临时 JSON 内存在每行结束时释放；首次扫描不会把整份日志载入内存。曲线最多保留 120 点，生成明细最多 12 条；改写、截断、替换或会话切换会重建统计。单行上限 16 MiB，超过时该次遥测请求返回错误。
 - **自适应刷新**：活跃时按所选的 3/5/10s 间隔刷新，空闲 45s 后自动降到 15s，面板隐藏时暂停轮询，后台进程与缓存仍保留。
+- **配置只多一次 `stat`**：`config.json` 按文件签名缓存，签名不变时不会重新解析；改完后一个轮询周期内生效。
+
+### 面板配置（`~/.gemini/agy-statusline/config.json`，热生效）
+
+根目录 `./install.sh` 首次安装会写入默认值，卸载也会保留。不需要重启 Antigravity：文件一保存，下一个轮询周期就会重新读取。
+
+| 键 | 作用 |
+| :--- | :--- |
+| `enabled` | `false` 时面板只出一句「已关闭」，不读数据库与额度文件 |
+| `layout` | `compact`（仅胶囊）/ `detailed`（额外一行完整原因 + 胶囊带等待时长） |
+| `pollSec` | 默认刷新间隔，`0` 用面板自适应策略；下拉框里手动选过的值优先 |
+| `lowSpeedWarnTokS` | 低速告警阈值，默认 `50` |
+| `thresholds` | `waitSec` / `stallSec` / `toolGraceSec`，状态机阈值（秒） |
+| `modules` | 逐项关闭 `session` / `quota` / `history` / `context` / `models`；关 `quota` 后连额度文件都不读 |
+| `debug` | `true` 时在 `session.evidence` 附上判定依据 |
+
+越界值会被夹到安全范围（例如 `pollSec: 999` → `60`），写错不会弄坏面板。路径可用 `AGY_STATUSLINE_SETTINGS` 覆盖；默认值见仓库根的 `config.example.json`。
 
 ### 卸载
 
@@ -116,6 +135,14 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
   ```powershell
   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
   ```
+
+| 动作 | 对象 |
+| :--- | :--- |
+| **移除** | 插件目录 `~/.gemini/config/plugins/agy-desktop-status/` |
+| **保留** | `~/.gemini/agy-statusline/config.json`（重装后自动沿用你的设置） |
+| **保留** | `~/.gemini/agy-statusline/quota.json`（CLI 下次渲染继续更新） |
+
+正在打开的 Antigravity 窗口需要重启一次，右侧面板才会彻底消失。
 ---
 
 ## 开发者指南：构建原生后台与前端
@@ -136,13 +163,17 @@ npm ci        # 首次或依赖变更时
 npm run build
 ```
 
+构建会同时重写 `manifest.json`（记录 `dist/index.html` 与 `ui/src/*` 的 SHA-256）。**不要手改 `dist` 或 `manifest.json`**：`tests/test_assets.py` 会重新构建并与提交的产物逐字节比对，`tests/test_native.py` 还会校验后台实际返回的 HTML 等于 `dist/index.html`——改了源码忘重建、或重建了前端忘重编后台，两种静默失效都会在测试阶段被挡住。
+
+所以构建顺序是**先前端、后后台**。要临时构建到别的路径（CI/测试用）可设 `AGY_UI_OUT=/tmp/x.html`，此时不写 `manifest.json`。
+
 前端构建后再运行 `./build.sh`，将更新后的页面嵌入后台。运行原生集成测试与旧实现的差异对照测试（Python 仅作为开发测试驱动）：
 
 ```sh
 python3 -m unittest discover -s tests
 ```
 
-安装 UI 开发依赖后，运行前端刷新间隔与统计展示回归测试：
+其中 `test_session.py` 覆盖四态判定（取消不算错误、模型切换解释等待、流式停滞与恢复、Stop 后超时衰减）与配置热加载；`test_assets.py` 覆盖前端产物漂移。安装 UI 开发依赖后，运行前端刷新间隔与统计展示回归测试：
 
 ```sh
 node --test tests/test_sidecar.mjs
@@ -160,6 +191,14 @@ node --test tests/test_sidecar.mjs
 ./sidecars/status/agy-desktop-backend --version        # 自检：能打印版本即说明签名/quarantine 正常
 ./sidecars/status/agy-desktop-backend status --conversation-id auto
 ./sidecars/status/agy-desktop-backend --serve  # stdin/stdout JSON-lines，适合基准测试
+```
+
+`status` 的输出里 `session` 一节就是面板胶囊的数据来源；排查判定逻辑时设 `AGY_STATUSLINE_SETTINGS` 指向一份 `{"debug": true}` 的配置，即可在 `session.evidence` 看到 Hook 事件、活跃 step、字数停滞时长和模型对比。
+
+整机安装层面的诊断（签名、quarantine、版本一致性）用根目录安装脚本，机器可读结果带稳定错误码：
+
+```sh
+../install.sh --doctor --json
 ```
 
 源码软链接安装（`install.sh --link`）在重新编译 `./build.sh` 后即时生效。前端桥接只处理主题、会话绑定、鉴权请求与宿主快捷键，不调用 Agent 或凭据 API。

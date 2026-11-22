@@ -206,7 +206,7 @@ jobs:
           cd desktop-panel/ui
           npm ci
           npm run build
-          git diff --exit-code -- ../dist/index.html
+          git diff --exit-code -- ../dist/index.html ../manifest.json
           cd ..
           AGY_DESKTOP_BACKEND="$GITHUB_WORKSPACE/native-backends/agy-desktop-backend-linux-x64/agy-desktop-backend" python3 -m unittest discover -s tests
           node --test tests/test_sidecar.mjs

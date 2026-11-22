@@ -11,10 +11,12 @@ RELEASE_TAG="${AGY_STATUSLINE_TAG:-latest}"
 CLI_DIR="${AGY_CLI_DIR:-${HOME}/.gemini/antigravity-cli}"
 PLUGIN_NAME="agy-desktop-status"
 PLUGIN_DIR="${HOME}/.gemini/config/plugins/${PLUGIN_NAME}"
+SETTINGS_FILE="${AGY_STATUSLINE_SETTINGS:-${HOME}/.gemini/agy-statusline/config.json}"
 
 WANT_CLI=1
 WANT_PANEL=1
 MODE="install"
+DOCTOR_JSON=0
 PANEL_INSTALL_MODE="--copy"
 
 info() { printf '  %s\n' "$*"; }
@@ -37,6 +39,7 @@ usage() {
   --panel-only      只安装 Desktop 面板插件
   --link            面板用软链接指向当前源码目录（仅本地源码安装时有效）
   --doctor          只打印安装状态诊断，不做任何修改
+  --json            与 --doctor 搭配：输出机器可读诊断（含稳定错误码）
   --uninstall       移除 CLI 状态栏与面板插件
   -h, --help        显示本帮助
 
@@ -276,6 +279,151 @@ install_panel() { # <tmpdir>
 
 row() { printf '  %s: %s\n' "$1" "$2"; }
 
+# --------------------------------------------------- 机器可读诊断（--doctor --json）
+
+# Every failure gets a stable code so an agent (or a wrapper script) can branch
+# on it instead of pattern-matching Chinese prose.
+DOCTOR_CHECKS=""
+DOCTOR_CODES=""
+
+json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\r\n\t'; }
+
+doctor_check() { # <key> <value> <code|ok>
+  local key="$1" value="$2" code="$3" sep=""
+  if [[ -n "${DOCTOR_CHECKS}" ]]; then sep=","; fi
+  DOCTOR_CHECKS="${DOCTOR_CHECKS}${sep}{\"key\":\"$(json_escape "${key}")\",\"value\":\"$(json_escape "${value}")\",\"code\":\"${code}\"}"
+  if [[ -n "${code}" && "${code}" != "ok" ]]; then
+    DOCTOR_CODES="${DOCTOR_CODES}${DOCTOR_CODES:+,}${code}"
+  fi
+}
+
+remediation() { # <code>
+  case "$1" in
+    cli_missing) printf '未找到 CLI 状态栏；运行 ./install.sh --cli-only 安装。' ;;
+    cli_quarantine) printf 'CLI 目录带有 quarantine 标记；执行 xattr -dr com.apple.quarantine "%s"。' "${CLI_DIR}" ;;
+    cli_signature_invalid) printf 'CLI 二进制签名损坏，macOS 会直接 SIGKILL；重新安装即可。' ;;
+    cli_not_runnable) printf 'CLI 二进制无法执行；可能是架构不匹配或被 Gatekeeper 拦截，先清除 quarantine 再重试。' ;;
+    panel_missing) printf '未找到面板插件；运行 ./install.sh --panel-only 安装，然后重启 Antigravity Desktop。' ;;
+    backend_missing) printf '插件缺少原生后台；重新安装面板插件。' ;;
+    backend_quarantine) printf '插件目录带有 quarantine 标记；执行 xattr -dr com.apple.quarantine "%s"。' "${PLUGIN_DIR}" ;;
+    backend_signature_invalid) printf '原生后台签名损坏；重新安装面板插件。' ;;
+    backend_not_runnable) printf '原生后台无法启动；面板会一直空白，先清除 quarantine 再重启 Antigravity Desktop。' ;;
+    version_mismatch) printf '插件清单与原生后台版本不一致；重新安装面板插件以同时更新两者。' ;;
+    mdm_requires_developer_id) printf '这台机器受 MDM 托管且要求 Developer ID 签名，ad-hoc 构建会被拒绝；请 IT 按 CDHash 加白名单或改用自建签名。' ;;
+    statusline_not_configured) printf 'CLI 已安装但 settings.json 未配置 statusLine；在 AGY 里运行 /statusline 或按诊断输出手动添加。' ;;
+    *) printf '' ;;
+  esac
+}
+
+doctor_json() {
+  local cli_bin backend manifest version plugin_version cli_version backend_version settings cli_ok=0
+  local sig_kind
+  cli_bin="${CLI_DIR}/agy-statusline"
+  backend="${PLUGIN_DIR}/sidecars/status/agy-desktop-backend"
+  manifest="${PLUGIN_DIR}/plugin.json"
+  settings="${CLI_DIR}/settings.json"
+  version=""
+  if [[ -n "${LOCAL_ROOT}" && -f "${LOCAL_ROOT}/VERSION" ]]; then
+    version="$(tr -d '[:space:]' < "${LOCAL_ROOT}/VERSION")"
+  fi
+
+  doctor_check "platform" "$(uname -s) $(uname -m)" "ok"
+  doctor_check "release_channel" "${RELEASE_TAG}" "ok"
+
+  if [[ -f "${cli_bin}" ]]; then
+    doctor_check "cli.path" "${cli_bin}" "ok"
+    if [[ "$(quarantine_state "${cli_bin}")" == 存在* ]]; then
+      doctor_check "cli.quarantine" "present" "cli_quarantine"
+    else
+      doctor_check "cli.quarantine" "none" "ok"
+    fi
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      if [[ "$(signature_integrity "${cli_bin}")" == 完整 ]]; then
+        doctor_check "cli.signature" "valid" "ok"
+      else
+        doctor_check "cli.signature" "invalid" "cli_signature_invalid"
+      fi
+    fi
+    if cli_version="$("${cli_bin}" --version 2>&1)"; then
+      doctor_check "cli.version" "${cli_version}" "ok"
+      cli_ok=1
+    else
+      doctor_check "cli.version" "${cli_version:-no output}" "cli_not_runnable"
+    fi
+    if [[ "${cli_ok}" == "1" ]]; then
+      if [[ -f "${settings}" ]] && grep -q 'agy-statusline' "${settings}" 2>/dev/null; then
+        doctor_check "cli.statusline" "configured" "ok"
+      else
+        doctor_check "cli.statusline" "missing" "statusline_not_configured"
+      fi
+    fi
+  else
+    doctor_check "cli.path" "${cli_bin}" "cli_missing"
+  fi
+
+  if [[ -d "${PLUGIN_DIR}" ]]; then
+    doctor_check "panel.dir" "${PLUGIN_DIR}" "ok"
+    plugin_version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "${manifest}" 2>/dev/null | head -1)"
+    doctor_check "panel.version" "${plugin_version:-unknown}" "ok"
+    if [[ -f "${backend}" ]]; then
+      if [[ "$(quarantine_state "${backend}")" == 存在* ]]; then
+        doctor_check "backend.quarantine" "present" "backend_quarantine"
+      else
+        doctor_check "backend.quarantine" "none" "ok"
+      fi
+      if [[ "$(uname -s)" == "Darwin" ]]; then
+        if [[ "$(signature_integrity "${backend}")" == 完整 ]]; then
+          doctor_check "backend.signature" "valid" "ok"
+        else
+          doctor_check "backend.signature" "invalid" "backend_signature_invalid"
+        fi
+      fi
+      if backend_version="$("${backend}" --version 2>&1)"; then
+        doctor_check "backend.version" "${backend_version}" "ok"
+        local backend_ver="${backend_version##* }"
+        if [[ -n "${plugin_version}" && -n "${backend_ver}" && "${plugin_version}" != "${backend_ver}" ]]; then
+          doctor_check "backend.version_match" "${plugin_version} != ${backend_ver}" "version_mismatch"
+        elif [[ -n "${version}" && "${plugin_version}" != "${version}" ]]; then
+          doctor_check "plugin.bundle_version" "${version}" "version_mismatch"
+        fi
+      else
+        doctor_check "backend.version" "${backend_version:-no output}" "backend_not_runnable"
+      fi
+    else
+      doctor_check "backend.path" "${backend}" "backend_missing"
+    fi
+  else
+    doctor_check "panel.dir" "${PLUGIN_DIR}" "panel_missing"
+  fi
+
+  if [[ "$(uname -s)" == "Darwin" ]] && [[ "$(developer_id_policy)" == 要求* ]]; then
+    local target_bin=""
+    for target_bin in "${cli_bin}" "${backend}"; do
+      if [[ -f "${target_bin}" ]]; then
+        sig_kind="$(signature_state "${target_bin}" 2>/dev/null || true)"
+        if [[ "${sig_kind}" == adhoc* ]]; then
+          doctor_check "policy.developer_id" "adhoc-blocks" "mdm_requires_developer_id"
+          break
+        fi
+      fi
+    done
+  fi
+
+  local ok=true codes_json="" remediation_json="" code sep=""
+  if [[ -n "${DOCTOR_CODES}" ]]; then ok=false; fi
+  local old_ifs="${IFS}"
+  IFS=','
+  for code in ${DOCTOR_CODES:-}; do
+    codes_json="${codes_json}${codes_json:+,}\"${code}\""
+    remediation_json="${remediation_json}${remediation_json:+,}\"${code}\":\"$(json_escape "$(remediation "${code}")")\""
+  done
+  IFS="${old_ifs}"
+  printf '{"ok":%s,"platform":"%s","release":"%s","codes":[%s],"remediation":{%s},"checks":[%s]}\n' \
+    "${ok}" "$(json_escape "$(uname -s) $(uname -m)")" "$(json_escape "${RELEASE_TAG}")" \
+    "${codes_json}" "${remediation_json}" "${DOCTOR_CHECKS}"
+  [[ "${ok}" == "true" ]]
+}
+
 doctor() {
   local cli_bin backend manifest
   cli_bin="${CLI_DIR}/agy-statusline"
@@ -357,6 +505,7 @@ while [[ $# -gt 0 ]]; do
     --link) PANEL_INSTALL_MODE="--link" ;;
     --copy) PANEL_INSTALL_MODE="--copy" ;;
     --doctor) MODE="doctor" ;;
+    --json) DOCTOR_JSON=1; MODE="doctor" ;;
     --uninstall) MODE="uninstall" ;;
     -h | --help)
       usage
@@ -382,6 +531,10 @@ if [[ -n "${SCRIPT_SOURCE}" && -f "${SCRIPT_SOURCE}" ]]; then
 fi
 
 if [[ "${MODE}" == "doctor" ]]; then
+  if [[ "${DOCTOR_JSON}" == "1" ]]; then
+    doctor_json
+    exit $?
+  fi
   doctor
   exit 0
 fi
@@ -418,6 +571,29 @@ if [[ "${WANT_CLI}" == "1" ]]; then install_cli "${TMP_DIR}"; fi
 if [[ "${WANT_PANEL}" == "1" ]]; then install_panel "${TMP_DIR}"; fi
 
 step "完成"
+seed_settings() {
+  if [[ -f "${SETTINGS_FILE}" ]]; then
+    info "面板配置已存在，保留不动：${SETTINGS_FILE}"
+    return 0
+  fi
+  mkdir -p "$(dirname "${SETTINGS_FILE}")"
+  cat >"${SETTINGS_FILE}" <<'JSON'
+{
+  "enabled": true,
+  "layout": "compact",
+  "pollSec": 0,
+  "lowSpeedWarnTokS": 50,
+  "thresholds": { "waitSec": 20, "stallSec": 25, "toolGraceSec": 120 },
+  "modules": { "session": true, "quota": true, "history": true, "context": true, "models": true },
+  "debug": false
+}
+JSON
+  ok "已写入默认面板配置 ${SETTINGS_FILE}"
+  info "改这个文件即可调整布局/模块/阈值，约 1 个轮询周期内生效，无需重启 Antigravity。"
+}
+if [[ "${WANT_PANEL}" == "1" ]]; then
+  seed_settings
+fi
 if [[ "${WANT_CLI}" == "1" ]]; then
   info "CLI：在 ~/.gemini/antigravity-cli/settings.json 中加入"
   printf '\n    {\n      "statusLine": {\n        "type": "command",\n        "command": "%s",\n        "stack_with_default": true\n      }\n    }\n\n' "${CLI_DIR}/agy-statusline"

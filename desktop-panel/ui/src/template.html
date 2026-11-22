@@ -244,7 +244,8 @@
       }
     }
     @media (prefers-reduced-motion: reduce) {
-      .live-pulse {
+      .live-pulse,
+      .state-dot {
         animation: none;
         opacity: 1;
       }
@@ -253,6 +254,91 @@
       border-color: var(--agy-accent);
       color: var(--agy-accent);
     }
+    /* Session state chip: the colour is the summary, the tooltip carries the
+       reason. Waiting is amber, not red — it is not a failure. */
+    .state-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--agy-border);
+      background: var(--agy-card);
+      font-size: 11px;
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+    .state-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--agy-fg-faint);
+      flex: 0 0 auto;
+    }
+    .state-chip.is-idle .state-dot { background: var(--agy-ok-fg); }
+    .state-chip.is-running {
+      color: var(--agy-accent);
+      border-color: var(--agy-accent);
+    }
+    .state-chip.is-running .state-dot {
+      background: var(--agy-accent);
+      animation: agy-pulse 1.1s ease-in-out infinite;
+    }
+    .state-chip.is-waiting {
+      color: var(--agy-warn-fg);
+      border-color: var(--agy-warn-border);
+      background: var(--agy-warn-bg);
+    }
+    .state-chip.is-waiting .state-dot {
+      background: var(--agy-warn-fg);
+      animation: agy-pulse 1.5s ease-in-out infinite;
+    }
+    .state-chip.is-error {
+      color: #dc2626;
+      border-color: rgba(220, 38, 38, 0.45);
+      background: rgba(220, 38, 38, 0.1);
+    }
+    .state-chip.is-error .state-dot {
+      background: #dc2626;
+      animation: agy-pulse 1s ease-in-out infinite;
+    }
+    :root[data-theme="dark"] .state-chip.is-error {
+      color: #f87171;
+      border-color: rgba(248, 113, 113, 0.5);
+      background: rgba(248, 113, 113, 0.12);
+    }
+    :root[data-theme="dark"] .state-chip.is-error .state-dot { background: #f87171; }
+    .state-note {
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--agy-fg-muted);
+      padding: 0 2px;
+    }
+    .state-note[hidden] { display: none; }
+    .state-note.is-waiting { color: var(--agy-warn-fg); }
+    .state-note.is-error { color: #dc2626; }
+    :root[data-theme="dark"] .state-note.is-error { color: #f87171; }
+    /* A missing source must not look like a real zero. */
+    .sources-note {
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--agy-warn-fg);
+      background: var(--agy-warn-bg);
+      border: 1px solid var(--agy-warn-border);
+      border-radius: 6px;
+      padding: 4px 8px;
+    }
+    .sources-note[hidden] { display: none; }
+    /* Module switches from config.json: hidden sections stay out of layout. */
+    .hide-session .state-chip:not(.is-offline),
+    .hide-session #state-note { display: none !important; }
+    .hide-quota #quota-section,
+    .hide-quota #quota-empty,
+    .hide-quota .tab-btn[data-tab="quota"],
+    .hide-quota #panel-quota { display: none !important; }
+    .hide-history #history-section { display: none !important; }
+    .hide-models #models-section { display: none !important; }
+    .hide-context #context-section { display: none !important; }
     .card-label {
       font-size: 11px;
       color: var(--agy-fg-muted);
@@ -535,6 +621,8 @@
     </div>
 
     <div id="meta-strip" class="meta-strip"></div>
+    <div id="state-note" class="state-note" hidden></div>
+    <div id="sources-note" class="sources-note" hidden></div>
 
     <div id="cards" class="grid"></div>
 

@@ -380,6 +380,11 @@ class NativeTests(unittest.TestCase):
             return urllib.request.urlopen(urllib.request.Request(url + path, **kwargs), timeout=5)
         with request('/') as r:
             html = r.read().decode(); self.assertIn('/preload.js', html); self.assertIn('context-section', html)
+            # The binary embeds dist/index.html at compile time; if the file was
+            # rebuilt without rebuilding the backend it silently serves the old UI.
+            served = html.replace('<script src="/preload.js"></script>', '', 1)
+            self.assertEqual(served, (PANEL / 'dist' / 'index.html').read_text(),
+                             'the backend embeds a stale bundle: run desktop-panel/build.sh')
         with request('/preload.js') as r:
             self.assertIn('X-Sidecar-Token', r.read().decode())
         with self.assertRaises(urllib.error.HTTPError) as e:

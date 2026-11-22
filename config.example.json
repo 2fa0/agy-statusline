@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "layout": "compact",
+  "pollSec": 0,
+  "lowSpeedWarnTokS": 50,
+  "thresholds": {
+    "waitSec": 20,
+    "stallSec": 25,
+    "toolGraceSec": 120
+  },
+  "modules": {
+    "session": true,
+    "quota": true,
+    "history": true,
+    "context": true,
+    "models": true
+  },
+  "debug": false
+}

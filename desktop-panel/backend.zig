@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("native/common.zig");
 const telemetry = @import("native/telemetry.zig");
+const settings = @import("native/settings.zig");
 const A = c.A;
 const V = c.V;
 extern "c" fn signal(c_int, usize) usize;
@@ -30,6 +31,7 @@ fn config(a: A, root_override: ?[]const u8, data_override: ?[]const u8) !telemet
         .root = root,
         .data = data_override orelse c.env(a, "PLUGIN_DATA") orelse try c.join(a, &.{ root, "plugin_data", "agy-desktop-status" }),
         .quota = c.env(a, "AGY_STATUSLINE_QUOTA_FILE") orelse try c.join(a, &.{ user_home, ".gemini", "agy-statusline", "quota.json" }),
+        .settings = c.env(a, "AGY_STATUSLINE_SETTINGS") orelse try settings.defaultPath(a),
     };
 }
 fn hook(a: A, cfg: telemetry.Config) !void {

@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("common.zig");
+const session = @import("session.zig");
+const settings_mod = @import("settings.zig");
 const A = c.A;
 const V = c.V;
 extern "c" fn sqlite3_open_v2([*:0]const u8, *?*anyopaque, c_int, ?[*:0]const u8) c_int;
@@ -239,7 +241,14 @@ fn generation(idx: i64, raw: []const u8) ?Gen {
     return out;
 }
 const Speed = struct { tokens: f64 = 0, seconds: f64 = 0, samples: i64 = 0 };
+/// Why the conversation database did or did not provide numbers. "No data" and
+/// "could not read" look identical in the panel unless we say which it was.
+pub const DbState = enum { ok, empty, missing, locked, unreadable };
+pub const TranscriptState = enum { ok, missing, failed };
+pub const QuotaState = enum { ok, stale, missing, unreadable, disabled };
+
 const DbResult = struct {
+    state: DbState = .ok,
     readable: bool = false,
     latest: ?Gen = null,
     history: [12]Gen = undefined,
@@ -325,23 +334,32 @@ fn isWalHeader(path: []const u8) bool {
     const len = file.readAll(&hdr) catch return false;
     return len == hdr.len and (hdr[18] == 2 or hdr[19] == 2);
 }
-fn openReadOnlyDb(a: A, path: []const u8) !?*anyopaque {
+const OpenOutcome = struct { db: ?*anyopaque = null, state: DbState = .ok };
+fn openReadOnlyDb(a: A, path: []const u8) !OpenOutcome {
     var err: c_int = 0;
     // Prefer plain mode=ro so in-flight WAL updates remain visible.
-    if (tryOpenDb(a, try a.dupeZ(u8, path), 1, &err)) |db| return db;
+    if (tryOpenDb(a, try a.dupeZ(u8, path), 1, &err)) |db| return .{ .db = db };
     // Never bypass an active SQLITE_BUSY (5) / SQLITE_LOCKED (6) lock with immutable=1.
     const primary = err & 0xff;
-    if (primary == 5 or primary == 6) return null;
+    if (primary == 5 or primary == 6) return .{ .state = .locked };
     // Closed WAL databases with no active -wal/-shm reject mode=ro because
     // SQLite cannot create -shm read-only; immutable=1 is safe when -wal is absent/empty.
     const wal_sig = c.sig(try c.fmt(a, "{s}-wal", .{path}));
-    if ((wal_sig.exists and wal_sig.size > 0) or !isWalHeader(path)) return null;
-    return tryOpenDb(a, try fileUri(a, path, "immutable=1"), 0x41, &err);
+    if ((wal_sig.exists and wal_sig.size > 0) or !isWalHeader(path)) return .{ .state = .unreadable };
+    const db = tryOpenDb(a, try fileUri(a, path, "immutable=1"), 0x41, &err);
+    return .{ .db = db, .state = if (db != null) .ok else .unreadable };
 }
 fn readDb(a: A, path: []const u8) !DbResult {
     var out = DbResult.init(a);
-    if (!c.sig(path).exists) return out;
-    const db = (try openReadOnlyDb(a, path)) orelse return out;
+    if (!c.sig(path).exists) {
+        out.state = .missing;
+        return out;
+    }
+    const opened = try openReadOnlyDb(a, path);
+    const db = opened.db orelse {
+        out.state = opened.state;
+        return out;
+    };
     defer _ = sqlite3_close(db);
     out.readable = true;
     if (Query.init(a, db, "SELECT idx,data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC")) |q| {
@@ -436,10 +454,13 @@ fn readDb(a: A, path: []const u8) !DbResult {
             if (chars > 0 and tokens > 0) out.cpt = std.math.clamp(chars / tokens, 0.4, 6);
         } else |_| {}
     }
+    // Opened and queried fine, but this conversation has no usable rows yet
+    // (e.g. the turn has not produced a finished step). That is not a failure.
+    if (out.count == 0 and out.usage == null and !out.live) out.state = .empty;
     return out;
 }
 
-pub const Config = struct { root: []const u8, data: []const u8, quota: []const u8 };
+pub const Config = struct { root: []const u8, data: []const u8, quota: []const u8, settings: []const u8 };
 pub const Runtime = struct {
     transcript: Transcript = Transcript.init(),
     db_arena: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(std.heap.c_allocator),
@@ -451,9 +472,30 @@ pub const Runtime = struct {
     live_step: ?i64 = null,
     samples: [5]struct { at: f64, chars: i64 } = undefined,
     sample_count: usize = 0,
+    settings: settings_mod.Settings = .{},
+    settings_sig: c.Sig = .{},
+    settings_loaded: bool = false,
+    growth_at: f64 = 0,
+    growth_chars: ?i64 = null,
+    growth_seen: bool = false,
     pub fn deinit(self: *Runtime) void {
         self.transcript.deinit();
         self.db_arena.deinit();
+    }
+    /// Hot reload: the config is re-read only when the file signature moves, so
+    /// a 1 Hz poll costs one stat, not a parse. Saving the file takes effect on
+    /// the next poll.
+    pub fn settingsFor(self: *Runtime, path: []const u8, a: A) settings_mod.Settings {
+        const sig = c.sig(path);
+        if (self.settings_loaded and std.meta.eql(sig, self.settings_sig)) return self.settings;
+        self.settings_loaded = true;
+        self.settings_sig = sig;
+        self.settings = if (sig.exists) settings_mod.fromJson(c.readJson(a, path)) else .{};
+        return self.settings;
+    }
+    fn charsIdleSec(self: *const Runtime, now: f64) ?f64 {
+        if (!self.growth_seen) return null;
+        return @max(0, now - self.growth_at);
     }
     fn database(self: *Runtime, id: []const u8, path: []const u8, a: A) !DbResult {
         const sig = c.sig(path);
@@ -473,11 +515,21 @@ pub const Runtime = struct {
     fn rate(self: *Runtime, id: []const u8, db: DbResult, now: f64) ?f64 {
         if (!db.live or db.chars == null or db.live_idx == null) {
             self.sample_count = 0;
+            self.growth_seen = false;
+            self.growth_chars = null;
             return null;
         }
-        if (!c.eq(&self.live_id, id) or self.live_step != db.live_idx or (self.sample_count > 0 and self.samples[self.sample_count - 1].chars > db.chars.?)) self.sample_count = 0;
+        const step_changed = !c.eq(&self.live_id, id) or self.live_step != db.live_idx;
+        if (step_changed or (self.sample_count > 0 and self.samples[self.sample_count - 1].chars > db.chars.?)) self.sample_count = 0;
         @memcpy(&self.live_id, id);
         self.live_step = db.live_idx;
+        // Track the last time the streamed text actually grew. A live row that
+        // stops growing is the difference between "slow" and "stuck".
+        if (step_changed or !self.growth_seen or self.growth_chars == null or db.chars.? > self.growth_chars.?) {
+            self.growth_at = now;
+            self.growth_chars = db.chars.?;
+            self.growth_seen = true;
+        }
         if (self.sample_count == 5) {
             std.mem.copyForwards(@TypeOf(self.samples[0]), self.samples[0..4], self.samples[1..]);
             self.sample_count -= 1;
@@ -620,8 +672,75 @@ pub fn quota(a: A, path: []const u8, now: i64) !V {
     try c.put(a, &out, "windows", rows);
     return out;
 }
+fn dbStateName(state: DbState) []const u8 {
+    return switch (state) {
+        .ok => "ok",
+        .empty => "empty",
+        .missing => "missing",
+        .locked => "locked",
+        .unreadable => "unreadable",
+    };
+}
+fn transcriptStateName(state: TranscriptState) []const u8 {
+    return switch (state) {
+        .ok => "ok",
+        .missing => "missing",
+        .failed => "error",
+    };
+}
+fn quotaStateName(state: QuotaState) []const u8 {
+    return switch (state) {
+        .ok => "ok",
+        .stale => "stale",
+        .missing => "missing",
+        .unreadable => "unreadable",
+        .disabled => "disabled",
+    };
+}
+fn note(a: A, list: *V, code: []const u8, label: []const u8, text: []const u8) !void {
+    var item = c.object(a);
+    try c.put(a, &item, "code", c.s(code));
+    try c.put(a, &item, "label", c.s(label));
+    try c.put(a, &item, "text", c.s(text));
+    try c.add(list, item);
+}
+/// Which evidence the numbers on screen actually came from, and — when a source
+/// is unavailable — a stable code plus a sentence. "No data" and "could not
+/// read" must never look the same in the panel.
+fn sourcesValue(a: A, db: DbResult, transcript_state: TranscriptState, hook_connected: bool, quota_state: QuotaState) !V {
+    var out = c.object(a);
+    try c.put(a, &out, "db", c.s(dbStateName(db.state)));
+    try c.put(a, &out, "transcript", c.s(transcriptStateName(transcript_state)));
+    try c.put(a, &out, "hooks", c.s(if (hook_connected) "ok" else "missing"));
+    try c.put(a, &out, "quota", c.s(quotaStateName(quota_state)));
+    var notes = c.arr(a);
+    // Only report what actually explains a missing number. A brand-new
+    // conversation with no rows yet is normal and stays silent.
+    switch (db.state) {
+        .locked => try note(a, &notes, "db_locked", "数据库被占用", "会话数据库正被其他进程占用（例如同时开着另一个窗口），本轮数值暂未刷新；面板会自动重试。"),
+        .unreadable => try note(a, &notes, "db_unreadable", "数据库异常", "会话数据库无法以只读方式打开，可能是文件异常或被独占；本轮数值暂未刷新。"),
+        .missing => if (transcript_state == .ok and db.count == 0) try note(a, &notes, "db_missing", "数据库缺失", "对话日志存在，但对应的会话数据库不存在或尚未就绪，部分数值可能缺失。"),
+        else => {},
+    }
+    if (transcript_state == .failed) try note(a, &notes, "transcript_error", "日志读取失败", "对话日志读取失败（可能单行过大或文件损坏），会话累计值可能不完整。");
+    try c.put(a, &out, "degraded", c.b(notes.array.items.len > 0));
+    try c.put(a, &out, "notes", notes);
+    return out;
+}
+
 pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V {
     const now: f64 = @as(f64, @floatFromInt(std.time.milliTimestamp())) / 1000;
+    const settings = runtime.settingsFor(cfg.settings, a);
+    if (!settings.enabled) {
+        var off = c.object(a);
+        try c.put(a, &off, "config", try settings_mod.toValue(a, settings));
+        try c.put(a, &off, "found", c.b(false));
+        try c.put(a, &off, "disabled", c.b(true));
+        try c.put(a, &off, "conversationId", c.s(""));
+        try c.put(a, &off, "message", c.s("面板已在 config.json 中被关闭（enabled: false），改回 true 后自动恢复。"));
+        try c.put(a, &off, "generatedAt", try timeValue(a, now));
+        return off;
+    }
     const hooks = c.readJson(a, try c.join(a, &.{ cfg.data, "active_session.json" }));
     const active = c.str(c.get(hooks, "activeConversationId"));
     const conversations = try recent(a, cfg.root, hooks);
@@ -629,11 +748,23 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     if (id.len == 0 or c.eq(id, "auto")) id = active;
     if (id.len == 0 and conversations.array.items.len > 0) id = c.str(c.get(conversations.array.items[0], "conversationId"));
     var out = c.object(a);
+    try c.put(a, &out, "config", try settings_mod.toValue(a, settings));
     try c.put(a, &out, "found", c.b(false));
     try c.put(a, &out, "conversationId", c.s(if (c.validId(id)) id else ""));
     try c.put(a, &out, "recentConversations", conversations);
     try c.put(a, &out, "hookConnected", c.b(active.len > 0));
-    try c.put(a, &out, "quota", try quota(a, cfg.quota, @intFromFloat(now)));
+    var quota_state: QuotaState = .disabled;
+    var quota_value: V = .null;
+    if (settings.quota) {
+        quota_value = try quota(a, cfg.quota, @intFromFloat(now));
+        quota_state = if (quota_value != .object)
+            (if (c.sig(cfg.quota).exists) .unreadable else .missing)
+        else if (c.get(quota_value, "stale") == .bool and c.get(quota_value, "stale").bool)
+            .stale
+        else
+            .ok;
+    }
+    try c.put(a, &out, "quota", quota_value);
     try c.put(a, &out, "generatedAt", try timeValue(a, now));
     var live = c.object(a);
     try c.put(a, &live, "active", c.b(false));
@@ -647,9 +778,14 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     const db = try runtime.database(id, dbpath, a);
     var transcript_path = c.str(c.get(meta, "transcriptPath"));
     if (transcript_path.len == 0 or !c.sig(transcript_path).exists) transcript_path = try c.join(a, &.{ cfg.root, "brain", id, ".system_generated", "logs", "transcript.jsonl" });
+    var transcript_state: TranscriptState = .ok;
     const has_log = blk: {
-        runtime.transcript.update(transcript_path) catch break :blk false;
-        break :blk true;
+        if (runtime.transcript.update(transcript_path)) |_| {
+            break :blk true;
+        } else |err| {
+            transcript_state = if (err == error.FileNotFound) .missing else .failed;
+            break :blk false;
+        }
     };
     const tracker = &runtime.transcript;
     var model: []const u8 = if (db.latest) |r| r.model else "";
@@ -690,7 +826,7 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     try c.put(a, &out, "modelName", c.s(model));
     try c.put(a, &out, "workspaceName", c.s(std.fs.path.basename(workspace)));
     try c.put(a, &out, "lastAvgSpeed", c.rounded(speed, 10));
-    try c.put(a, &out, "lowSpeedWarning", c.b(if (speed) |x| x < 50 else false));
+    try c.put(a, &out, "lowSpeedWarning", c.b(if (speed) |x| x < settings.low_speed else false));
     try c.put(a, &out, "lastGenDurationSec", c.rounded(dur, 100));
     try c.put(a, &out, "turnDurationSec", c.rounded(if (has_log) span(tracker.last, tracker.user) else null, 100));
     try c.put(a, &out, "sessionDurationSec", c.rounded(if (has_log) span(tracker.last, tracker.first) else null, 100));
@@ -721,7 +857,7 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     try c.put(a, &out, "latestUsage", latest);
     var models = c.arr(a);
     var points = c.arr(a);
-    if (has_log) {
+    if (has_log and settings.models) {
         for (tracker.models.keys(), tracker.models.values()) |name, usage| {
             var row = try usage.value(a);
             const ms = db.speeds.get(name) orelse Speed{};
@@ -730,6 +866,8 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
             try c.put(a, &row, "speedSamples", c.n(ms.samples));
             try c.add(&models, row);
         }
+    }
+    if (has_log and settings.context) {
         for (tracker.points[0..tracker.point_count]) |point| {
             var row = c.object(a);
             try c.put(a, &row, "request", c.n(point.request));
@@ -746,14 +884,16 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     try c.put(a, &out, "compactionCount", if (has_log) c.n(tracker.compactions) else .null);
     try c.put(a, &out, "lastActivityAt", if (has_log) try timeValue(a, tracker.last) else .null);
     var history = c.arr(a);
-    for (db.history[0..db.count]) |rec| {
-        var row = c.object(a);
-        try c.put(a, &row, "idx", c.n(rec.idx));
-        try c.put(a, &row, "speedTokS", c.rounded(rec.speed, 10));
-        try c.put(a, &row, "outputTokens", c.opt(rec.output));
-        try c.put(a, &row, "durationSec", c.rounded(rec.exec orelse rec.duration, 100));
-        try c.put(a, &row, "model", c.s(if (rec.model.len > 0) rec.model else model));
-        try c.add(&history, row);
+    if (settings.history) {
+        for (db.history[0..db.count]) |rec| {
+            var row = c.object(a);
+            try c.put(a, &row, "idx", c.n(rec.idx));
+            try c.put(a, &row, "speedTokS", c.rounded(rec.speed, 10));
+            try c.put(a, &row, "outputTokens", c.opt(rec.output));
+            try c.put(a, &row, "durationSec", c.rounded(rec.exec orelse rec.duration, 100));
+            try c.put(a, &row, "model", c.s(if (rec.model.len > 0) rec.model else model));
+            try c.add(&history, row);
+        }
     }
     try c.put(a, &out, "history", history);
     const rate = runtime.rate(id, db, now);
@@ -770,5 +910,26 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
         try c.put(a, &live, "observedAt", try timeValue(a, now));
     }
     try c.put(a, &out, "live", live);
+    if (settings.session) {
+        const hook_model = c.str(c.get(meta, "modelName"));
+        const evidence: session.Input = .{
+            .now = now,
+            .hook_event = c.str(c.get(meta, "lastEvent")),
+            .hook_age_sec = if (c.timestamp(c.str(c.get(meta, "updatedAt")))) |at| now - at else null,
+            .hook_connected = active.len > 0,
+            .live = db.live,
+            .live_status = db.status,
+            .chars_idle_sec = runtime.charsIdleSec(now),
+            // The hook reports the model chosen for this turn; the last
+            // completed generation reports the previous one. Comparing them is
+            // what makes "switch → cache recompute" explainable.
+            .model = if (hook_model.len > 0) hook_model else model,
+            .prev_model = if (db.latest) |rec| rec.model else "",
+            .termination = c.str(c.get(meta, "terminationReason")),
+            .evidence_trusted = db.readable or (has_log and tracker.steps > 0),
+        };
+        try c.put(a, &out, "session", try session.toValue(a, evidence, session.evaluate(evidence, settings.limits), settings.debug));
+    }
+    try c.put(a, &out, "sources", try sourcesValue(a, db, transcript_state, active.len > 0, quota_state));
     return out;
 }

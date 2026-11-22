@@ -103,6 +103,24 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 
 Prints platform info, install paths, `quarantine` status, code-signing integrity, binary self-check results, and macOS security environment (Gatekeeper, MDM management, Developer ID policy requirements).
 
+Add `--json` for a machine-readable report. Every failure carries a stable code, so a script or an agent can branch on it instead of matching prose:
+
+```sh
+./install.sh --doctor --json
+```
+
+```json
+{
+  "ok": false,
+  "platform": "Darwin arm64",
+  "codes": ["panel_missing", "version_mismatch"],
+  "remediation": { "panel_missing": "未找到面板插件；运行 ./install.sh --panel-only 安装，然后重启 Antigravity Desktop。" },
+  "checks": [{ "key": "panel.dir", "value": "...", "code": "panel_missing" }]
+}
+```
+
+Exit code is `0` only when `ok` is `true`. Codes: `cli_missing`, `cli_quarantine`, `cli_signature_invalid`, `cli_not_runnable`, `panel_missing`, `backend_missing`, `backend_quarantine`, `backend_signature_invalid`, `backend_not_runnable`, `version_mismatch`, `mdm_requires_developer_id`, `statusline_not_configured`.
+
 ### macOS Security Note
 
 This project uses **ad-hoc code signing** (`codesign --sign -`) without an Apple Developer ID or notarization:
@@ -134,6 +152,35 @@ Provides a persistent monitoring card and interactive charts in the right auxili
 
 While a model is actively generating, the Speed card switches to live mode (polling local DB every **1s**, zero network), estimating `≈ tok/s` from character growth rate and the session's historical char-to-token ratio, then switching back to exact average speed and historical trend bars once the step completes.
 
+### Session State: Four States, Each With a Reason
+
+The header carries a state chip. Hovering it shows the full sentence, and the state is computed in the native backend from hook events, the active step row and stream growth — the UI only renders it, so thresholds exist in exactly one place.
+
+| State | Chip | Trigger | Example explanation |
+| :--- | :--- | :--- | :--- |
+| Ready | green dot | previous turn stopped, or idle | "Session idle, waiting for input." |
+| Running | blue pulse | active step, fresh `PreInvocation`, or local tool work after `PostInvocation` | "The tool for this step is still running locally (12s)." |
+| Waiting | amber pulse | first byte > `20s`, model switch prefill, or stream silent for `25s` | "Waiting 34s for the first token: long prefill or server queueing; the connection is still alive." |
+| Failed | red pulse | turn ended with a non-cancel `terminationReason` | "Turn ended with an error (MODEL_ERROR: upstream 503)." |
+
+Four deliberate details: a user cancel is **not** an error (`CANCELLED` returns to a green dot); switching models explains the wait instead of looking stuck; a stream that stops growing for `25s` is reported as stalled while a merely slow one still reads as running; when the conversation database is locked or missing the chip falls back to "can't confirm" instead of guessing; a sidecar that stops answering replaces the strip with "backend not responding · 12s"; and every snapshot carries a `sources` block (`db` / `transcript` / `hooks` / `quota` states plus reason codes) so an unreadable source raises "incomplete data · database busy" instead of quietly rendering zeros. Thresholds live in `config.json`; the rules are covered by 16 unit tests.
+
+### Personalisation: `config.json` (no restart)
+
+The root `./install.sh` writes `~/.gemini/agy-statusline/config.json` on first install (an existing file is never overwritten, and it survives uninstall). Saves apply within one poll cycle — no Antigravity restart:
+
+| Key | Effect |
+| :--- | :--- |
+| `enabled` | `false` shows a single "disabled" line and reads neither the database nor the quota file |
+| `layout` | `compact` chip only; `detailed` adds the full reason line and the wait duration on the chip |
+| `pollSec` | default interval (`0` keeps the adaptive policy; a manual dropdown choice wins) |
+| `lowSpeedWarnTokS` | low-speed warning threshold, default `50` |
+| `thresholds` | `waitSec` / `stallSec` / `toolGraceSec` for the state machine |
+| `modules` | switch off `session` / `quota` / `history` / `context` / `models` individually |
+| `debug` | adds `session.evidence` to the JSON for troubleshooting |
+
+Out-of-range values are clamped (`pollSec: 999` → `60`), so a bad edit degrades instead of breaking. Override the path with `AGY_STATUSLINE_SETTINGS`; defaults are in [`config.example.json`](./config.example.json).
+
 ### Absolute Quota Reset Times
 
 The **Quota** tab converts 5h and weekly quota windows into absolute local timestamps (e.g., `Today 11:29`, `Mon 11/23 11:29`) by reading the local `~/.gemini/agy-statusline/quota.json` snapshot written by the CLI status line (override path via `AGY_STATUSLINE_QUOTA_FILE`).
@@ -152,6 +199,18 @@ The **Quota** tab converts 5h and weekly quota windows into absolute local times
 2. Extract and run:
    - **macOS / Linux**: `./install.sh` (uninstall: `~/.gemini/config/plugins/agy-desktop-status/install.sh --uninstall`)
    - **Windows (PowerShell)**: `powershell -ExecutionPolicy Bypass -File .\install.ps1` (uninstall: `... -Uninstall`)
+
+What uninstall actually touches (root `./install.sh --uninstall`; the plugin-local script removes only the plugin directory):
+
+| Action | Target |
+| :--- | :--- |
+| **Removed** | `~/.gemini/config/plugins/agy-desktop-status/` |
+| **Removed** | `~/.gemini/antigravity-cli/agy-statusline` |
+| **Kept** | `~/.gemini/agy-statusline/config.json` (your settings, reused on reinstall) |
+| **Kept** | `~/.gemini/agy-statusline/quota.json` (the CLI keeps refreshing it) |
+| **Manual** | the `statusLine` entry in `settings.json` (or run `/statusline delete` inside AGY) |
+
+An open Antigravity window needs one restart before the panel disappears completely.
 
 For building from source or frontend customization, see [desktop-panel/README.md](./desktop-panel/README.md).
 

@@ -49,6 +49,54 @@ interface LiveState {
   observedAt?: string;
 }
 
+type SessionState = 'idle' | 'running' | 'waiting' | 'error';
+
+/** Backend-computed session state; the UI only renders it. */
+interface SessionInfo {
+  state: SessionState;
+  code: string;
+  label: string;
+  detail: string;
+  waitSec?: number | null;
+  sinceEvent?: string;
+  evidence?: Record<string, unknown>;
+}
+
+interface PanelModules {
+  session?: boolean;
+  quota?: boolean;
+  history?: boolean;
+  models?: boolean;
+  context?: boolean;
+}
+
+/** Mirrors ~/.gemini/agy-statusline/config.json, echoed on every snapshot. */
+interface SourceNote {
+  code: string;
+  label?: string;
+  text: string;
+}
+
+/** Which evidence the numbers came from, and what was unavailable. */
+interface DataSources {
+  degraded?: boolean;
+  db?: string;
+  transcript?: string;
+  hooks?: string;
+  quota?: string;
+  notes?: SourceNote[];
+}
+
+interface PanelConfig {
+  enabled?: boolean;
+  layout?: 'compact' | 'detailed';
+  pollSec?: number;
+  lowSpeedWarnTokS?: number;
+  waitSec?: number;
+  stallSec?: number;
+  modules?: PanelModules;
+}
+
 interface UsageSummary {
   inputTokens: number | null;
   cacheReadTokens: number | null;
@@ -107,6 +155,10 @@ interface StatusSnapshot {
   recentConversations?: RecentConversation[];
   quota?: QuotaSnapshot | null;
   live?: LiveState | null;
+  session?: SessionInfo | null;
+  sources?: DataSources;
+  config?: PanelConfig;
+  disabled?: boolean;
   generatedAt?: string;
   lastActivityAt?: string | null;
   cacheHit?: boolean;
@@ -163,6 +215,9 @@ let currentContextPoints: ContextPoint[] = [];
 let currentDefaultModel = '';
 let activeHistoryIdx: number | null = null;
 let lastSnapshot: StatusSnapshot | null = null;
+let appliedPollSec: number | null = null;
+let lastSuccessAt = 0;
+let consecutiveFailures = 0;
 
 function loadSavedTab(): string {
   try {
@@ -398,7 +453,7 @@ function highlightHistoryItem(targetIdx: number | null): void {
     (targetIdx !== null ? currentHistory.find((h) => h.idx === targetIdx) : undefined) || fallback;
   activeHistoryIdx = item.idx;
 
-  const isWarn = item.speedTokS !== null && item.speedTokS < 50;
+  const isWarn = item.speedTokS !== null && item.speedTokS < (lastSnapshot?.config?.lowSpeedWarnTokS ?? 50);
   const speedStr = item.speedTokS !== null ? `${item.speedTokS.toFixed(1)} tok/s` : '--';
   const modelStr = item.model || currentDefaultModel || '未知模型';
   const outStr =
@@ -593,6 +648,10 @@ function renderSnapshot(snap: StatusSnapshot): void {
     metaStrip.innerHTML = '';
     cardsEl.innerHTML = '';
     historySection.style.display = 'none';
+    if (snap.disabled) {
+      tabBar.style.display = 'none';
+      tabPanels.forEach((p) => { p.style.display = 'none'; });
+    }
     emptyBox.style.display = 'block';
     emptyBox.textContent = snap.message || '暂未发现本地 Antigravity 桌面端会话记录。';
     renderQuota(snap.quota);
@@ -612,17 +671,40 @@ function renderSnapshot(snap: StatusSnapshot): void {
   }
   const live = snap.live;
   const liveActive = Boolean(live?.active);
+  const session = snap.session || null;
+  // The backend already resolved the state and its reason; the panel must not
+  // re-derive thresholds locally or the two will drift apart.
+  const stateKey: SessionState =
+    session && (['idle', 'running', 'waiting', 'error'] as string[]).includes(session.state)
+      ? session.state
+      : 'idle';
+  const waitText =
+    session && typeof session.waitSec === 'number' && session.waitSec >= 1
+      ? formatDuration(session.waitSec)
+      : '';
+  const showWait =
+    snap.config?.layout === 'detailed' && waitText !== '' && (stateKey === 'waiting' || stateKey === 'running');
+  // A permanent "ready" label is noise; keep the dot (and its tooltip) and only
+  // spell out the label when the panel actually has something to say.
+  const showLabel = Boolean(session) && !(stateKey === 'idle' && session?.code === 'idle');
+  const stateChip = session
+    ? `<span class="state-chip is-${stateKey}" title="${escapeHtml(session.detail)}"><i class="state-dot"></i>${
+        showLabel ? escapeHtml(session.label) : ''
+      }${showWait ? ` ${escapeHtml(waitText)}` : ''}</span>`
+    : '';
   const liveBadge = liveActive
     ? `<span class="pill live" title="正在生成：第 ${live?.stepIdx ?? '?'} 步，已流式输出 ${live?.outputChars ?? '?'} 字"><i class="live-pulse"></i>生成中${
         typeof live?.elapsedSec === 'number' ? ` · ${live.elapsedSec.toFixed(0)}s` : ''
       }</span>`
     : '';
+  const statusBadge = stateChip || liveBadge;
+  const warnTokS = typeof snap.config?.lowSpeedWarnTokS === 'number' ? snap.config.lowSpeedWarnTokS : 50;
   const updatedHtml = updatedText ? `<span class="updated-tag" title="上次刷新时间">${escapeHtml(updatedText)}</span>` : '';
   const metaTip = [
     snap.shortId ? `会话 ${snap.shortId}` : '',
     snap.stepCount ? `${snap.stepCount} 步` : '',
   ].filter(Boolean).join(' · ');
-  metaStrip.innerHTML = `<div class="meta-main" title="${escapeHtml(metaTip)}">${liveBadge}<span class="meta-text">${escapeHtml(metaParts.join(' · ') || '活跃会话')}</span></div>${updatedHtml}`;
+  metaStrip.innerHTML = `<div class="meta-main" title="${escapeHtml(metaTip)}">${statusBadge}<span class="meta-text">${escapeHtml(metaParts.join(' · ') || '活跃会话')}</span></div>${updatedHtml}`;
 
   const speedText =
     snap.lastAvgSpeed !== null && snap.lastAvgSpeed !== undefined
@@ -757,7 +839,7 @@ function renderSnapshot(snap: StatusSnapshot): void {
       .map((item) => {
         const s = item.speedTokS ?? 0;
         const hPct = Math.max(12, Math.round((s / maxSpeed) * 100));
-        const warnCls = item.speedTokS !== null && item.speedTokS < 50 ? 'warn' : '';
+        const warnCls = item.speedTokS !== null && item.speedTokS < warnTokS ? 'warn' : '';
         const tip = `#${item.idx} · ${item.speedTokS !== null ? `${item.speedTokS.toFixed(1)} tok/s` : '--'} · 输出 ${formatExactTokens(item.outputTokens)} · 耗时 ${formatDuration(item.durationSec)}`;
         return `
           <div class="spark-col" data-idx="${item.idx}" title="${escapeHtml(tip)}">
@@ -770,7 +852,7 @@ function renderSnapshot(snap: StatusSnapshot): void {
     historyListEl.innerHTML = history
       .slice(0, 6)
       .map((item) => {
-        const isWarn = item.speedTokS !== null && item.speedTokS < 50;
+        const isWarn = item.speedTokS !== null && item.speedTokS < warnTokS;
         return `
           <div class="history-row" data-idx="${item.idx}">
             <span class="muted">#${item.idx}</span>
@@ -877,12 +959,123 @@ function syncSidecarThemeFromBackground(): void {
   }
 }
 
+/**
+ * Applies config.json without a reload: layout, module switches and the
+ * configured poll interval all follow the file on the next poll.
+ */
+function applyPanelConfig(config: PanelConfig | undefined): void {
+  const root = document.documentElement;
+  const cfg = config || {};
+  const layout = cfg.layout === 'detailed' ? 'detailed' : 'compact';
+  if (root.dataset.layout !== layout) root.dataset.layout = layout;
+  const modules = cfg.modules || {};
+  for (const key of ['session', 'quota', 'history', 'models', 'context'] as const) {
+    root.classList.toggle(`hide-${key}`, modules[key] === false);
+  }
+  if (modules.quota === false && activeTab === 'quota') {
+    setActiveTab('trends');
+  }
+  const pollSec = typeof cfg.pollSec === 'number' ? Math.round(cfg.pollSec) : 0;
+  if (pollSec !== appliedPollSec) {
+    const prevApplied = appliedPollSec;
+    appliedPollSec = pollSec;
+    let saved: string | null = null;
+    try {
+      saved = window.localStorage?.getItem(STORAGE_KEY_INTERVAL) ?? null;
+    } catch {
+      saved = null;
+    }
+    // An explicit choice in the dropdown always wins over the config default.
+    if (saved === null) {
+      if (pollSec > 0) {
+        const value = Math.min(60, Math.max(1, pollSec));
+        ALLOWED_INTERVALS.add(value);
+        const known = Array.from(refreshSelect.options).some((opt) => Number(opt.value) === value);
+        if (!known) {
+          const option = document.createElement('option');
+          option.value = String(value);
+          option.textContent = `${value}s`;
+          refreshSelect.insertBefore(option, refreshSelect.lastElementChild);
+        }
+        refreshIntervalSec = value;
+        refreshSelect.value = String(value);
+        refreshSelect.classList.add('active');
+        resetTimer();
+      } else if (prevApplied !== null && prevApplied > 0) {
+        refreshIntervalSec = 3;
+        refreshSelect.value = '3';
+        refreshSelect.classList.add('active');
+        resetTimer();
+      }
+    }
+  }
+}
+
+/** The full reason line, shown under the strip in the detailed layout. */
+function renderStateNote(snap: StatusSnapshot): void {
+  const note = document.getElementById('state-note');
+  if (!note) return;
+  const session = snap.session;
+  const detailed = snap.config?.layout === 'detailed';
+  if (!detailed || !session || session.state === 'idle') {
+    note.hidden = true;
+    note.textContent = '';
+    return;
+  }
+  note.hidden = false;
+  note.className = `state-note is-${session.state}`;
+  note.textContent = session.detail;
+}
+
+/**
+ * Never let a missing source look like real zeros. Compacting this into one line
+ * keeps the panel quiet when everything is fine, and explicit when it is not.
+ */
+function renderSourcesNote(snap: StatusSnapshot): void {
+  const node = document.getElementById('sources-note');
+  if (!node) return;
+  const sources = snap.sources;
+  const notes = (sources?.notes || []).filter((note) => note && typeof note.text === 'string');
+  if (!sources?.degraded || notes.length === 0) {
+    node.hidden = true;
+    node.textContent = '';
+    node.removeAttribute('title');
+    return;
+  }
+  const labels = notes.map((note) => note.label || '数据不可用');
+  const head = `数据不完整 · ${labels.join(' / ')}`;
+  // Compact keeps one short line; detailed spells the reason out inline. The
+  // tooltip always carries every reason, so nothing is only available in one
+  // layout.
+  const detailed = snap.config?.layout === 'detailed';
+  node.hidden = false;
+  node.textContent = detailed ? `${head}：${notes[0].text}` : head;
+  node.title = notes.map((note) => note.text).join('\n');
+}
+
 async function fetchSidecarSnapshot(convId: string): Promise<StatusSnapshot | null> {
   const f = window.sidecar?.fetch ? window.sidecar.fetch.bind(window.sidecar) : fetch;
   const qs = convId ? `?conversationId=${encodeURIComponent(convId)}` : '';
   const res = await f(`/api/status${qs}`, { method: 'GET' });
   if (!res.ok) return null;
   return (await res.json()) as StatusSnapshot;
+}
+
+/**
+ * A sidecar can be restarted or wedged while the panel keeps its last numbers on
+ * screen. Saying "no response" is better than looking live and lying.
+ */
+function markBackendUnresponsive(): void {
+  consecutiveFailures += 1;
+  if (lastSuccessAt === 0 || consecutiveFailures < 2) return;
+  const silentMs = Date.now() - lastSuccessAt;
+  const loudAfter = Math.max(6000, 3 * Math.max(1, refreshIntervalSec) * 1000);
+  if (silentMs < loudAfter) return;
+  metaStrip.innerHTML = `<div class="meta-main"><span class="state-chip is-error is-offline" title="侧车后台已经 ${Math.round(
+    silentMs / 1000,
+  )}s 没有响应，屏幕上的数字是最后一次成功读取的值"><i class="state-dot"></i>后台无响应 · ${escapeHtml(
+    formatDuration(silentMs / 1000),
+  )}</span></div>`;
 }
 
 async function refreshSnapshot(): Promise<void> {
@@ -896,10 +1089,19 @@ async function refreshSnapshot(): Promise<void> {
     const snap = await fetchSidecarSnapshot(targetId);
     if (snap) {
       lastSnapshot = snap;
+      lastSuccessAt = Date.now();
+      consecutiveFailures = 0;
       renderSnapshot(snap);
+      applyPanelConfig(snap.config);
+      renderStateNote(snap);
+      renderSourcesNote(snap);
+    } else {
+      markBackendUnresponsive();
     }
   } catch {
-    // Keep last rendered state if host aborts an in-flight refresh on close/reload.
+    // Keep last rendered state if host aborts an in-flight refresh on close/reload,
+    // but surface a backend that stayed silent across several cycles.
+    markBackendUnresponsive();
   } finally {
     inFlight = false;
   }

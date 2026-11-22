@@ -103,6 +103,24 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 
 会打印平台、安装路径、`quarantine` 状态、代码签名与签名完整性、两个二进制的自检结果，以及**系统安全环境**（Gatekeeper 开关、设备是否受 MDM 纳管、是否被策略要求 Developer ID）——面板白屏、状态栏无输出、企业机器被拒这几类问题基本都在这里能定位。
 
+加 `--json` 会输出机器可读版本，每一项异常带一个稳定错误码，人和 agent 都能据此分支，不用去匹配中文：
+
+```sh
+./install.sh --doctor --json
+```
+
+```json
+{
+  "ok": false,
+  "platform": "Darwin arm64",
+  "codes": ["panel_missing", "version_mismatch"],
+  "remediation": { "panel_missing": "未找到面板插件；运行 ./install.sh --panel-only 安装，然后重启 Antigravity Desktop。" },
+  "checks": [{ "key": "panel.dir", "value": "...", "code": "panel_missing" }]
+}
+```
+
+退出码：`ok` 为 `true` 时 `0`，否则非 `0`。可用错误码：`cli_missing`、`cli_quarantine`、`cli_signature_invalid`、`cli_not_runnable`、`panel_missing`、`backend_missing`、`backend_quarantine`、`backend_signature_invalid`、`backend_not_runnable`、`version_mismatch`、`mdm_requires_developer_id`、`statusline_not_configured`。
+
 ### macOS 安全机制说明（重要）
 
 本项目用 **ad-hoc 代码签名**（`codesign --sign -`），**没有 Apple Developer ID，也没有公证**。这意味着：
@@ -158,6 +176,55 @@ xattr -dr com.apple.quarantine ~/.gemini/antigravity-cli
 原理：AGY 在生成过程中会先写入这条未完成的 step 行（`PENDING` / `RUNNING` / `GENERATING`），并随着流式文本增长不断重写 `steps.step_payload`。面板只读这一行算出字符增长速率，再用同一会话已完成步骤的「字数 / 输出 token」比例换算成 `≈ tok/s`（实测中文约 `1.15~1.3 字/token`）。**真 token 数只在整步完成后落库**，所以生成中的 tok/s 是估算值（带 `≈`），完成后自动回到精确的平均速度与历史趋势。
 
 生成期间面板会提高到 **1s 一轮**轮询（仍是本地只读，不联网）；上下文占用（`Ctx`）是 prompt 侧实测值，只在每一步完成后刷新，卡片 tooltip 会写明。
+
+### 会话状态：不只变色，还给原因
+
+页头会显示一个四态胶囊，鼠标悬浮即可看到完整原因。状态由原生后台按 Hook 事件、数据库中的活跃 step 和日志活动共同判定，UI 只负责渲染——**阈值和文案只有一处实现，不会前后端各算一套**。
+
+| 状态 | 胶囊 | 触发条件 | 典型文案 |
+| :--- | :--- | :--- | :--- |
+| 就绪 | 绿色圆点 | 上一轮 `Stop` 已结束或会话空闲 | 「会话空闲，等待下一条输入。」 |
+| 执行中 | 蓝色呼吸 | 有活跃 step、`PreInvocation` 刚触发，或 `PostInvocation` 后正在跑工具 | 「本步调用的工具正在本地执行（12s），结果返回后继续。」 |
+| 等待 | 黄色呼吸 | 首字等待超过 `20s`、切换模型后的预填充、或流式输出 `25s` 没有增长 | 「已等待模型首字 34s：长上下文预填充或服务端排队时常见，连接仍然有效。」 |
+| 异常 | 红色呼吸 | 本轮以非取消原因结束（读取 Hook 的 `terminationReason`） | 「本轮异常结束（MODEL_ERROR: upstream 503），不计入执行中。」 |
+
+四个刻意做对的细节：
+
+- **主动取消不算错误**：`CANCELLED` / `aborted by user` 之类回到「已取消」并显示绿灯，否则每取消一次就闪红，红点很快会被无视。
+- **切换模型会解释等待**：Hook 报告的当前模型与上一步落库的模型不一致时，文案直接说明「首字前需重算上下文缓存」，而不是让你怀疑卡死了。
+- **停滞与缓慢分开**：数据库里活跃 step 还在但流式字数 `25s` 没涨，报「输出停滞」；仍在涨只是慢，就老实显示生成中。
+- **看不清就说看不清**：会话数据库被锁或缺失时，`PreInvocation` 已经过去很久也不会假装还在等首字，而是回到「无法确认」，并写明"数据库暂不可读"；侧车后台连续几个周期没有响应时，页头直接换成红色的「后台无响应 · 12s」，而不是让过期数字继续假装实时。
+- **「没数据」不等于「读不到」**：每份快照都带 `sources`（`db` / `transcript` / `hooks` / `quota` 各自的状态）和 `notes`（原因码 + 一句话）。任一项真的不可用时，面板顶部出现黄色「数据不完整 · 数据库被占用」，悬浮看完整原因；只是这轮还没产生数据时**不会**亮告警——`locked` 属于瞬时占用，面板会自动重试。
+
+阈值都可在 `config.json` 的 `thresholds` 里改，判据本身有 16 项单测覆盖（`desktop-panel/tests/test_session.py`）。
+
+### 个性化：`config.json`（改完即生效）
+
+根目录 `./install.sh` 首次安装会写入 `~/.gemini/agy-statusline/config.json`（已有文件不会被覆盖，卸载也会保留）。改完保存后**约一个轮询周期内生效**，不用重启 Antigravity：
+
+```json
+{
+  "enabled": true,
+  "layout": "compact",
+  "pollSec": 0,
+  "lowSpeedWarnTokS": 50,
+  "thresholds": { "waitSec": 20, "stallSec": 25, "toolGraceSec": 120 },
+  "modules": { "session": true, "quota": true, "history": true, "context": true, "models": true },
+  "debug": false
+}
+```
+
+| 键 | 作用 |
+| :--- | :--- |
+| `enabled` | `false` 时面板只显示一句「已关闭」，不读数据库、不读额度 |
+| `layout` | `compact` 只显示状态胶囊；`detailed` 额外在下方显示完整原因行，并在胶囊上带等待时长 |
+| `pollSec` | 默认刷新间隔（`0` 用面板自适应策略；下拉框里手动选过的值优先） |
+| `lowSpeedWarnTokS` | 低速告警阈值，默认 `50 tok/s` |
+| `thresholds` | 状态机的等待/停滞/工具等待阈值（秒） |
+| `modules` | 逐项关闭 `session` / `quota` / `history` / `context` / `models`；关掉 `quota` 后连额度文件都不读 |
+| `debug` | `true` 时在 `session.evidence` 里附判定依据，用于排障 |
+
+配置路径可用 `AGY_STATUSLINE_SETTINGS` 覆盖；完整默认值见 [config.example.json](./config.example.json)。
 
 ### 额度重置时间（不再自己换算 “还剩 2 天 4 小时”）
 
@@ -231,6 +298,18 @@ cd agy-statusline/desktop-panel
   ```powershell
   powershell -ExecutionPolicy Bypass -File "$HOME\.gemini\config\plugins\agy-desktop-status\install.ps1" -Uninstall
   ```
+
+卸载到底动了什么，写清楚比“应该没事”更有用。上面这条只删插件目录；如果在仓库根目录跑 `./install.sh --uninstall`，处理范围是：
+
+| 动作 | 对象 |
+| :--- | :--- |
+| **移除** | 插件目录 `~/.gemini/config/plugins/agy-desktop-status/`（含原生后台与单文件前端） |
+| **移除** | CLI 二进制 `~/.gemini/antigravity-cli/agy-statusline` |
+| **保留** | `~/.gemini/agy-statusline/config.json`（你的个性化设置，重装后自动沿用） |
+| **保留** | `~/.gemini/agy-statusline/quota.json`（CLI 下次渲染会继续更新） |
+| **需手动处理** | `settings.json` 里的 `statusLine` 配置项（或在 AGY 里运行 `/statusline delete`） |
+
+卸载不需要重启系统，但正在打开的 Antigravity 窗口要重启一次才会彻底回到官方默认界面。
 
 更多关于桌面端插件的架构与前端二次开发说明，请参阅 [desktop-panel/README.md](./desktop-panel/README.md)。
 
