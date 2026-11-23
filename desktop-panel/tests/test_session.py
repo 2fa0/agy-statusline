@@ -197,6 +197,14 @@ class SessionTests(PanelFixture):
         self.hooks('Stop', age=5, termination='CANCELLED')
         self.assertIn('不是错误', self.snapshot()['session']['detail'])
 
+    def test_normal_termination_is_idle_not_error(self):
+        self.database()
+        self.transcript()
+        for reason in ('NO_TOOL_CALL', 'end_turn', 'COMPLETED', 'done'):
+            self.hooks('Stop', age=5, termination=reason)
+            snap = self.snapshot()['session']
+            self.assertEqual((snap['state'], snap['code']), ('idle', 'idle'), reason)
+
     def test_real_termination_error_is_surfaced(self):
         self.database()
         self.transcript()

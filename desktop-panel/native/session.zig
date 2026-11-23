@@ -80,6 +80,32 @@ pub fn isUserCancel(raw: []const u8) bool {
     return false;
 }
 
+/// Normal Stop termination reasons reported by hooks when a turn finishes
+/// cleanly (e.g. `NO_TOOL_CALL`), which must not be surfaced as failures.
+pub fn isNormalTermination(raw: []const u8) bool {
+    const text = std.mem.trim(u8, raw, " \t\r\n");
+    if (text.len == 0 or text.len > 64) return false;
+    var buf: [64]u8 = undefined;
+    for (text, 0..) |ch, i| buf[i] = std.ascii.toLower(ch);
+    const lower = buf[0..text.len];
+    const normals = [_][]const u8{
+        "no_tool_call",
+        "end_turn",
+        "stop",
+        "completed",
+        "complete",
+        "done",
+        "success",
+        "normal",
+        "finished",
+        "no_error",
+    };
+    for (normals) |item| {
+        if (c.eq(lower, item)) return true;
+    }
+    return false;
+}
+
 pub fn evaluate(input: Input, limits: Limits) Outcome {
     // Allow tiny negative clock skew / sub-millisecond write races without
     // treating corrupted far-future timestamps as "just happened".
@@ -87,6 +113,7 @@ pub fn evaluate(input: Input, limits: Limits) Outcome {
     const recent_stop = c.eq(input.hook_event, "Stop") and age != null and age.? <= limits.stop_ttl_sec;
     if (recent_stop and input.termination.len > 0) {
         if (isUserCancel(input.termination)) return .{ .state = .idle, .code = .user_cancelled, .wait_sec = age };
+        if (isNormalTermination(input.termination)) return .{ .state = .idle, .code = .idle };
         return .{ .state = .failed, .code = .terminated_error, .wait_sec = age };
     }
     if (input.live) {
