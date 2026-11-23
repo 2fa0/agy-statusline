@@ -675,6 +675,12 @@ struct StatusDot: View {
 
     private var pulseState = State(initialValue: false)
 
+    init(color: Color, pulsing: Bool, size: CGFloat = 7) {
+        self.color = color
+        self.pulsing = pulsing
+        self.size = size
+    }
+
     var body: some View {
         let pulse = pulseState.wrappedValue
         Circle()
