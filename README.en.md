@@ -2,25 +2,32 @@
 
 [中文](./README.md) | English
 
-> **Make every generation in Google Antigravity (Desktop 2.0 & `agy` CLI) transparent.**
+> **Make every generation in Google Antigravity (macOS Notch · Desktop 2.0 · `agy` CLI) transparent.**
 > Track **real-time output speed (`tok/s`)**, **prompt cache hit rate**, **context & compaction curves**, **per-model usage**, and **exact local 5h / weekly quota reset times** — 100% local, read-only, zero network.
 
 <p align="left">
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/macOS-Dynamic%20Island%20Notch-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS Dynamic Island Notch" />
   <img src="https://img.shields.io/badge/Antigravity-Desktop%202.0%20%26%20CLI-6366f1?style=flat-square" alt="Antigravity Desktop 2.0 & CLI" />
   <img src="https://img.shields.io/badge/Network-Zero%20Network%20(100%25%20Local)-16a34a?style=flat-square" alt="Zero Network" />
   <img src="https://img.shields.io/badge/Compliance-Official%20Extension%20API-0ea5e9?style=flat-square" alt="Official Extension API" />
-  <img src="https://img.shields.io/badge/Built%20with-Zig-f59e0b?style=flat-square" alt="Built with Zig" />
+  <img src="https://img.shields.io/badge/Built%20with-Zig%20%2B%20Swift-f59e0b?style=flat-square" alt="Built with Zig + Swift" />
   <img src="https://img.shields.io/badge/Memory-~3--7%20MB%20RSS-10b981?style=flat-square" alt="Memory ~3-7 MB RSS" />
 </p>
 
-## Live Preview (Desktop & CLI)
+## Live Preview (macOS Notch · Desktop · CLI)
+
+<p align="center">
+  <strong>macOS Dynamic Island Notch</strong><br />
+  <sub>Compact Live Speed / Context Ring · Hover for Multi-Session, Active Tool & Quota · Auto-Avoidance</sub><br /><br />
+  <img src="./desktop-panel/assets/notch-preview.png" alt="macOS Dynamic Island Notch Preview" width="100%" />
+</p>
 
 <table>
   <tr>
     <td width="50%" align="center">
       <strong>Antigravity 2.0 Desktop Side Panel</strong><br />
-      <sub>Side-by-Side <code>AUX_PANE</code> · Live Speed · Interactive Charts</sub>
+      <sub>Side-by-Side <code>AUX_PANE</code> · Live Speed · Interactive Charts · Settings Tab</sub>
     </td>
     <td width="50%" align="center">
       <strong>Antigravity CLI (<code>agy</code>) Status Line</strong><br />
@@ -43,7 +50,8 @@
 
 | What You Care About | Default / Typical Scripts | `agy-statusline` |
 | :--- | :--- | :--- |
-| **Desktop + CLI** | Single-surface only, or relies on external windows | **Unified Install**: native Desktop `AUX_PANE` sidecar + terminal `statusLine` |
+| **macOS Notch Monitor** | Lose sight of generation progress when switching apps or fullscreen | **Native Swift Dynamic Island**: compact live speed / context ring, hover to switch tasks & inspect tools/quota, auto-hides into the physical notch when idle |
+| **All-in-One Surfaces** | Single-surface only, or relies on external windows | **Notch + Desktop + CLI**: macOS notch bar + native Desktop `AUX_PANE` sidecar + terminal `statusLine` |
 | **Live Speed** | Only shows total duration after a turn ends | **Real-time `≈ tok/s` while streaming**: 1s live updates, yellow alert below `50 tok/s`, plus a 12-turn bar chart |
 | **Why Is It Waiting?** | Hard to tell queueing from tool runs or errors | **4-State Chip + Plain-English Reason**: shows whether it's waiting for first token, running local tools, warming cache, or failed |
 | **Quota Reset Time** | Relative countdowns like "2d 4h left" | **Absolute Local Timestamps**: e.g. `Today 11:29` / `Mon 11/23 11:29`, separating Gemini / Argon / Claude 3p pools |
@@ -78,7 +86,7 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 
 ### Enable After Installing (2 Steps)
 
-1. **Desktop Panel**: Restart Antigravity Desktop, then click **`+` → `AGY Status`** in the top-right auxiliary pane of any conversation.
+1. **Desktop Panel & macOS Notch**: Restart Antigravity Desktop, then click **`+` → `AGY Status`** in the top-right auxiliary pane of any conversation; on macOS 13+, the Dynamic Island notch bar launches automatically and can be configured in the panel's **Settings** tab or the notch right-click menu.
 2. **CLI Status Line**: Add this snippet to `~/.gemini/antigravity-cli/settings.json`:
 
 ```json

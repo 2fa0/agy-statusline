@@ -2,25 +2,32 @@
 
 中文 | [English](./README.en.md)
 
-> **让 Google Antigravity（Desktop 2.0 & `agy` CLI）的每一次生成都看得见。**
+> **让 Google Antigravity（macOS 刘海状态栏 · Desktop 2.0 · `agy` CLI）的每一次生成都看得见。**
 > 实时查看 **输出速度 (`tok/s`)**、**缓存命中率**、**上下文与压缩曲线**、**按模型用量统计**，以及 **5h / 周额度的具体本地重置时间**——100% 本地只读，零外部联网。
 
 <p align="left">
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/macOS-Dynamic%20Island%20Notch-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS Dynamic Island Notch" />
   <img src="https://img.shields.io/badge/Antigravity-Desktop%202.0%20%26%20CLI-6366f1?style=flat-square" alt="Antigravity Desktop 2.0 & CLI" />
   <img src="https://img.shields.io/badge/Network-Zero%20Network%20(100%25%20Local)-16a34a?style=flat-square" alt="Zero Network" />
   <img src="https://img.shields.io/badge/Compliance-Official%20Extension%20API-0ea5e9?style=flat-square" alt="Official Extension API" />
-  <img src="https://img.shields.io/badge/Built%20with-Zig-f59e0b?style=flat-square" alt="Built with Zig" />
+  <img src="https://img.shields.io/badge/Built%20with-Zig%20%2B%20Swift-f59e0b?style=flat-square" alt="Built with Zig + Swift" />
   <img src="https://img.shields.io/badge/Memory-~3--7%20MB%20RSS-10b981?style=flat-square" alt="Memory ~3-7 MB RSS" />
 </p>
 
-## 实景预览（Desktop & CLI）
+## 实景预览（macOS 刘海 · Desktop · CLI）
+
+<p align="center">
+  <strong>macOS 刘海状态栏（Dynamic Island）</strong><br />
+  <sub>紧凑态实时速度 / 上下文环 · 悬停展开多任务与额度 · 自动避让其他刘海工具</sub><br /><br />
+  <img src="./desktop-panel/assets/notch-preview.png" alt="macOS 刘海状态栏实景预览" width="100%" />
+</p>
 
 <table>
   <tr>
     <td width="50%" align="center">
       <strong>Antigravity 2.0 Desktop 右侧常驻面板</strong><br />
-      <sub>与对话并排展示 · 实时速度 · 交互式趋势图</sub>
+      <sub>与对话并排展示 · 实时速度 · 交互式趋势图 · 可视化设置</sub>
     </td>
     <td width="50%" align="center">
       <strong>Antigravity CLI (<code>agy</code>) 终端状态栏</strong><br />
@@ -43,7 +50,8 @@
 
 | 你关心的问题 | 默认状态 / 常见脚本 | `agy-statusline` |
 | :--- | :--- | :--- |
-| **双端体验** | 只顾一头，或需要外接悬浮窗 / 浏览器 | **Desktop + CLI 一次装齐**：桌面端右侧常驻面板 + 终端底部状态栏 |
+| **macOS 刘海沉浸监控** | 切走窗口或全屏写代码时看不到生成进度 | **原生 Swift 刘海状态栏**：紧凑态常显速度 / 上下文环，悬停展开多任务、当前工具与额度，空闲可自动隐入物理刘海 |
+| **三端一体体验** | 只顾一头，或需要外接悬浮窗 / 浏览器 | **刘海 + Desktop + CLI 一次装齐**：macOS 刘海状态栏 + 桌面端右侧常驻面板 + 终端底部状态栏 |
 | **模型到底快不快** | 只能等整轮结束看总耗时 | **生成中实时测速 (`≈ tok/s`)**：流式输出每秒刷新，低于 `50 tok/s` 自动黄底提示，附 12 次趋势图 |
 | **卡住了还是在等首字** | 只能干等，分不清排队、跑工具还是出错 | **四态胶囊 + 人话说明**：直接告诉你是在等首字、跑本地工具、重算缓存还是异常中断 |
 | **额度什么时候恢复** | 只显示“还剩 2 天 4 小时”，得自己心算 | **绝对本地重置时间**：直接换算成 `今天 11:29` / `周一 11/23 11:29`，自动区分 Gemini / Argon / Claude 3p |
@@ -78,7 +86,7 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 
 ### 装完后启用（2 步）
 
-1. **Desktop 面板**：重启 Antigravity Desktop，在任意对话右上角辅助栏点击 **`+` → `AGY Status`**。
+1. **Desktop 面板 & macOS 刘海**：重启 Antigravity Desktop，在任意对话右上角辅助栏点击 **`+` → `AGY Status`**；macOS 13+ 会自动在屏幕顶部拉起刘海状态栏，可在面板「设置」页或右键刘海菜单调整。
 2. **CLI 状态栏**：将以下配置加入 `~/.gemini/antigravity-cli/settings.json`：
 
 ```json
