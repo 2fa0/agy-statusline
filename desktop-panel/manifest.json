@@ -1,5 +1,5 @@
 {
-  "version": "0.4.0",
+  "version": "0.4.1",
   "bundle": {
     "path": "dist/index.html",
     "sha256": "1d45853d48f8e8161f3382116ccea3312903bd58effe893b8d428e4a72832702",
