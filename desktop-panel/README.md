@@ -101,6 +101,8 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 
 ### 性能设计（极低内存占用）
 
+以下内存数据仅指 Zig 后台，不包含 macOS 刘海程序。刘海使用轻量查询，不解析整份日志累计值；数据库历史读取有界，标题和命令只读取日志首尾片段。
+
 面板默认活跃时每 3 秒刷新一次，空闲时降频；通过原生 Zig 后台与有界增量解析实现同类插件独一档的资源控制（macOS arm64 实测二进制约 `2.1 MB`、内嵌 `40 KB` 单文件前端，运行期常驻内存仅约 `3.3–6.8 MB RSS`）：
 
 - **单原生后台**：`agy-desktop-backend serve` 在宿主指定的端口仅监听 `127.0.0.1`，直接处理 `/api/status`。彻底摆脱 Node.js / Python 常驻运行时；hook 通过同一二进制的 `hook` 子命令短暂运行。
@@ -110,6 +112,8 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 - **配置只多一次 `stat`**：`config.json` 按文件签名缓存，签名不变时不会重新解析；改完后一个轮询周期内生效。
 
 ### 面板配置（`~/.gemini/agy-statusline/config.json`，热生效）
+
+面板的「设置」页可直接修改布局、模块、刷新间隔和告警阈值，逐项自动保存。macOS 还可设置刘海状态栏的开关、空闲隐藏、多屏显示和避让方式；刘海菜单与面板共用同一份配置，并通过后台合并写入，避免多个窗口互相覆盖。
 
 根目录 `./install.sh` 首次安装会写入默认值，卸载也会保留。不需要重启 Antigravity：文件一保存，下一个轮询周期就会重新读取。
 
@@ -121,6 +125,7 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 | `lowSpeedWarnTokS` | 低速告警阈值，默认 `50` |
 | `thresholds` | `waitSec` / `stallSec` / `toolGraceSec`，状态机阈值（秒） |
 | `modules` | 逐项关闭 `session` / `quota` / `history` / `context` / `models`；关 `quota` 后连额度文件都不读 |
+| `notch` | macOS 刘海状态栏的 `enabled` / `hideWhenIdle` / `screenMode` / `avoidanceMode` |
 | `debug` | `true` 时在 `session.evidence` 附上判定依据 |
 
 越界值会被夹到安全范围（例如 `pollSec: 999` → `60`），写错不会弄坏面板。路径可用 `AGY_STATUSLINE_SETTINGS` 覆盖；默认值见仓库根的 `config.example.json`。
@@ -153,7 +158,7 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 ./build.sh
 ```
 
-产物为 `sidecars/status/agy-desktop-backend`。macOS 构建自动添加 ad-hoc 签名；这不等于 Developer ID 签名或 Apple 公证，下载分发仍可能受 Gatekeeper 限制。GitHub Actions 同时生成 Linux/Windows 静态 SQLite 后台，安装脚本选择当前平台的二进制。
+产物为 `sidecars/status/agy-desktop-backend`。macOS 同时通过 Swift 构建 `sidecars/status/agy-notch`（macOS 13+），两者自动添加 ad-hoc 签名；这不等于 Developer ID 签名或 Apple 公证，下载分发仍可能受 Gatekeeper 限制。GitHub Actions 同时生成 Linux/Windows 静态 SQLite 后台，安装脚本选择当前平台的二进制。
 
 如果你修改了 `ui/src/app.ts` 或 `ui/src/template.html`，可以在本地（需 Node.js >= 20）重新打包单文件 `dist/index.html`（`ui/src/preload.js` 由 `backend.zig` 直接 `@embedFile` 嵌入，改完直接跑 `./build.sh` 即可）：
 
@@ -177,6 +182,8 @@ python3 -m unittest discover -s tests
 
 ```sh
 node --test tests/test_sidecar.mjs
+# macOS 刘海状态、额度与错误处理回归
+./macos-notch/test.sh
 ```
 
 `tests/reference/` 保存迁移前的 Python 实现，仅用于核对统计口径，不进入发布包。可通过 `AGY_DESKTOP_BACKEND` 指定测试二进制。

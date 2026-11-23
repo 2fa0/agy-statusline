@@ -45,7 +45,8 @@ class NativeTests(unittest.TestCase):
         (self.root / 'conversations').mkdir()
         self.path = self.root / 'conversations' / f'{CID}.db'
         self.log = self.root / 'brain' / CID / '.system_generated' / 'logs' / 'transcript.jsonl'
-        self.env = dict(os.environ, AGY_STATUSLINE_QUOTA_FILE=str(self.root / 'quota.json'))
+        self.env = dict(os.environ, AGY_NO_NOTCH='1', AGY_STATUSLINE_SETTINGS=str(self.root / 'config.json'),
+                        AGY_STATUSLINE_QUOTA_FILE=str(self.root / 'quota.json'))
         self.processes = []
 
     def tearDown(self):
@@ -367,6 +368,75 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(invoke({'hookEventName': 'Stop', 'conversationId': '../../invalid'}), {'decision': 'allow'})
         self.assertEqual(self.snapshot('auto')['conversationId'], '00000000-0000-0000-0000-000000000031')
 
+    def test_settings_patches_preserve_other_fields_across_processes(self):
+        settings = self.root / 'config.json'
+        settings.write_text(json.dumps({'debug': True, 'custom': {'keep': 1}, 'pollSec': 7}))
+        patches = [
+            {'layout': 'detailed'}, {'modules': {'quota': False}},
+            {'modules': {'history': False}}, {'thresholds': {'stallSec': 90}},
+            {'thresholds': {'waitSec': 45}}, {'notch': {'hideWhenIdle': True}},
+            {'notch': {'screenMode': 'allScreens'}}, {'lowSpeedWarnTokS': 80},
+        ]
+        procs = []
+        for patch in patches:
+            proc = subprocess.Popen([str(BINARY), 'settings-patch', *self.args()], env=self.env,
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.processes.append(proc)
+            proc.stdin.write(json.dumps(patch)); proc.stdin.close(); proc.stdin = None
+            procs.append(proc)
+        for proc in procs:
+            out, err = proc.communicate(timeout=10)
+            self.assertEqual(proc.returncode, 0, err)
+            self.assertEqual(json.loads(out)['pollSec'], 7)
+        actual = json.loads(settings.read_text())
+        self.assertTrue(actual['debug']); self.assertEqual(actual['custom'], {'keep': 1})
+        for patch in patches:
+            for key, value in patch.items():
+                if isinstance(value, dict):
+                    for nested, expected in value.items():
+                        self.assertEqual(actual[key][nested], expected)
+                else:
+                    self.assertEqual(actual[key], value)
+
+    def test_brief_queries_skip_full_transcript_and_preserve_seven_live_sessions(self):
+        self.database().close()
+        self.log.parent.mkdir(parents=True)
+        self.log.write_bytes(b'x' * (17 * 1024 * 1024))
+        ids = [f'12345678-1234-1234-1234-{i:012d}' for i in range(7)]
+        for cid in ids:
+            db = sqlite3.connect(self.root / 'conversations' / f'{cid}.db')
+            db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,status INTEGER,step_type INTEGER,step_payload BLOB,metadata BLOB)')
+            db.execute('INSERT INTO steps VALUES(1,8,1,?,NULL)', (field_bytes(20, field_bytes(1, b'hello')),))
+            db.commit(); db.close()
+        (self.root / 'config.json').write_text(json.dumps({'debug': True, 'thresholds': {'stallSec': 1}}))
+        proc = self.worker()
+        def brief(cid):
+            proc.stdin.write(json.dumps({'op': 'brief', 'conversationId': cid}) + '\n'); proc.stdin.flush()
+            return json.loads(proc.stdout.readline())
+        snap = brief(CID)
+        self.assertTrue(snap['found'])
+        self.assertEqual(snap['transcriptPath'], str(self.log))
+        self.assertIsNone(snap['sessionUsage'])
+        for cid in ids:
+            self.assertIsNone(brief(cid)['live']['charsPerSec'])
+        time.sleep(1.05)
+        for cid in ids:
+            brief(CID)  # Idle queries must not evict an active sample.
+            snap = brief(cid)
+            self.assertEqual(snap['live']['charsPerSec'], 0)
+            self.assertEqual(snap['session']['code'], 'stalled')
+
+    def test_brief_database_cache_does_not_truncate_full_statistics(self):
+        self.database(entries=[blob()] * 60).close()
+        self.transcript([{'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'model': 'gemini-demo',
+                          'input_tokens': 20, 'cache_read_tokens': 80, 'output_tokens': 100}])
+        proc = self.worker()
+        proc.stdin.write(json.dumps({'op': 'brief', 'conversationId': CID}) + '\n'); proc.stdin.flush()
+        self.assertIsNone(json.loads(proc.stdout.readline())['sessionUsage'])
+        full = self.query(proc)
+        self.assertEqual(full['modelUsage'][0]['speedSamples'], 60)
+        self.assertEqual(full['sessionUsage']['requestCount'], 1)
+
     def test_http_contract_auth_embedded_assets_and_methods(self):
         # Reserve a port only for choosing its number; the backend owns binding.
         with socket.socket() as s:
@@ -392,6 +462,17 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(e.exception.code, 401); e.exception.close()
         with request('/api/status?conversationId=auto', headers={'X-Sidecar-Token': 'test-token'}) as r:
             self.assertFalse(json.load(r)['found'])
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            request('/api/settings', data=b'{"layout":"detailed"}', method='POST')
+        self.assertEqual(e.exception.code, 401); e.exception.close()
+        with request('/api/settings', data=b'{"layout":"detailed","pollSec":7}', method='POST',
+                     headers={'X-Sidecar-Token': 'test-token', 'Content-Type': 'application/json'}) as r:
+            self.assertEqual(json.load(r)['layout'], 'detailed')
+        with request('/api/settings', data=b'{"modules":{"quota":false}}', method='POST',
+                     headers={'X-Sidecar-Token': 'test-token'}) as r:
+            saved = json.load(r)
+            self.assertEqual(saved['pollSec'], 7)
+            self.assertFalse(saved['modules']['quota'])
         for path, method, status in [('/api/status', 'POST', 405), ('/../backend.zig', 'GET', 404), ('/api/status?token=%GG', 'GET', 400)]:
             with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as e:
                 request(path, method=method)

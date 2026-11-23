@@ -158,7 +158,8 @@
     }
     .tabs {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(0, 1fr);
       gap: 3px;
       padding: 3px;
       background: var(--agy-subtle);
@@ -339,6 +340,90 @@
     .hide-history #history-section { display: none !important; }
     .hide-models #models-section { display: none !important; }
     .hide-context #context-section { display: none !important; }
+    .hide-notch .notch-settings-group { display: none !important; }
+    .setting-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 34px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: var(--agy-subtle);
+    }
+    .setting-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--agy-fg);
+      min-width: 0;
+    }
+    .setting-row select {
+      flex: 0 0 auto;
+      max-width: 170px;
+      font-size: 12px;
+    }
+    .setting-input-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+    .setting-unit {
+      font-size: 11px;
+      color: var(--agy-fg-muted);
+      min-width: 28px;
+    }
+    .setting-num {
+      width: 68px;
+      flex: 0 0 auto;
+      font: inherit;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      color: var(--agy-fg);
+      background: var(--agy-card);
+      border: 1px solid var(--agy-border);
+      border-radius: 6px;
+      padding: 4px 8px;
+    }
+    .setting-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .setting-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: var(--agy-subtle);
+      font-size: 11px;
+      color: var(--agy-fg);
+      cursor: pointer;
+      user-select: none;
+    }
+    .setting-chip input {
+      accent-color: var(--agy-accent);
+      margin: 0;
+    }
+    .setting-toggle {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--agy-accent);
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .setting-status {
+      font-size: 11px;
+      color: var(--agy-ok-fg);
+      min-height: 16px;
+    }
     .card-label {
       font-size: 11px;
       color: var(--agy-fg-muted);
@@ -479,9 +564,11 @@
     .spark-col {
       flex: 1 1 0;
       min-width: 8px;
+      max-width: 34px;
       height: 100%;
       display: flex;
       align-items: flex-end;
+      justify-content: center;
       cursor: pointer;
       padding: 0 1px;
       border-radius: 4px;
@@ -493,6 +580,7 @@
     }
     .spark-bar {
       width: 100%;
+      max-width: 14px;
       border-radius: 3px 3px 1px 1px;
       background: var(--agy-accent);
       opacity: 0.78;
@@ -630,6 +718,7 @@
       <button type="button" class="tab-btn active" data-tab="trends" role="tab" aria-selected="true">趋势</button>
       <button type="button" class="tab-btn" data-tab="usage" role="tab" aria-selected="false">用量</button>
       <button type="button" class="tab-btn" data-tab="quota" role="tab" aria-selected="false">额度</button>
+      <button type="button" class="tab-btn" data-tab="settings" role="tab" aria-selected="false">设置</button>
     </div>
 
     <div id="panel-trends" class="tab-panel active" data-panel="trends">
@@ -663,6 +752,108 @@
         <div id="quota-list" class="quota-list"></div>
       </div>
       <div id="quota-empty" class="section empty" style="display:none">暂无额度重置数据，运行一次 agy CLI 后自动同步。</div>
+    </div>
+
+    <div id="panel-settings" class="tab-panel" data-panel="settings">
+      <div class="section">
+        <div class="section-title">
+          <span>面板与模块</span>
+          <span id="settings-save-status" class="setting-status"></span>
+        </div>
+        <div class="setting-list">
+          <div class="setting-row" title="详细模式会内联显示卡顿原因与数据源说明">
+            <span class="setting-label">布局密度</span>
+            <select id="cfg-layout" aria-label="布局密度">
+              <option value="compact">紧凑</option>
+              <option value="detailed">详细</option>
+            </select>
+          </div>
+          <div class="setting-row" title="未在顶部手动锁定时使用的轮询节奏">
+            <span class="setting-label">默认刷新间隔</span>
+            <select id="cfg-poll-sec" aria-label="默认刷新间隔">
+              <option value="0">自适应</option>
+              <option value="3">3s</option>
+              <option value="5">5s</option>
+              <option value="10">10s</option>
+            </select>
+          </div>
+          <div class="setting-chips">
+            <label class="setting-chip"><input id="cfg-mod-session" type="checkbox" checked />状态徽章</label>
+            <label class="setting-chip"><input id="cfg-mod-history" type="checkbox" checked />速度趋势</label>
+            <label class="setting-chip"><input id="cfg-mod-context" type="checkbox" checked />上下文曲线</label>
+            <label class="setting-chip"><input id="cfg-mod-models" type="checkbox" checked />模型用量</label>
+            <label class="setting-chip"><input id="cfg-mod-quota" type="checkbox" checked />额度重置</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">
+          <span>性能与告警阈值</span>
+        </div>
+        <div class="setting-list">
+          <div class="setting-row" title="输出速度低于该值时标黄提醒">
+            <span class="setting-label">低速警告</span>
+            <span class="setting-input-wrap">
+              <input id="cfg-low-speed" type="number" class="setting-num" min="1" max="10000" step="1" value="50" />
+              <span class="setting-unit">tok/s</span>
+            </span>
+          </div>
+          <div class="setting-row" title="发出请求后超过该时间未吐字标为等待中">
+            <span class="setting-label">等待首字超时</span>
+            <span class="setting-input-wrap">
+              <input id="cfg-wait-sec" type="number" class="setting-num" min="1" max="3600" step="1" value="20" />
+              <span class="setting-unit">s</span>
+            </span>
+          </div>
+          <div class="setting-row" title="流式输出中断超过该时间标为卡顿">
+            <span class="setting-label">输出卡顿超时</span>
+            <span class="setting-input-wrap">
+              <input id="cfg-stall-sec" type="number" class="setting-num" min="1" max="3600" step="1" value="25" />
+              <span class="setting-unit">s</span>
+            </span>
+          </div>
+          <div class="setting-row" title="运行命令/测试期间多久内不判定为卡顿">
+            <span class="setting-label">工具执行宽限期</span>
+            <span class="setting-input-wrap">
+              <input id="cfg-tool-grace" type="number" class="setting-num" min="1" max="3600" step="1" value="120" />
+              <span class="setting-unit">s</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section notch-settings-group">
+        <div class="section-title">
+          <span>macOS 刘海状态栏</span>
+        </div>
+        <div class="setting-list">
+          <label class="setting-row" title="在屏幕顶部刘海区域展示实时任务状态">
+            <span class="setting-label">显示刘海状态栏</span>
+            <input id="notch-enabled" type="checkbox" class="setting-toggle" checked />
+          </label>
+          <label class="setting-row" title="无活跃任务时收起至物理刘海内，悬停自动展开">
+            <span class="setting-label">空闲时隐入刘海</span>
+            <input id="notch-hide-idle" type="checkbox" class="setting-toggle" />
+          </label>
+          <div class="setting-row" title="外接显示器时决定刘海状态栏显示在哪块屏幕">
+            <span class="setting-label">多屏幕显示</span>
+            <select id="notch-screen-mode" aria-label="多屏幕显示">
+              <option value="notchOrMain">优先刘海屏</option>
+              <option value="followActive">跟随活跃屏幕</option>
+              <option value="allScreens">所有屏幕显示</option>
+            </select>
+          </div>
+          <div class="setting-row" title="与其他刘海工具重叠时的避让策略">
+            <span class="setting-label">刘海被占用时</span>
+            <select id="notch-avoidance-mode" aria-label="刘海被占用时">
+              <option value="autoStackBelow">自动避让下移</option>
+              <option value="forceNotch">强制贴合刘海</option>
+              <option value="topRight">悬浮在右上角</option>
+            </select>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div id="empty-box" class="section empty" style="display:none"></div>

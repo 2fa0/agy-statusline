@@ -117,9 +117,118 @@ fn respond(req: *std.http.Server.Request, body: []const u8, status: std.http.Sta
         .{ .name = "Content-Type", .value = content_type }, .{ .name = "Cache-Control", .value = "no-store" }, .{ .name = "X-Content-Type-Options", .value = "nosniff" },
     } });
 }
+fn authorize(a: A, req: *std.http.Server.Request, target: []const u8, token: ?[]const u8) !bool {
+    const expected = token orelse return true;
+    if (expected.len == 0) return true;
+    var supplied: ?[]const u8 = try parameter(a, target, "token");
+    var headers = req.iterateHeaders();
+    while (headers.next()) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "x-sidecar-token")) supplied = h.value;
+    }
+    return supplied != null and c.eq(expected, supplied.?);
+}
+fn saveSettings(a: A, cfg: telemetry.Config, body: []const u8) !V {
+    const patch = try c.parse(a, body);
+    if (patch != .object) return error.InvalidPayload;
+    if (std.fs.path.dirname(cfg.settings)) |dir| try std.fs.cwd().makePath(dir);
+    const lock_path = try c.fmt(a, "{s}.lock", .{cfg.settings});
+    const lock = try std.fs.cwd().createFile(lock_path, .{ .read = true, .truncate = false });
+    defer lock.close();
+    try lock.lock(.exclusive);
+    defer lock.unlock();
+    var root = c.readJson(a, cfg.settings);
+    if (root != .object) root = c.object(a);
+
+    if (patch.object.get("layout")) |v| {
+        if (v == .string and (c.eq(v.string, "compact") or c.eq(v.string, "detailed"))) {
+            try c.put(a, &root, "layout", v);
+        }
+    }
+    if (patch.object.get("pollSec")) |v| {
+        if (c.num(v)) |n| {
+            const clamped = if (n <= 0) 0 else std.math.clamp(@round(n), 1, 60);
+            try c.put(a, &root, "pollSec", c.n(@as(u32, @intFromFloat(clamped))));
+        }
+    }
+    if (patch.object.get("lowSpeedWarnTokS")) |v| {
+        if (c.num(v)) |n| {
+            if (std.math.isFinite(n)) try c.put(a, &root, "lowSpeedWarnTokS", c.f(std.math.clamp(n, 1, 10000)));
+        }
+    }
+    if (patch.object.get("thresholds")) |t_patch| {
+        if (t_patch == .object) {
+            var thresholds = c.get(root, "thresholds");
+            if (thresholds != .object) thresholds = c.object(a);
+            inline for (.{ "waitSec", "stallSec", "toolGraceSec" }) |key| {
+                if (t_patch.object.get(key)) |v| {
+                    if (c.num(v)) |n| {
+                        if (std.math.isFinite(n)) try c.put(a, &thresholds, key, c.f(std.math.clamp(n, 1, 3600)));
+                    }
+                }
+            }
+            try c.put(a, &root, "thresholds", thresholds);
+        }
+    }
+    if (patch.object.get("modules")) |m_patch| {
+        if (m_patch == .object) {
+            var modules = c.get(root, "modules");
+            if (modules != .object) modules = c.object(a);
+            inline for (.{ "session", "quota", "history", "models", "context" }) |key| {
+                if (m_patch.object.get(key)) |v| {
+                    if (v == .bool) try c.put(a, &modules, key, v);
+                }
+            }
+            try c.put(a, &root, "modules", modules);
+        }
+    }
+    if (patch.object.get("notch")) |n_patch| {
+        if (n_patch == .object) {
+            var notch = c.get(root, "notch");
+            if (notch != .object) notch = c.object(a);
+            if (n_patch.object.get("enabled")) |v| {
+                if (v == .bool) try c.put(a, &notch, "enabled", v);
+            }
+            if (n_patch.object.get("hideWhenIdle")) |v| {
+                if (v == .bool) try c.put(a, &notch, "hideWhenIdle", v);
+            }
+            if (n_patch.object.get("screenMode")) |v| {
+                if (v == .string and (c.eq(v.string, "notchOrMain") or c.eq(v.string, "followActive") or c.eq(v.string, "allScreens"))) {
+                    try c.put(a, &notch, "screenMode", v);
+                }
+            }
+            if (n_patch.object.get("avoidanceMode")) |v| {
+                if (v == .string and (c.eq(v.string, "autoStackBelow") or c.eq(v.string, "forceNotch") or c.eq(v.string, "topRight"))) {
+                    try c.put(a, &notch, "avoidanceMode", v);
+                }
+            }
+            try c.put(a, &root, "notch", notch);
+        }
+    }
+
+    var dest = try std.fs.cwd().atomicFile(cfg.settings, .{ .make_path = true });
+    defer dest.deinit();
+    try dest.file.writeAll(try c.json(a, root));
+    try dest.file.writeAll("\n");
+    try dest.finish();
+
+    const resolved = settings.fromJson(root);
+    if (resolved.notch.enabled) {
+        ensureMacOsNotchRunning(a, cfg);
+    }
+    return try settings.toValue(a, resolved);
+}
 fn handle(a: A, req: *std.http.Server.Request, rt: *telemetry.Runtime, cfg: telemetry.Config, token: ?[]const u8, html: []const u8) !void {
     const target = req.head.target;
     const path = target[0 .. std.mem.indexOfScalar(u8, target, '?') orelse target.len];
+    if (c.eq(path, "/api/settings")) {
+        if (req.head.method != .POST) return respond(req, "{\"error\":\"method not allowed\"}", .method_not_allowed, "application/json");
+        const ok = authorize(a, req, target, token) catch return respond(req, "{\"error\":\"invalid query\"}", .bad_request, "application/json");
+        if (!ok) return respond(req, "{\"error\":\"unauthorized\"}", .unauthorized, "application/json");
+        const reader = req.reader() catch return respond(req, "{\"error\":\"invalid body\"}", .bad_request, "application/json");
+        const body = reader.readAllAlloc(a, 16 * 1024) catch return respond(req, "{\"error\":\"invalid body\"}", .bad_request, "application/json");
+        const updated = saveSettings(a, cfg, body) catch return respond(req, "{\"error\":\"failed to save settings\"}", .bad_request, "application/json");
+        return respond(req, try c.json(a, updated), .ok, "application/json; charset=utf-8");
+    }
     if (req.head.method != .GET and req.head.method != .HEAD) return respond(req, "{\"error\":\"method not allowed\"}", .method_not_allowed, "application/json");
     if (c.eq(path, "/")) {
         // The host authenticates and proxies the HTML request. Its token is then
@@ -128,14 +237,8 @@ fn handle(a: A, req: *std.http.Server.Request, rt: *telemetry.Runtime, cfg: tele
     }
     if (c.eq(path, "/preload.js")) return respond(req, bridge, .ok, "application/javascript; charset=utf-8");
     if (!c.eq(path, "/api/status")) return respond(req, "{\"error\":\"not found\"}", .not_found, "application/json");
-    if (token) |expected| {
-        var supplied: ?[]const u8 = parameter(a, target, "token") catch return respond(req, "{\"error\":\"invalid query\"}", .bad_request, "application/json");
-        var headers = req.iterateHeaders();
-        while (headers.next()) |h| {
-            if (std.ascii.eqlIgnoreCase(h.name, "x-sidecar-token")) supplied = h.value;
-        }
-        if (expected.len > 0 and (supplied == null or !c.eq(expected, supplied.?))) return respond(req, "{\"error\":\"unauthorized\"}", .unauthorized, "application/json");
-    }
+    const ok = authorize(a, req, target, token) catch return respond(req, "{\"error\":\"invalid query\"}", .bad_request, "application/json");
+    if (!ok) return respond(req, "{\"error\":\"unauthorized\"}", .unauthorized, "application/json");
     const id = (parameter(a, target, "conversationId") catch return respond(req, "{\"error\":\"invalid query\"}", .bad_request, "application/json")) orelse "auto";
     const value = telemetry.snapshot(a, rt, cfg, id) catch return respond(req, "{\"error\":\"telemetry unavailable\"}", .internal_server_error, "application/json");
     return respond(req, try c.json(a, value), .ok, "application/json; charset=utf-8");
@@ -198,6 +301,7 @@ fn jsonLines(cfg: telemetry.Config) !void {
         const a = arena.allocator();
         const req = c.parse(a, line.items) catch .null;
         if (c.eq(c.str(c.get(req, "op")), "close")) break;
+        runtime.summary_only = c.eq(c.str(c.get(req, "op")), "brief");
         const snap = telemetry.snapshot(a, &runtime, cfg, c.str(c.get(req, "conversationId"))) catch blk: {
             var failed = c.object(a);
             try c.put(a, &failed, "error", c.s("telemetry unavailable"));
@@ -207,6 +311,41 @@ fn jsonLines(cfg: telemetry.Config) !void {
         try std.io.getStdOut().writeAll("\n");
     }
 }
+fn ensureMacOsNotchRunning(a: A, cfg: telemetry.Config) void {
+    if (comptime builtin.os.tag != .macos) return;
+    if (c.env(a, "AGY_NO_NOTCH") != null) return;
+    const resolved = settings.fromJson(c.readJson(a, cfg.settings));
+    if (!resolved.notch.enabled) return;
+    const self_exe = std.fs.selfExePathAlloc(a) catch return;
+    const exe_dir = std.fs.path.dirname(self_exe) orelse return;
+    const notch_bin = c.join(a, &.{ exe_dir, "agy-notch" }) catch return;
+    std.fs.cwd().access(notch_bin, .{ .mode = .read_only }) catch return;
+
+    std.fs.cwd().makePath(cfg.data) catch {};
+    const lock_path = c.join(a, &.{ cfg.data, "agy-notch.lock" }) catch return;
+    const lock_file = std.fs.cwd().createFile(lock_path, .{ .read = true, .truncate = false }) catch null;
+    if (lock_file) |lf| {
+        const locked = std.posix.flock(lf.handle, std.posix.LOCK.EX | std.posix.LOCK.NB);
+        if (locked) |_| {
+            // Lock succeeded => agy-notch is not running yet; release before spawning.
+            _ = std.posix.flock(lf.handle, std.posix.LOCK.UN) catch {};
+            lf.close();
+        } else |_| {
+            lf.close();
+            return;
+        }
+    }
+
+    var child = std.process.Child.init(&.{ notch_bin, "--backend", self_exe, "--data-dir", cfg.data }, a);
+    var env = std.process.getEnvMap(a) catch return;
+    env.put("AGY_DESKTOP_DATA_DIR", cfg.root) catch return;
+    child.env_map = &env;
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    _ = child.spawn() catch {};
+}
+
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
     defer arena.deinit();
@@ -220,16 +359,26 @@ pub fn main() !void {
             return;
         }
     }
-    var mode: enum { http, status, hook, lines } = .http;
+    var mode: enum { http, status, hook, lines, settings_patch } = .http;
     var root: ?[]const u8 = null;
     var data: ?[]const u8 = null;
     var id: []const u8 = "auto";
     var port: ?u16 = null;
+    var brief = false;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
+        if (c.eq(arg, "settings-patch")) {
+            mode = .settings_patch;
+            continue;
+        }
         if (c.eq(arg, "hook")) {
             mode = .hook;
+            continue;
+        }
+        if (c.eq(arg, "status-brief")) {
+            mode = .status;
+            brief = true;
             continue;
         }
         if (c.eq(arg, "status")) {
@@ -250,11 +399,25 @@ pub fn main() !void {
     }
     const cfg = try config(a, root, data);
     switch (mode) {
-        .hook => try hook(a, cfg),
-        .http => try serve(a, cfg, port),
-        .lines => try jsonLines(cfg),
+        .settings_patch => {
+            const body = try std.io.getStdIn().reader().readAllAlloc(a, 16 * 1024);
+            try std.io.getStdOut().writeAll(try c.json(a, try saveSettings(a, cfg, body)));
+            try std.io.getStdOut().writeAll("\n");
+        },
+        .hook => {
+            ensureMacOsNotchRunning(a, cfg);
+            try hook(a, cfg);
+        },
+        .http => {
+            ensureMacOsNotchRunning(a, cfg);
+            try serve(a, cfg, port);
+        },
+        .lines => {
+            ensureMacOsNotchRunning(a, cfg);
+            try jsonLines(cfg);
+        },
         .status => {
-            var runtime: telemetry.Runtime = .{};
+            var runtime: telemetry.Runtime = .{ .summary_only = brief };
             defer runtime.deinit();
             try std.io.getStdOut().writeAll(try c.json(a, try telemetry.snapshot(a, &runtime, cfg, id)));
             try std.io.getStdOut().writeAll("\n");

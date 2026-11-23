@@ -150,6 +150,7 @@ if [[ -n "${LOCAL_DIR}" ]]; then
     fi
     strip_quarantine "${TARGET_DIR}"
     chmod +x "${TARGET_DIR}/install.sh" "${TARGET_DIR}/sidecars/status/agy-desktop-backend"
+    [[ -f "${TARGET_DIR}/sidecars/status/agy-notch" ]] && chmod +x "${TARGET_DIR}/sidecars/status/agy-notch"
     echo "Copied ${LOCAL_DIR} -> ${TARGET_DIR}"
   else
     rm -rf "${TARGET_DIR}"
@@ -190,6 +191,7 @@ else
   cp -R "${EXTRACTED_DIR}/." "${TARGET_DIR}/"
   strip_quarantine "${TARGET_DIR}"
   chmod +x "${TARGET_DIR}/install.sh" "${TARGET_DIR}/sidecars/status/agy-desktop-backend"
+  [[ -f "${TARGET_DIR}/sidecars/status/agy-notch" ]] && chmod +x "${TARGET_DIR}/sidecars/status/agy-notch"
   echo "Installed AGY Desktop Status to ${TARGET_DIR}"
 fi
 

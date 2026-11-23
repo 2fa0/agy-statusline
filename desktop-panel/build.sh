@@ -15,3 +15,6 @@ if [ "$(uname -s)" = Darwin ]; then
 fi
 install -m 755 "$bin" sidecars/status/agy-desktop-backend.new
 mv -f sidecars/status/agy-desktop-backend.new sidecars/status/agy-desktop-backend
+if [ "$(uname -s)" = Darwin ] && [ -x ./macos-notch/build.sh ]; then
+  ./macos-notch/build.sh
+fi

@@ -924,6 +924,7 @@ def list_recent_conversations(
                 "workspace": Path(meta["cwd"]).name if meta.get("cwd") else "",
                 "updatedAt": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
                 "isActive": cid == active_id,
+                "lastEvent": str(meta.get("lastEvent") or ""),
                 "_sort": mtime,
             }
 
@@ -936,6 +937,7 @@ def list_recent_conversations(
             "workspace": Path(meta["cwd"]).name if meta.get("cwd") else "",
             "updatedAt": str(meta.get("updatedAt") or hook_state.get("updatedAt") or ""),
             "isActive": True,
+            "lastEvent": str(meta.get("lastEvent") or ""),
             "_sort": float("inf"),
         }
 

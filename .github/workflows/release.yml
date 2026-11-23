@@ -117,6 +117,15 @@ jobs:
           clang desktop.o -arch arm64 -mmacosx-version-min=13.0 -lsqlite3 -o agy-desktop-backend
           codesign --force --sign - --identifier io.github.2fa0.agy-desktop-status agy-desktop-backend
           codesign --verify --verbose agy-desktop-backend
+      - name: Build and test macOS notch
+        run: |
+          ./desktop-panel/macos-notch/build.sh
+          ./desktop-panel/macos-notch/test.sh
+          codesign --verify --verbose desktop-panel/sidecars/status/agy-notch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agy-notch-macos-arm64
+          path: desktop-panel/sidecars/status/agy-notch
       - name: Verify installers end to end (local mode + quarantine self-heal)
         run: |
           bash -n install.sh
@@ -199,6 +208,10 @@ jobs:
         with:
           pattern: agy-desktop-backend-*
           path: native-backends
+      - uses: actions/download-artifact@v4
+        with:
+          name: agy-notch-macos-arm64
+          path: desktop-panel/sidecars/status
       - name: Prepare native backend for tests
         run: chmod +x native-backends/agy-desktop-backend-linux-x64/agy-desktop-backend
       - name: Build and test AGY Desktop Status plugin
@@ -226,7 +239,7 @@ jobs:
             mkdir -p "staging/agy-desktop-status/bin/$platform"
             cp native-backends/agy-desktop-backend-$platform/* "staging/agy-desktop-status/bin/$platform/"
           done
-          chmod +x staging/agy-desktop-status/install.sh staging/agy-desktop-status/bin/macos-arm64/agy-desktop-backend staging/agy-desktop-status/bin/linux-x64/agy-desktop-backend staging/agy-desktop-status/bin/linux-arm64/agy-desktop-backend
+          chmod +x staging/agy-desktop-status/sidecars/status/agy-notch staging/agy-desktop-status/install.sh staging/agy-desktop-status/bin/macos-arm64/agy-desktop-backend staging/agy-desktop-status/bin/linux-x64/agy-desktop-backend staging/agy-desktop-status/bin/linux-arm64/agy-desktop-backend
           tar -C staging -czf agy-desktop-status-plugin.tar.gz agy-desktop-status
           (cd staging && zip -qr ../agy-desktop-status-plugin.zip agy-desktop-status)
       - uses: actions/upload-artifact@v4

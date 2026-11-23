@@ -349,7 +349,7 @@ fn openReadOnlyDb(a: A, path: []const u8) !OpenOutcome {
     const db = tryOpenDb(a, try fileUri(a, path, "immutable=1"), 0x41, &err);
     return .{ .db = db, .state = if (db != null) .ok else .unreadable };
 }
-fn readDb(a: A, path: []const u8) !DbResult {
+fn readDb(a: A, path: []const u8, summary_only: bool) !DbResult {
     var out = DbResult.init(a);
     if (!c.sig(path).exists) {
         out.state = .missing;
@@ -362,7 +362,7 @@ fn readDb(a: A, path: []const u8) !DbResult {
     };
     defer _ = sqlite3_close(db);
     out.readable = true;
-    if (Query.init(a, db, "SELECT idx,data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC")) |q| {
+    if (Query.init(a, db, if (summary_only) "SELECT idx,data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC LIMIT 40" else "SELECT idx,data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC")) |q| {
         defer q.deinit();
         while (q.next() catch false) {
             var rec = generation(q.integer(0) orelse continue, q.blob(1)) orelse continue;
@@ -461,23 +461,32 @@ fn readDb(a: A, path: []const u8) !DbResult {
 }
 
 pub const Config = struct { root: []const u8, data: []const u8, quota: []const u8, settings: []const u8 };
+const LiveSlot = struct {
+    id: [36]u8 = @splat(0),
+    step: ?i64 = null,
+    samples: [5]struct { at: f64, chars: i64 } = undefined,
+    sample_count: usize = 0,
+    growth_at: f64 = 0,
+    growth_chars: ?i64 = null,
+    growth_seen: bool = false,
+    last_used: f64 = 0,
+};
+
 pub const Runtime = struct {
+    // Brief queries omit transcript statistics and bound database history reads.
+    summary_only: bool = false,
     transcript: Transcript = Transcript.init(),
     db_arena: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(std.heap.c_allocator),
     db_id: [36]u8 = @splat(0),
     db_sig: c.Sig = .{},
     wal_sig: c.Sig = .{},
     db: ?DbResult = null,
-    live_id: [36]u8 = @splat(0),
-    live_step: ?i64 = null,
-    samples: [5]struct { at: f64, chars: i64 } = undefined,
-    sample_count: usize = 0,
+    db_summary_only: bool = false,
+    // The notch probes up to seven conversations per poll.
+    live_slots: [8]LiveSlot = [_]LiveSlot{.{}} ** 8,
     settings: settings_mod.Settings = .{},
     settings_sig: c.Sig = .{},
     settings_loaded: bool = false,
-    growth_at: f64 = 0,
-    growth_chars: ?i64 = null,
-    growth_seen: bool = false,
     pub fn deinit(self: *Runtime) void {
         self.transcript.deinit();
         self.db_arena.deinit();
@@ -493,56 +502,81 @@ pub const Runtime = struct {
         self.settings = if (sig.exists) settings_mod.fromJson(c.readJson(a, path)) else .{};
         return self.settings;
     }
-    fn charsIdleSec(self: *const Runtime, now: f64) ?f64 {
-        if (!self.growth_seen) return null;
-        return @max(0, now - self.growth_at);
+    fn findLiveSlot(self: *const Runtime, id: []const u8) ?*const LiveSlot {
+        for (&self.live_slots) |*slot| {
+            if (slot.id[0] != 0 and c.eq(&slot.id, id)) return slot;
+        }
+        return null;
+    }
+    fn getOrAllocLiveSlot(self: *Runtime, id: []const u8, now: f64) *LiveSlot {
+        var free_idx: ?usize = null;
+        var oldest_idx: usize = 0;
+        for (&self.live_slots, 0..) |*slot, idx| {
+            if (slot.id[0] != 0 and c.eq(&slot.id, id)) {
+                slot.last_used = now;
+                return slot;
+            }
+            if (slot.id[0] == 0 and free_idx == null) free_idx = idx;
+            if (slot.last_used < self.live_slots[oldest_idx].last_used) oldest_idx = idx;
+        }
+        const chosen = free_idx orelse oldest_idx;
+        self.live_slots[chosen] = .{ .last_used = now };
+        if (id.len == 36) @memcpy(&self.live_slots[chosen].id, id);
+        return &self.live_slots[chosen];
+    }
+    fn charsIdleSec(self: *const Runtime, id: []const u8, now: f64) ?f64 {
+        const slot = self.findLiveSlot(id) orelse return null;
+        if (!slot.growth_seen) return null;
+        return @max(0, now - slot.growth_at);
     }
     fn database(self: *Runtime, id: []const u8, path: []const u8, a: A) !DbResult {
         const sig = c.sig(path);
         const wal = c.sig(try c.fmt(a, "{s}-wal", .{path}));
         // Never serve an active live step from cache: streaming state and
         // completion transitions must re-read SQLite on every poll.
-        if (self.db != null and c.eq(&self.db_id, id) and std.meta.eql(sig, self.db_sig) and std.meta.eql(wal, self.wal_sig) and self.db.?.readable and !self.db.?.live) return self.db.?;
+        if (self.db != null and self.db_summary_only == self.summary_only and c.eq(&self.db_id, id) and std.meta.eql(sig, self.db_sig) and std.meta.eql(wal, self.wal_sig) and self.db.?.readable and !self.db.?.live) return self.db.?;
         _ = self.db_arena.reset(.free_all);
         self.db = null;
-        const result = try readDb(self.db_arena.allocator(), path);
+        const result = try readDb(self.db_arena.allocator(), path, self.summary_only);
         @memcpy(&self.db_id, id);
         self.db_sig = sig;
         self.wal_sig = wal;
         self.db = result;
+        self.db_summary_only = self.summary_only;
         return result;
     }
     fn rate(self: *Runtime, id: []const u8, db: DbResult, now: f64) ?f64 {
+        if (!db.live and self.findLiveSlot(id) == null) return null;
+        const slot = self.getOrAllocLiveSlot(id, now);
         if (!db.live or db.chars == null or db.live_idx == null) {
-            self.sample_count = 0;
-            self.growth_seen = false;
-            self.growth_chars = null;
+            slot.sample_count = 0;
+            slot.growth_seen = false;
+            slot.growth_chars = null;
             return null;
         }
-        const step_changed = !c.eq(&self.live_id, id) or self.live_step != db.live_idx;
-        if (step_changed or (self.sample_count > 0 and self.samples[self.sample_count - 1].chars > db.chars.?)) self.sample_count = 0;
-        @memcpy(&self.live_id, id);
-        self.live_step = db.live_idx;
+        const step_changed = slot.step != db.live_idx;
+        if (step_changed or (slot.sample_count > 0 and slot.samples[slot.sample_count - 1].chars > db.chars.?)) slot.sample_count = 0;
+        slot.step = db.live_idx;
         // Track the last time the streamed text actually grew. A live row that
         // stops growing is the difference between "slow" and "stuck".
-        if (step_changed or !self.growth_seen or self.growth_chars == null or db.chars.? > self.growth_chars.?) {
-            self.growth_at = now;
-            self.growth_chars = db.chars.?;
-            self.growth_seen = true;
+        if (step_changed or !slot.growth_seen or slot.growth_chars == null or db.chars.? > slot.growth_chars.?) {
+            slot.growth_at = now;
+            slot.growth_chars = db.chars.?;
+            slot.growth_seen = true;
         }
-        if (self.sample_count == 5) {
-            std.mem.copyForwards(@TypeOf(self.samples[0]), self.samples[0..4], self.samples[1..]);
-            self.sample_count -= 1;
+        if (slot.sample_count == 5) {
+            std.mem.copyForwards(@TypeOf(slot.samples[0]), slot.samples[0..4], slot.samples[1..]);
+            slot.sample_count -= 1;
         }
-        self.samples[self.sample_count] = .{ .at = now, .chars = db.chars.? };
-        self.sample_count += 1;
-        while (self.sample_count > 2 and now - self.samples[0].at > 4) {
-            std.mem.copyForwards(@TypeOf(self.samples[0]), self.samples[0 .. self.sample_count - 1], self.samples[1..self.sample_count]);
-            self.sample_count -= 1;
+        slot.samples[slot.sample_count] = .{ .at = now, .chars = db.chars.? };
+        slot.sample_count += 1;
+        while (slot.sample_count > 2 and now - slot.samples[0].at > 4) {
+            std.mem.copyForwards(@TypeOf(slot.samples[0]), slot.samples[0 .. slot.sample_count - 1], slot.samples[1..slot.sample_count]);
+            slot.sample_count -= 1;
         }
-        if (self.sample_count < 2) return null;
-        const elapsed = now - self.samples[0].at;
-        return if (elapsed > 0.05) @as(f64, @floatFromInt(db.chars.? - self.samples[0].chars)) / elapsed else null;
+        if (slot.sample_count < 2) return null;
+        const elapsed = now - slot.samples[0].at;
+        return if (elapsed > 0.05) @as(f64, @floatFromInt(db.chars.? - slot.samples[0].chars)) / elapsed else null;
     }
 };
 fn timeValue(a: A, ts: ?f64) !V {
@@ -559,6 +593,11 @@ fn span(end: ?f64, start: ?f64) ?f64 {
     return @max(0, end.? - start.?);
 }
 const Recent = struct { id: [36]u8, at: i128 };
+fn transcriptPath(a: A, root: []const u8, meta: V, id: []const u8) ![]const u8 {
+    const path = c.str(c.get(meta, "transcriptPath"));
+    if (path.len > 0 and c.sig(path).exists) return path;
+    return c.join(a, &.{ root, "brain", id, ".system_generated", "logs", "transcript.jsonl" });
+}
 fn recent(a: A, root: []const u8, hooks: V) !V {
     const dirpath = try c.join(a, &.{ root, "conversations" });
     var items: [16]Recent = undefined;
@@ -608,6 +647,8 @@ fn recent(a: A, root: []const u8, hooks: V) !V {
         try c.put(a, &row, "workspace", c.s(std.fs.path.basename(c.str(c.get(meta, "cwd")))));
         try c.put(a, &row, "updatedAt", if (item.at == 0) c.get(hooks, "updatedAt") else try timeValue(a, @as(f64, @floatFromInt(item.at)) / 1e9));
         try c.put(a, &row, "isActive", c.b(c.eq(id, active)));
+        try c.put(a, &row, "transcriptPath", c.s(try transcriptPath(a, root, meta, id)));
+        try c.put(a, &row, "lastEvent", c.s(c.str(c.get(meta, "lastEvent"))));
         try c.add(&out, row);
     }
     return out;
@@ -776,10 +817,11 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     const meta = c.get(c.get(hooks, "sessions"), id);
     const dbpath = try c.join(a, &.{ cfg.root, "conversations", try c.fmt(a, "{s}.db", .{id}) });
     const db = try runtime.database(id, dbpath, a);
-    var transcript_path = c.str(c.get(meta, "transcriptPath"));
-    if (transcript_path.len == 0 or !c.sig(transcript_path).exists) transcript_path = try c.join(a, &.{ cfg.root, "brain", id, ".system_generated", "logs", "transcript.jsonl" });
+    const transcript_path = try transcriptPath(a, cfg.root, meta, id);
+    try c.put(a, &out, "transcriptPath", c.s(transcript_path));
     var transcript_state: TranscriptState = .ok;
     const has_log = blk: {
+        if (runtime.summary_only) break :blk false;
         if (runtime.transcript.update(transcript_path)) |_| {
             break :blk true;
         } else |err| {
@@ -910,7 +952,7 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
         try c.put(a, &live, "observedAt", try timeValue(a, now));
     }
     try c.put(a, &out, "live", live);
-    if (settings.session) {
+    if (settings.session or runtime.summary_only) {
         const hook_model = c.str(c.get(meta, "modelName"));
         const evidence: session.Input = .{
             .now = now,
@@ -919,7 +961,7 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
             .hook_connected = active.len > 0,
             .live = db.live,
             .live_status = db.status,
-            .chars_idle_sec = runtime.charsIdleSec(now),
+            .chars_idle_sec = runtime.charsIdleSec(id, now),
             // The hook reports the model chosen for this turn; the last
             // completed generation reports the previous one. Comparing them is
             // what makes "switch → cache recompute" explainable.

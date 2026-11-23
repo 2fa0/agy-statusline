@@ -1,10 +1,20 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("common.zig");
 const A = c.A;
 const V = c.V;
 const session = @import("session.zig");
 
 pub const Layout = enum { compact, detailed };
+pub const NotchScreenMode = enum { notchOrMain, followActive, allScreens };
+pub const NotchAvoidanceMode = enum { autoStackBelow, forceNotch, topRight };
+
+pub const NotchSettings = struct {
+    enabled: bool = true,
+    hide_when_idle: bool = false,
+    screen_mode: NotchScreenMode = .notchOrMain,
+    avoidance_mode: NotchAvoidanceMode = .autoStackBelow,
+};
 
 /// User-facing settings, hot-reloaded.
 ///
@@ -24,6 +34,7 @@ pub const Settings = struct {
     history: bool = true,
     models: bool = true,
     context: bool = true,
+    notch: NotchSettings = .{},
 };
 
 fn boolean(v: V, fallback: bool) bool {
@@ -63,7 +74,43 @@ pub fn fromJson(raw: V) Settings {
     out.history = boolean(c.get(modules, "history"), out.history);
     out.models = boolean(c.get(modules, "models"), out.models);
     out.context = boolean(c.get(modules, "context"), out.context);
+
+    const notch = c.get(raw, "notch");
+    out.notch.enabled = boolean(c.get(notch, "enabled"), out.notch.enabled);
+    out.notch.hide_when_idle = boolean(c.get(notch, "hideWhenIdle"), out.notch.hide_when_idle);
+    const sm = c.str(c.get(notch, "screenMode"));
+    if (c.eq(sm, "followActive")) {
+        out.notch.screen_mode = .followActive;
+    } else if (c.eq(sm, "allScreens")) {
+        out.notch.screen_mode = .allScreens;
+    } else if (c.eq(sm, "notchOrMain")) {
+        out.notch.screen_mode = .notchOrMain;
+    }
+    const am = c.str(c.get(notch, "avoidanceMode"));
+    if (c.eq(am, "forceNotch")) {
+        out.notch.avoidance_mode = .forceNotch;
+    } else if (c.eq(am, "topRight")) {
+        out.notch.avoidance_mode = .topRight;
+    } else if (c.eq(am, "autoStackBelow")) {
+        out.notch.avoidance_mode = .autoStackBelow;
+    }
     return out;
+}
+
+fn screenModeName(mode: NotchScreenMode) []const u8 {
+    return switch (mode) {
+        .notchOrMain => "notchOrMain",
+        .followActive => "followActive",
+        .allScreens => "allScreens",
+    };
+}
+
+fn avoidanceModeName(mode: NotchAvoidanceMode) []const u8 {
+    return switch (mode) {
+        .autoStackBelow => "autoStackBelow",
+        .forceNotch => "forceNotch",
+        .topRight => "topRight",
+    };
 }
 
 /// Echoed in every snapshot so the UI can honour module switches and the
@@ -76,6 +123,7 @@ pub fn toValue(a: A, settings: Settings) !V {
     try c.put(a, &out, "lowSpeedWarnTokS", c.f(settings.low_speed));
     try c.put(a, &out, "waitSec", c.f(settings.limits.wait_sec));
     try c.put(a, &out, "stallSec", c.f(settings.limits.stall_sec));
+    try c.put(a, &out, "toolGraceSec", c.f(settings.limits.tool_grace_sec));
     var modules = c.object(a);
     try c.put(a, &modules, "session", c.b(settings.session));
     try c.put(a, &modules, "quota", c.b(settings.quota));
@@ -83,6 +131,13 @@ pub fn toValue(a: A, settings: Settings) !V {
     try c.put(a, &modules, "models", c.b(settings.models));
     try c.put(a, &modules, "context", c.b(settings.context));
     try c.put(a, &out, "modules", modules);
+    var notch = c.object(a);
+    try c.put(a, &notch, "supported", c.b(builtin.os.tag == .macos));
+    try c.put(a, &notch, "enabled", c.b(settings.notch.enabled));
+    try c.put(a, &notch, "hideWhenIdle", c.b(settings.notch.hide_when_idle));
+    try c.put(a, &notch, "screenMode", c.s(screenModeName(settings.notch.screen_mode)));
+    try c.put(a, &notch, "avoidanceMode", c.s(avoidanceModeName(settings.notch.avoidance_mode)));
+    try c.put(a, &out, "notch", notch);
     return out;
 }
 

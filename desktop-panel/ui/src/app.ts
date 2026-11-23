@@ -87,6 +87,14 @@ interface DataSources {
   notes?: SourceNote[];
 }
 
+interface NotchConfig {
+  supported?: boolean;
+  enabled?: boolean;
+  hideWhenIdle?: boolean;
+  screenMode?: 'notchOrMain' | 'followActive' | 'allScreens';
+  avoidanceMode?: 'autoStackBelow' | 'forceNotch' | 'topRight';
+}
+
 interface PanelConfig {
   enabled?: boolean;
   layout?: 'compact' | 'detailed';
@@ -94,7 +102,9 @@ interface PanelConfig {
   lowSpeedWarnTokS?: number;
   waitSec?: number;
   stallSec?: number;
+  toolGraceSec?: number;
   modules?: PanelModules;
+  notch?: NotchConfig;
 }
 
 interface UsageSummary {
@@ -177,7 +187,7 @@ declare global {
 const STORAGE_KEY_INTERVAL = 'agy_status_refresh_sec';
 const STORAGE_KEY_TAB = 'agy_status_active_tab';
 const ALLOWED_INTERVALS = new Set([0, 3, 5, 10]);
-const ALLOWED_TABS = new Set(['trends', 'usage', 'quota']);
+const ALLOWED_TABS = new Set(['trends', 'usage', 'quota', 'settings']);
 // Adaptive polling: follow the session closely while it is generating and back
 // off when it is idle to reduce repeated reads and rendering.
 const IDLE_POLL_MS = 15000;
@@ -204,6 +214,25 @@ const emptyBox = document.getElementById('empty-box') as HTMLDivElement;
 const usageSection = document.getElementById('usage-section') as HTMLDivElement;
 const contextSection = document.getElementById('context-section') as HTMLDivElement;
 const modelsSection = document.getElementById('models-section') as HTMLDivElement;
+const cfgLayoutEl = document.getElementById('cfg-layout') as HTMLSelectElement | null;
+const cfgPollSecEl = document.getElementById('cfg-poll-sec') as HTMLSelectElement | null;
+const cfgModSessionEl = document.getElementById('cfg-mod-session') as HTMLInputElement | null;
+const cfgModHistoryEl = document.getElementById('cfg-mod-history') as HTMLInputElement | null;
+const cfgModContextEl = document.getElementById('cfg-mod-context') as HTMLInputElement | null;
+const cfgModModelsEl = document.getElementById('cfg-mod-models') as HTMLInputElement | null;
+const cfgModQuotaEl = document.getElementById('cfg-mod-quota') as HTMLInputElement | null;
+const cfgLowSpeedEl = document.getElementById('cfg-low-speed') as HTMLInputElement | null;
+const cfgWaitSecEl = document.getElementById('cfg-wait-sec') as HTMLInputElement | null;
+const cfgStallSecEl = document.getElementById('cfg-stall-sec') as HTMLInputElement | null;
+const cfgToolGraceEl = document.getElementById('cfg-tool-grace') as HTMLInputElement | null;
+const notchEnabledEl = document.getElementById('notch-enabled') as HTMLInputElement | null;
+const notchHideIdleEl = document.getElementById('notch-hide-idle') as HTMLInputElement | null;
+const notchScreenModeEl = document.getElementById('notch-screen-mode') as HTMLSelectElement | null;
+const notchAvoidanceModeEl = document.getElementById('notch-avoidance-mode') as HTMLSelectElement | null;
+const settingsSaveStatusEl = document.getElementById('settings-save-status') as HTMLSpanElement | null;
+let settingsSaving = false;
+let settingsPending = 0;
+let settingsQueue: Promise<void> = Promise.resolve();
 
 let selectedConversation = 'auto';
 let refreshIntervalSec = loadSavedInterval();
@@ -511,7 +540,7 @@ function renderSessionStats(snap: StatusSnapshot): void {
   }
   if (!snap.found) return;
   const usage = snap.sessionUsage;
-  const coverage = usage ? `${usage.recordedCount}/${usage.requestCount} 次请求有完整用量` : '日志未采集';
+  const coverage = usage ? `${usage.recordedCount}/${usage.requestCount} 次请求` : '日志未采集';
   const usageTip = '累计包含已完成的回复与压缩请求；按日志中的输入、缓存读取、输出相加，不含未记录的缓存写入。缓存命中率按总量加权。';
   usageSection.innerHTML = `<div class="section-title" title="${usageTip}"><span>Token 与缓存</span><span class="muted">${escapeHtml(coverage)}</span></div>
     <div class="usage-grid">
@@ -614,11 +643,11 @@ function renderSessionStats(snap: StatusSnapshot): void {
       return `<div class="model-stat">
         <div class="model-stat-head">
           <strong>${escapeHtml(model.model)}</strong>
-          <span class="muted">${model.recordedCount}/${model.requestCount} 次请求有完整用量</span>
+          <span class="muted">${model.recordedCount}/${model.requestCount} 次请求</span>
         </div>
         <div class="model-stat-metrics">
           <div class="usage-total">${formatTokens(model.totalTokens)} <small>tok</small></div>
-          <span class="muted" title="${model.speedSamples ?? 0} 个有效速度样本">平均输出速度 ${speedStr}</span>
+          <span class="muted" title="${model.speedSamples ?? 0} 个有效速度样本">${speedStr}</span>
         </div>
         <div class="stats-note">入 ${formatTokens(model.inputTokens)} · 读 ${formatTokens(model.cacheReadTokens)} · 出 ${formatTokens(model.outputTokens)} · 命中 ${typeof pct === 'number' ? `${pct.toFixed(1)}%` : '--'}</div>
       </div>`;
@@ -729,7 +758,7 @@ function renderSnapshot(snap: StatusSnapshot): void {
         ? `${liveChars} 字`
         : '生成中…';
   const liveSubParts = [
-    typeof liveChars === 'number' ? `已输出 ${liveChars} 字` : '',
+    typeof liveChars === 'number' ? `${liveChars} 字` : '',
     typeof live?.charsPerSec === 'number' ? `${live.charsPerSec.toFixed(0)} 字/s` : '',
     typeof live?.elapsedSec === 'number' ? `${live.elapsedSec.toFixed(1)}s` : '',
   ].filter(Boolean);
@@ -975,6 +1004,45 @@ function applyPanelConfig(config: PanelConfig | undefined): void {
   if (modules.quota === false && activeTab === 'quota') {
     setActiveTab('trends');
   }
+  const notch = cfg.notch;
+  const notchSupported = notch?.supported === true;
+  root.classList.toggle('hide-notch', !notchSupported);
+  if (!settingsSaving) {
+    if (cfgLayoutEl) cfgLayoutEl.value = layout;
+    if (cfgPollSecEl) {
+      const value = String(typeof cfg.pollSec === 'number' ? Math.round(cfg.pollSec) : 0);
+      if (!Array.from(cfgPollSecEl.options).some((opt) => opt.value === value)) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = `${value}s`;
+        cfgPollSecEl.appendChild(option);
+      }
+      cfgPollSecEl.value = value;
+    }
+    if (cfgModSessionEl) cfgModSessionEl.checked = modules.session !== false;
+    if (cfgModHistoryEl) cfgModHistoryEl.checked = modules.history !== false;
+    if (cfgModContextEl) cfgModContextEl.checked = modules.context !== false;
+    if (cfgModModelsEl) cfgModModelsEl.checked = modules.models !== false;
+    if (cfgModQuotaEl) cfgModQuotaEl.checked = modules.quota !== false;
+    if (cfgLowSpeedEl && document.activeElement !== cfgLowSpeedEl && typeof cfg.lowSpeedWarnTokS === 'number') {
+      cfgLowSpeedEl.value = String(Math.round(cfg.lowSpeedWarnTokS));
+    }
+    if (cfgWaitSecEl && document.activeElement !== cfgWaitSecEl && typeof cfg.waitSec === 'number') {
+      cfgWaitSecEl.value = String(Math.round(cfg.waitSec));
+    }
+    if (cfgStallSecEl && document.activeElement !== cfgStallSecEl && typeof cfg.stallSec === 'number') {
+      cfgStallSecEl.value = String(Math.round(cfg.stallSec));
+    }
+    if (cfgToolGraceEl && document.activeElement !== cfgToolGraceEl && typeof cfg.toolGraceSec === 'number') {
+      cfgToolGraceEl.value = String(Math.round(cfg.toolGraceSec));
+    }
+    if (notch) {
+      if (notchEnabledEl && typeof notch.enabled === 'boolean') notchEnabledEl.checked = notch.enabled;
+      if (notchHideIdleEl && typeof notch.hideWhenIdle === 'boolean') notchHideIdleEl.checked = notch.hideWhenIdle;
+      if (notchScreenModeEl && typeof notch.screenMode === 'string') notchScreenModeEl.value = notch.screenMode;
+      if (notchAvoidanceModeEl && typeof notch.avoidanceMode === 'string') notchAvoidanceModeEl.value = notch.avoidanceMode;
+    }
+  }
   const pollSec = typeof cfg.pollSec === 'number' ? Math.round(cfg.pollSec) : 0;
   if (pollSec !== appliedPollSec) {
     const prevApplied = appliedPollSec;
@@ -1168,6 +1236,60 @@ tabBar.addEventListener('click', (e) => {
     setActiveTab(btn.dataset.tab);
   }
 });
+
+function readClampedNum(el: HTMLInputElement | null, min: number, max: number, fallback: number): number {
+  const raw = el ? Number(el.value) : fallback;
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(raw)));
+}
+
+function saveSettingsPatch(payload: object): Promise<void> {
+  settingsPending += 1;
+  settingsSaving = true;
+  settingsQueue = settingsQueue.then(async () => {
+    let updated: PanelConfig | undefined;
+    if (settingsSaveStatusEl) settingsSaveStatusEl.textContent = '保存中…';
+    try {
+      const f = window.sidecar?.fetch ? window.sidecar.fetch.bind(window.sidecar) : fetch;
+      const res = await f('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error('save failed');
+      updated = (await res.json()) as PanelConfig;
+      if (settingsSaveStatusEl) settingsSaveStatusEl.textContent = '已保存';
+    } catch {
+      if (settingsSaveStatusEl) settingsSaveStatusEl.textContent = '保存失败';
+    } finally {
+      settingsPending -= 1;
+      settingsSaving = settingsPending > 0;
+      if (!settingsSaving && updated) applyPanelConfig(updated);
+    }
+  });
+  return settingsQueue;
+}
+
+const settingsBindings: [HTMLInputElement | HTMLSelectElement | null, () => object][] = [
+  [cfgLayoutEl, () => ({ layout: cfgLayoutEl?.value })],
+  [cfgPollSecEl, () => ({ pollSec: Number(cfgPollSecEl?.value) })],
+  [cfgLowSpeedEl, () => ({ lowSpeedWarnTokS: readClampedNum(cfgLowSpeedEl, 1, 10000, 50) })],
+  [cfgWaitSecEl, () => ({ thresholds: { waitSec: readClampedNum(cfgWaitSecEl, 1, 3600, 20) } })],
+  [cfgStallSecEl, () => ({ thresholds: { stallSec: readClampedNum(cfgStallSecEl, 1, 3600, 25) } })],
+  [cfgToolGraceEl, () => ({ thresholds: { toolGraceSec: readClampedNum(cfgToolGraceEl, 1, 3600, 120) } })],
+  [cfgModSessionEl, () => ({ modules: { session: cfgModSessionEl?.checked } })],
+  [cfgModHistoryEl, () => ({ modules: { history: cfgModHistoryEl?.checked } })],
+  [cfgModContextEl, () => ({ modules: { context: cfgModContextEl?.checked } })],
+  [cfgModModelsEl, () => ({ modules: { models: cfgModModelsEl?.checked } })],
+  [cfgModQuotaEl, () => ({ modules: { quota: cfgModQuotaEl?.checked } })],
+  [notchEnabledEl, () => ({ notch: { enabled: notchEnabledEl?.checked } })],
+  [notchHideIdleEl, () => ({ notch: { hideWhenIdle: notchHideIdleEl?.checked } })],
+  [notchScreenModeEl, () => ({ notch: { screenMode: notchScreenModeEl?.value } })],
+  [notchAvoidanceModeEl, () => ({ notch: { avoidanceMode: notchAvoidanceModeEl?.value } })],
+];
+for (const [el, patch] of settingsBindings) {
+  el?.addEventListener('change', () => { void saveSettingsPatch(patch()); });
+}
 
 async function boot(): Promise<void> {
   setActiveTab(activeTab);

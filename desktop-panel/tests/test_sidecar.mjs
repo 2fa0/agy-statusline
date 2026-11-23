@@ -54,11 +54,11 @@ test('session panel escapes model names, marks compression and keeps data gaps v
       { request: 3, contextUsed: 10, compaction: false, at: null, model: 'b' },
     ],
   });
-  assert.match(usageSection.innerHTML, /2\/3 次请求有完整用量/);
+  assert.match(usageSection.innerHTML, /2\/3 次请求/);
   assert.match(usageSection.innerHTML, /缓存命中 50.0%/);
   assert.match(modelsSection.innerHTML, /&lt;img/);
   assert.doesNotMatch(modelsSection.innerHTML, /<img/);
-  assert.match(modelsSection.innerHTML, /平均输出速度 --/);
+  assert.match(modelsSection.innerHTML, /title="0 个有效速度样本">--<\/span>/);
   assert.match(contextSection.innerHTML, /压缩 1 次/);
   assert.equal((contextSection.innerHTML.match(/<polyline/g) || []).length, 2);
   assert.match(contextSection.innerHTML, /stroke-dasharray/);
@@ -209,6 +209,18 @@ test('applyPanelConfig handles custom pollSec, reset to 0 and hiding active quot
     window: { localStorage: { getItem: () => null } },
     STORAGE_KEY_INTERVAL: 'agy_status_refresh_sec',
     ALLOWED_INTERVALS: new Set([0, 3, 5, 10]),
+    settingsSaving: false,
+    ...Object.fromEntries([
+      'cfgLayoutEl', 'cfgModSessionEl', 'cfgModHistoryEl', 'cfgModContextEl', 'cfgModModelsEl',
+      'cfgModQuotaEl', 'cfgLowSpeedEl', 'cfgWaitSecEl', 'cfgStallSecEl', 'cfgToolGraceEl',
+      'notchEnabledEl', 'notchHideIdleEl', 'notchScreenModeEl', 'notchAvoidanceModeEl',
+    ].map((key) => [key, null])),
+    cfgPollSecEl: {
+      options: [{ value: '0' }, { value: '3' }, { value: '5' }, { value: '10' }],
+      appendChild(opt) { this.options.push(opt); },
+      set value(v) { this.selected = this.options.some((opt) => opt.value === v) ? v : ''; },
+      get value() { return this.selected; },
+    },
     appliedPollSec: null,
     refreshSelect,
     refreshIntervalSec: 3,
@@ -220,6 +232,7 @@ test('applyPanelConfig handles custom pollSec, reset to 0 and hiding active quot
   const apply = vm.runInNewContext(`${cfgSource}; applyPanelConfig`, ctx);
 
   apply({ pollSec: 7, modules: { quota: false } });
+  assert.equal(ctx.cfgPollSecEl.value, '7');
   assert.equal(ctx.refreshIntervalSec, 7);
   assert.equal(ctx.ALLOWED_INTERVALS.has(7), true);
   assert.equal(activeTab, 'trends');
@@ -268,4 +281,42 @@ test('disabled panel hides tabs and offline chip survives hide-session & single-
   mark();
   assert.match(metaStrip.innerHTML, /state-chip is-error is-offline/);
   assert.match(metaStrip.innerHTML, /后台无响应/);
+});
+
+test('settings changes submit only their own fields and saves remain ordered after failure', async () => {
+  const controls = Object.fromEntries([
+    'cfgLayoutEl', 'cfgPollSecEl', 'cfgLowSpeedEl', 'cfgWaitSecEl', 'cfgStallSecEl', 'cfgToolGraceEl',
+    'cfgModSessionEl', 'cfgModHistoryEl', 'cfgModContextEl', 'cfgModModelsEl', 'cfgModQuotaEl',
+    'notchEnabledEl', 'notchHideIdleEl', 'notchScreenModeEl', 'notchAvoidanceModeEl',
+  ].map((key) => [key, { value: '3', checked: true, addEventListener(_, fn) { this.change = fn; } }]));
+  const requests = [];
+  const releases = [];
+  const applied = [];
+  const ctx = {
+    ...controls, settingsSaving: false, settingsPending: 0, settingsQueue: Promise.resolve(),
+    settingsSaveStatusEl: { textContent: '' },
+    window: { sidecar: { fetch: async (_, options) => {
+      requests.push(JSON.parse(options.body));
+      await new Promise((resolve) => releases.push(resolve));
+      return { ok: requests.length > 1, json: async () => ({ layout: 'detailed' }) };
+    } } },
+    applyPanelConfig(config) { applied.push(config); },
+  };
+  const source = app.slice(app.indexOf('function readClampedNum('), app.indexOf('async function boot('));
+  vm.runInNewContext(source, ctx);
+  controls.cfgModQuotaEl.checked = false;
+  controls.cfgModQuotaEl.change();
+  controls.cfgLayoutEl.value = 'detailed';
+  controls.cfgLayoutEl.change();
+  await new Promise(setImmediate);
+  assert.deepEqual(requests, [{ modules: { quota: false } }]);
+  assert.equal(ctx.settingsSaving, true);
+  releases.shift()();
+  await new Promise(setImmediate);
+  assert.deepEqual(requests, [{ modules: { quota: false } }, { layout: 'detailed' }]);
+  assert.equal(ctx.settingsSaving, true);
+  releases.shift()();
+  await ctx.settingsQueue;
+  assert.equal(ctx.settingsSaving, false);
+  assert.deepEqual(applied, [{ layout: 'detailed' }]);
 });

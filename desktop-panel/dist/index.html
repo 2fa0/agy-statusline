@@ -158,7 +158,8 @@
     }
     .tabs {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(0, 1fr);
       gap: 3px;
       padding: 3px;
       background: var(--agy-subtle);
@@ -339,6 +340,90 @@
     .hide-history #history-section { display: none !important; }
     .hide-models #models-section { display: none !important; }
     .hide-context #context-section { display: none !important; }
+    .hide-notch .notch-settings-group { display: none !important; }
+    .setting-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 34px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: var(--agy-subtle);
+    }
+    .setting-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--agy-fg);
+      min-width: 0;
+    }
+    .setting-row select {
+      flex: 0 0 auto;
+      max-width: 170px;
+      font-size: 12px;
+    }
+    .setting-input-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+    .setting-unit {
+      font-size: 11px;
+      color: var(--agy-fg-muted);
+      min-width: 28px;
+    }
+    .setting-num {
+      width: 68px;
+      flex: 0 0 auto;
+      font: inherit;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      color: var(--agy-fg);
+      background: var(--agy-card);
+      border: 1px solid var(--agy-border);
+      border-radius: 6px;
+      padding: 4px 8px;
+    }
+    .setting-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .setting-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: var(--agy-subtle);
+      font-size: 11px;
+      color: var(--agy-fg);
+      cursor: pointer;
+      user-select: none;
+    }
+    .setting-chip input {
+      accent-color: var(--agy-accent);
+      margin: 0;
+    }
+    .setting-toggle {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--agy-accent);
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .setting-status {
+      font-size: 11px;
+      color: var(--agy-ok-fg);
+      min-height: 16px;
+    }
     .card-label {
       font-size: 11px;
       color: var(--agy-fg-muted);
@@ -479,9 +564,11 @@
     .spark-col {
       flex: 1 1 0;
       min-width: 8px;
+      max-width: 34px;
       height: 100%;
       display: flex;
       align-items: flex-end;
+      justify-content: center;
       cursor: pointer;
       padding: 0 1px;
       border-radius: 4px;
@@ -493,6 +580,7 @@
     }
     .spark-bar {
       width: 100%;
+      max-width: 14px;
       border-radius: 3px 3px 1px 1px;
       background: var(--agy-accent);
       opacity: 0.78;
@@ -630,6 +718,7 @@
       <button type="button" class="tab-btn active" data-tab="trends" role="tab" aria-selected="true">趋势</button>
       <button type="button" class="tab-btn" data-tab="usage" role="tab" aria-selected="false">用量</button>
       <button type="button" class="tab-btn" data-tab="quota" role="tab" aria-selected="false">额度</button>
+      <button type="button" class="tab-btn" data-tab="settings" role="tab" aria-selected="false">设置</button>
     </div>
 
     <div id="panel-trends" class="tab-panel active" data-panel="trends">
@@ -665,115 +754,217 @@
       <div id="quota-empty" class="section empty" style="display:none">暂无额度重置数据，运行一次 agy CLI 后自动同步。</div>
     </div>
 
+    <div id="panel-settings" class="tab-panel" data-panel="settings">
+      <div class="section">
+        <div class="section-title">
+          <span>面板与模块</span>
+          <span id="settings-save-status" class="setting-status"></span>
+        </div>
+        <div class="setting-list">
+          <div class="setting-row" title="详细模式会内联显示卡顿原因与数据源说明">
+            <span class="setting-label">布局密度</span>
+            <select id="cfg-layout" aria-label="布局密度">
+              <option value="compact">紧凑</option>
+              <option value="detailed">详细</option>
+            </select>
+          </div>
+          <div class="setting-row" title="未在顶部手动锁定时使用的轮询节奏">
+            <span class="setting-label">默认刷新间隔</span>
+            <select id="cfg-poll-sec" aria-label="默认刷新间隔">
+              <option value="0">自适应</option>
+              <option value="3">3s</option>
+              <option value="5">5s</option>
+              <option value="10">10s</option>
+            </select>
+          </div>
+          <div class="setting-chips">
+            <label class="setting-chip"><input id="cfg-mod-session" type="checkbox" checked />状态徽章</label>
+            <label class="setting-chip"><input id="cfg-mod-history" type="checkbox" checked />速度趋势</label>
+            <label class="setting-chip"><input id="cfg-mod-context" type="checkbox" checked />上下文曲线</label>
+            <label class="setting-chip"><input id="cfg-mod-models" type="checkbox" checked />模型用量</label>
+            <label class="setting-chip"><input id="cfg-mod-quota" type="checkbox" checked />额度重置</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">
+          <span>性能与告警阈值</span>
+        </div>
+        <div class="setting-list">
+          <div class="setting-row" title="输出速度低于该值时标黄提醒">
+            <span class="setting-label">低速警告</span>
+            <span class="setting-input-wrap">
+              <input id="cfg-low-speed" type="number" class="setting-num" min="1" max="10000" step="1" value="50" />
+              <span class="setting-unit">tok/s</span>
+            </span>
+          </div>
+          <div class="setting-row" title="发出请求后超过该时间未吐字标为等待中">
+            <span class="setting-label">等待首字超时</span>
+            <span class="setting-input-wrap">
+              <input id="cfg-wait-sec" type="number" class="setting-num" min="1" max="3600" step="1" value="20" />
+              <span class="setting-unit">s</span>
+            </span>
+          </div>
+          <div class="setting-row" title="流式输出中断超过该时间标为卡顿">
+            <span class="setting-label">输出卡顿超时</span>
+            <span class="setting-input-wrap">
+              <input id="cfg-stall-sec" type="number" class="setting-num" min="1" max="3600" step="1" value="25" />
+              <span class="setting-unit">s</span>
+            </span>
+          </div>
+          <div class="setting-row" title="运行命令/测试期间多久内不判定为卡顿">
+            <span class="setting-label">工具执行宽限期</span>
+            <span class="setting-input-wrap">
+              <input id="cfg-tool-grace" type="number" class="setting-num" min="1" max="3600" step="1" value="120" />
+              <span class="setting-unit">s</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section notch-settings-group">
+        <div class="section-title">
+          <span>macOS 刘海状态栏</span>
+        </div>
+        <div class="setting-list">
+          <label class="setting-row" title="在屏幕顶部刘海区域展示实时任务状态">
+            <span class="setting-label">显示刘海状态栏</span>
+            <input id="notch-enabled" type="checkbox" class="setting-toggle" checked />
+          </label>
+          <label class="setting-row" title="无活跃任务时收起至物理刘海内，悬停自动展开">
+            <span class="setting-label">空闲时隐入刘海</span>
+            <input id="notch-hide-idle" type="checkbox" class="setting-toggle" />
+          </label>
+          <div class="setting-row" title="外接显示器时决定刘海状态栏显示在哪块屏幕">
+            <span class="setting-label">多屏幕显示</span>
+            <select id="notch-screen-mode" aria-label="多屏幕显示">
+              <option value="notchOrMain">优先刘海屏</option>
+              <option value="followActive">跟随活跃屏幕</option>
+              <option value="allScreens">所有屏幕显示</option>
+            </select>
+          </div>
+          <div class="setting-row" title="与其他刘海工具重叠时的避让策略">
+            <span class="setting-label">刘海被占用时</span>
+            <select id="notch-avoidance-mode" aria-label="刘海被占用时">
+              <option value="autoStackBelow">自动避让下移</option>
+              <option value="forceNotch">强制贴合刘海</option>
+              <option value="topRight">悬浮在右上角</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="empty-box" class="section empty" style="display:none"></div>
   </div>
-  <script>"use strict";(()=>{var vt="agy_status_refresh_sec",Ct="agy_status_active_tab",$t=new Set([0,3,5,10]),Dt=new Set(["trends","usage","quota"]),Yt=15e3,Kt=45,zt=1e3,B=document.getElementById("session-select"),h=document.getElementById("refresh-select"),St=document.getElementById("live-dot"),ut=document.getElementById("meta-strip"),bt=document.getElementById("cards"),z=document.getElementById("tab-bar"),mt=Array.from(document.querySelectorAll(".tab-panel")),xt=document.getElementById("quota-section"),yt=document.getElementById("quota-empty"),Tt=document.getElementById("quota-note"),kt=document.getElementById("quota-list"),it=document.getElementById("history-section"),Jt=document.getElementById("history-count"),Xt=document.getElementById("spark-detail"),J=document.getElementById("spark"),X=document.getElementById("history-list"),lt=document.getElementById("empty-box"),Et=document.getElementById("usage-section"),k=document.getElementById("context-section"),wt=document.getElementById("models-section"),U="auto",y=te(),P=Zt(),rt=!1,I=null,K=[],Nt=[],Pt="",_=null,Z=null,ct=null,gt=0,pt=0;function Zt(){try{let t=localStorage.getItem(Ct);if(t&&Dt.has(t))return t}catch{}return"trends"}function tt(t){P=Dt.has(t)?t:"trends";try{localStorage.setItem(Ct,P)}catch{}z.querySelectorAll(".tab-btn").forEach(e=>{let n=e.dataset.tab===P;e.classList.toggle("active",n),e.setAttribute("aria-selected",n?"true":"false")}),mt.forEach(e=>{e.classList.toggle("active",e.dataset.panel===P)})}function te(){try{let t=window.localStorage?.getItem(vt);if(t!==null){let e=Number.parseInt(t,10);if($t.has(e))return e}}catch{}return 3}function ee(t){try{window.localStorage?.setItem(vt,String(t))}catch{}}h.value=String(y);h.classList.toggle("active",y>0);h.title="\u81EA\u9002\u5E94\u5237\u65B0\uFF1A\u6D3B\u8DC3\u65F6\u6309\u6240\u9009\u95F4\u9694\u5237\u65B0\uFF0C\u7A7A\u95F2\u65F6\u964D\u5230 15s\uFF0C\u9762\u677F\u9690\u85CF\u65F6\u6682\u505C";function v(t){return t==null||t<0?"--":t>=1e3?`${Math.trunc(t/1e3).toLocaleString("en-US")}K`:t.toLocaleString("en-US")}function T(t){return t==null||t<0?"--":`${t.toLocaleString("en-US")} tok`}function N(t){if(t==null||t<0)return"--";if(t<60)return`${t.toFixed(1)}s`;let e=Math.floor(t/60),n=Math.round(t%60);return e<60?`${e}m ${n}s`:`${Math.floor(e/60)}h ${e%60}m`}function l(t){return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}var ne=["\u5468\u65E5","\u5468\u4E00","\u5468\u4E8C","\u5468\u4E09","\u5468\u56DB","\u5468\u4E94","\u5468\u516D"],se={gemini:"Gemini",argon:"Argon",claude:"Claude"},oe={"5h":"5\u5C0F\u65F6",weekly:"\u5468\u9650",other:"\u989D\u5EA6"},Lt={"5h":0,weekly:1,other:2};function ft(t){return`${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}`}function ae(t=0){let e=new Date;return new Date(e.getFullYear(),e.getMonth(),e.getDate()+t).getTime()}function ie(t){if(t==null)return"--";let e=new Date(t*1e3);if(Number.isNaN(e.getTime()))return"--";let n=ft(e),i=new Date(e.getFullYear(),e.getMonth(),e.getDate()).getTime(),s=Math.round((i-ae())/864e5);return s===0?`\u4ECA\u5929 ${n}`:s===1?`\u660E\u5929 ${n}`:`${ne[e.getDay()]} ${e.getMonth()+1}/${e.getDate()} ${n}`}function le(t){if(t==null)return"";if(t<=0)return"\u5373\u5C06\u91CD\u7F6E";let e=Math.floor(t/86400),n=Math.floor(t%86400/3600),i=Math.floor(t%3600/60);return e>0?`${e}\u5929 ${n}\u5C0F\u65F6`:n>0?`${n}\u5C0F\u65F6 ${i}\u5206\u949F`:`${i}\u5206\u949F`}function re(t){return t===void 0?"":t<60?"\u521A\u521A":t<3600?`${Math.floor(t/60)} \u5206\u949F\u524D`:t<86400?`${Math.floor(t/3600)} \u5C0F\u65F6\u524D`:`${Math.floor(t/86400)} \u5929\u524D`}function ce(t){if(!t)return"";let e=new Date(t);return Number.isNaN(e.getTime())?"":e.toDateString()===new Date().toDateString()?ft(e):`${e.getMonth()+1}/${e.getDate()} ${ft(e)}`}function Mt(t){let e=(t?.windows||[]).filter(a=>a&&typeof a=="object");if(!t||e.length===0){xt.style.display="none",yt.style.display="block",kt.innerHTML="";return}xt.style.display="flex",yt.style.display="none";let n=re(t.observedAgeSec),i=ce(t.observedAt);Tt.textContent=t.stale?`${i||n} \xB7 \u63A8\u7B97`:`${i||n} \u66F4\u65B0`,Tt.title=t.stale?`\u4E0A\u6B21\u91C7\u5230\u989D\u5EA6\u662F ${i}\uFF08${n}\uFF09\uFF1B\u91CD\u7F6E\u65F6\u95F4\u5DF2\u6309 5h / 7 \u5929\u5468\u671F\u63A8\u7B97\u5230\u4E0B\u4E00\u6B21`:"\u989D\u5EA6\u6765\u81EA\u4E0A\u4E00\u6B21 agy CLI \u6E32\u67D3\u65F6\u7684\u72B6\u6001\u680F\u6570\u636E";let s=new Map;for(let a of e){let m=s.get(a.pool)||[];m.push(a),s.set(a.pool,m)}kt.innerHTML=Array.from(s.entries()).map(([a,m])=>{let r=se[a]||a,g=[...m].sort((u,p)=>(Lt[u.window]??99)-(Lt[p.window]??99)).map(u=>{let p=oe[u.window]||u.window,b=u.resetAtEpoch!==null&&u.resetAtEpoch!==void 0,E=b&&u.approx?"\u2248 ":"",H=b?le(u.resetInSec):"",A=b?ie(u.resetAtEpoch):"\u672A\u77E5",w=b?new Date(u.resetAtEpoch*1e3).toLocaleString():"--",q=[`${r} ${p}`,b?`\u91CD\u7F6E\u4E8E ${w}`:"\u91CD\u7F6E\u65F6\u95F4\u672A\u77E5",b&&H?`\u8DDD\u91CD\u7F6E ${H}`:"",u.approx?"\u6309 5h / 7 \u5929\u5468\u671F\u63A8\u7B97":"",n?`\u91C7\u96C6\u4E8E ${n}`:""].filter(Boolean).join(" \xB7 ");return`
-            <div class="quota-cell" title="${l(q)}">
-              <span class="quota-label">${l(p)}</span>
-              <span class="quota-time">${l(E+A)}</span>
+  <script>"use strict";(()=>{var Be="agy_status_refresh_sec",Xe="agy_status_active_tab",qe=new Set([0,3,5,10]),Ze=new Set(["trends","usage","quota","settings"]),pt=15e3,ht=45,vt=1e3,U=document.getElementById("session-select"),$=document.getElementById("refresh-select"),Fe=document.getElementById("live-dot"),Ce=document.getElementById("meta-strip"),We=document.getElementById("cards"),se=document.getElementById("tab-bar"),Ae=Array.from(document.querySelectorAll(".tab-panel")),Re=document.getElementById("quota-section"),_e=document.getElementById("quota-empty"),je=document.getElementById("quota-note"),Ge=document.getElementById("quota-list"),Ee=document.getElementById("history-section"),St=document.getElementById("history-count"),$t=document.getElementById("spark-detail"),pe=document.getElementById("spark"),he=document.getElementById("history-list"),ke=document.getElementById("empty-box"),Oe=document.getElementById("usage-section"),E=document.getElementById("context-section"),Qe=document.getElementById("models-section"),ae=document.getElementById("cfg-layout"),F=document.getElementById("cfg-poll-sec"),le=document.getElementById("cfg-mod-session"),ie=document.getElementById("cfg-mod-history"),ce=document.getElementById("cfg-mod-context"),re=document.getElementById("cfg-mod-models"),de=document.getElementById("cfg-mod-quota"),j=document.getElementById("cfg-low-speed"),G=document.getElementById("cfg-wait-sec"),O=document.getElementById("cfg-stall-sec"),Q=document.getElementById("cfg-tool-grace"),ue=document.getElementById("notch-enabled"),me=document.getElementById("notch-hide-idle"),ge=document.getElementById("notch-screen-mode"),fe=document.getElementById("notch-avoidance-mode"),q=document.getElementById("settings-save-status"),ne=!1,we=0,Me=Promise.resolve(),W="auto",x=yt(),N=bt(),Le=!1,I=null,oe=[],et=[],tt="",V=null,ve=null,Ie=null,De=0,Pe=0;function bt(){try{let e=localStorage.getItem(Xe);if(e&&Ze.has(e))return e}catch{}return"trends"}function Se(e){N=Ze.has(e)?e:"trends";try{localStorage.setItem(Xe,N)}catch{}se.querySelectorAll(".tab-btn").forEach(t=>{let n=t.dataset.tab===N;t.classList.toggle("active",n),t.setAttribute("aria-selected",n?"true":"false")}),Ae.forEach(t=>{t.classList.toggle("active",t.dataset.panel===N)})}function yt(){try{let e=window.localStorage?.getItem(Be);if(e!==null){let t=Number.parseInt(e,10);if(qe.has(t))return t}}catch{}return 3}function xt(e){try{window.localStorage?.setItem(Be,String(e))}catch{}}$.value=String(x);$.classList.toggle("active",x>0);$.title="\u81EA\u9002\u5E94\u5237\u65B0\uFF1A\u6D3B\u8DC3\u65F6\u6309\u6240\u9009\u95F4\u9694\u5237\u65B0\uFF0C\u7A7A\u95F2\u65F6\u964D\u5230 15s\uFF0C\u9762\u677F\u9690\u85CF\u65F6\u6682\u505C";function v(e){return e==null||e<0?"--":e>=1e3?`${Math.trunc(e/1e3).toLocaleString("en-US")}K`:e.toLocaleString("en-US")}function T(e){return e==null||e<0?"--":`${e.toLocaleString("en-US")} tok`}function P(e){if(e==null||e<0)return"--";if(e<60)return`${e.toFixed(1)}s`;let t=Math.floor(e/60),n=Math.round(e%60);return t<60?`${t}m ${n}s`:`${Math.floor(t/60)}h ${t%60}m`}function i(e){return e.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}var Tt=["\u5468\u65E5","\u5468\u4E00","\u5468\u4E8C","\u5468\u4E09","\u5468\u56DB","\u5468\u4E94","\u5468\u516D"],Et={gemini:"Gemini",argon:"Argon",claude:"Claude"},kt={"5h":"5\u5C0F\u65F6",weekly:"\u5468\u9650",other:"\u989D\u5EA6"},Ve={"5h":0,weekly:1,other:2};function Ne(e){return`${String(e.getHours()).padStart(2,"0")}:${String(e.getMinutes()).padStart(2,"0")}`}function wt(e=0){let t=new Date;return new Date(t.getFullYear(),t.getMonth(),t.getDate()+e).getTime()}function Mt(e){if(e==null)return"--";let t=new Date(e*1e3);if(Number.isNaN(t.getTime()))return"--";let n=Ne(t),s=new Date(t.getFullYear(),t.getMonth(),t.getDate()).getTime(),o=Math.round((s-wt())/864e5);return o===0?`\u4ECA\u5929 ${n}`:o===1?`\u660E\u5929 ${n}`:`${Tt[t.getDay()]} ${t.getMonth()+1}/${t.getDate()} ${n}`}function Lt(e){if(e==null)return"";if(e<=0)return"\u5373\u5C06\u91CD\u7F6E";let t=Math.floor(e/86400),n=Math.floor(e%86400/3600),s=Math.floor(e%3600/60);return t>0?`${t}\u5929 ${n}\u5C0F\u65F6`:n>0?`${n}\u5C0F\u65F6 ${s}\u5206\u949F`:`${s}\u5206\u949F`}function It(e){return e===void 0?"":e<60?"\u521A\u521A":e<3600?`${Math.floor(e/60)} \u5206\u949F\u524D`:e<86400?`${Math.floor(e/3600)} \u5C0F\u65F6\u524D`:`${Math.floor(e/86400)} \u5929\u524D`}function Ht(e){if(!e)return"";let t=new Date(e);return Number.isNaN(t.getTime())?"":t.toDateString()===new Date().toDateString()?Ne(t):`${t.getMonth()+1}/${t.getDate()} ${Ne(t)}`}function Ye(e){let t=(e?.windows||[]).filter(a=>a&&typeof a=="object");if(!e||t.length===0){Re.style.display="none",_e.style.display="block",Ge.innerHTML="";return}Re.style.display="flex",_e.style.display="none";let n=It(e.observedAgeSec),s=Ht(e.observedAt);je.textContent=e.stale?`${s||n} \xB7 \u63A8\u7B97`:`${s||n} \u66F4\u65B0`,je.title=e.stale?`\u4E0A\u6B21\u91C7\u5230\u989D\u5EA6\u662F ${s}\uFF08${n}\uFF09\uFF1B\u91CD\u7F6E\u65F6\u95F4\u5DF2\u6309 5h / 7 \u5929\u5468\u671F\u63A8\u7B97\u5230\u4E0B\u4E00\u6B21`:"\u989D\u5EA6\u6765\u81EA\u4E0A\u4E00\u6B21 agy CLI \u6E32\u67D3\u65F6\u7684\u72B6\u6001\u680F\u6570\u636E";let o=new Map;for(let a of t){let g=o.get(a.pool)||[];g.push(a),o.set(a.pool,g)}Ge.innerHTML=Array.from(o.entries()).map(([a,g])=>{let r=Et[a]||a,m=[...g].sort((d,p)=>(Ve[d.window]??99)-(Ve[p.window]??99)).map(d=>{let p=kt[d.window]||d.window,f=d.resetAtEpoch!==null&&d.resetAtEpoch!==void 0,k=f&&d.approx?"\u2248 ":"",H=f?Lt(d.resetInSec):"",C=f?Mt(d.resetAtEpoch):"\u672A\u77E5",w=f?new Date(d.resetAtEpoch*1e3).toLocaleString():"--",B=[`${r} ${p}`,f?`\u91CD\u7F6E\u4E8E ${w}`:"\u91CD\u7F6E\u65F6\u95F4\u672A\u77E5",f&&H?`\u8DDD\u91CD\u7F6E ${H}`:"",d.approx?"\u6309 5h / 7 \u5929\u5468\u671F\u63A8\u7B97":"",n?`\u91C7\u96C6\u4E8E ${n}`:""].filter(Boolean).join(" \xB7 ");return`
+            <div class="quota-cell" title="${i(B)}">
+              <span class="quota-label">${i(p)}</span>
+              <span class="quota-time">${i(k+C)}</span>
             </div>
           `}).join("");return`
         <div class="quota-group">
-          <div class="quota-group-title">${l(r)}</div>
-          <div class="quota-windows">${g}</div>
+          <div class="quota-group-title">${i(r)}</div>
+          <div class="quota-windows">${m}</div>
         </div>
-      `}).join("")}function de(t=[]){let e=U,n=['<option value="auto">\u81EA\u52A8\u8DDF\u968F\u5F53\u524D\u6D3B\u8DC3\u4F1A\u8BDD</option>'];for(let s of t){let a=[s.shortId];s.workspace&&a.push(s.workspace),s.modelName&&a.push(s.modelName),s.isActive&&a.push("\u6D3B\u8DC3"),n.push(`<option value="${l(s.conversationId)}">${l(a.join(" \xB7 "))}</option>`)}B.innerHTML=n.join("");let i=Array.from(B.options).some(s=>s.value===e);B.value=i?e:"auto",U=B.value}function j(t){if(K.length===0)return;let e=K[0],n=(t!==null?K.find(c=>c.idx===t):void 0)||e;_=n.idx;let i=n.speedTokS!==null&&n.speedTokS<(Z?.config?.lowSpeedWarnTokS??50),s=n.speedTokS!==null?`${n.speedTokS.toFixed(1)} tok/s`:"--",a=n.model||Pt||"\u672A\u77E5\u6A21\u578B",m=n.outputTokens!==null&&n.outputTokens!==void 0?`${n.outputTokens.toLocaleString("en-US")} tok`:"--",r=n.durationSec!==null&&n.durationSec!==void 0?`${n.durationSec.toFixed(2)}s`:"--";Xt.innerHTML=`
+      `}).join("")}function Ct(e=[]){let t=W,n=['<option value="auto">\u81EA\u52A8\u8DDF\u968F\u5F53\u524D\u6D3B\u8DC3\u4F1A\u8BDD</option>'];for(let o of e){let a=[o.shortId];o.workspace&&a.push(o.workspace),o.modelName&&a.push(o.modelName),o.isActive&&a.push("\u6D3B\u8DC3"),n.push(`<option value="${i(o.conversationId)}">${i(a.join(" \xB7 "))}</option>`)}U.innerHTML=n.join("");let s=Array.from(U.options).some(o=>o.value===t);U.value=s?t:"auto",W=U.value}function K(e){if(oe.length===0)return;let t=oe[0],n=(e!==null?oe.find(c=>c.idx===e):void 0)||t;V=n.idx;let s=n.speedTokS!==null&&n.speedTokS<(ve?.config?.lowSpeedWarnTokS??50),o=n.speedTokS!==null?`${n.speedTokS.toFixed(1)} tok/s`:"--",a=n.model||tt||"\u672A\u77E5\u6A21\u578B",g=n.outputTokens!==null&&n.outputTokens!==void 0?`${n.outputTokens.toLocaleString("en-US")} tok`:"--",r=n.durationSec!==null&&n.durationSec!==void 0?`${n.durationSec.toFixed(2)}s`:"--";$t.innerHTML=`
     <span>
       <strong>#${n.idx}</strong>
-      <span class="muted"> \xB7 ${l(a)}</span>
+      <span class="muted"> \xB7 ${i(a)}</span>
     </span>
     <span>
-      <span class="tag ${i?"warn":""}">${l(s)}</span>
-      <span class="muted"> \xB7 \u8F93\u51FA ${l(m)} \xB7 \u8017\u65F6 ${l(r)}</span>
+      <span class="tag ${s?"warn":""}">${i(o)}</span>
+      <span class="muted"> \xB7 \u8F93\u51FA ${i(g)} \xB7 \u8017\u65F6 ${i(r)}</span>
     </span>
-  `,J.querySelectorAll(".spark-col").forEach(c=>{let g=Number(c.dataset.idx);c.classList.toggle("active",g===n.idx)}),X.querySelectorAll(".history-row").forEach(c=>{let g=Number(c.dataset.idx);c.classList.toggle("active",g===n.idx)})}var ue=new URLSearchParams(window.location.search);function qt(){return(window.sidecar?.conversationId||ue.get("conversationId")||"").trim()}function It(t){let e=t?.cacheHitPct;return`<div class="usage-total">${v(t?.totalTokens)} <small>tok</small></div>
-    <div class="stats-note">\u5165 ${v(t?.inputTokens)} \xB7 \u8BFB ${v(t?.cacheReadTokens)} \xB7 \u51FA ${v(t?.outputTokens)}</div>
-    <div class="stats-note">\u7F13\u5B58\u547D\u4E2D ${typeof e=="number"?`${e.toFixed(1)}%`:"--"}</div>`}function dt(t){let e=t.at?new Date(t.at).toLocaleString():"\u65F6\u95F4\u672A\u77E5";return`#${t.request} \xB7 ${e} \xB7 ${t.compaction?"\u5DF2\u538B\u7F29":`${t.model} \xB7 ${T(t.contextUsed)}`}`}function me(t){for(let o of[Et,k,wt])o.style.display=t.found?"flex":"none";if(!t.found)return;let e=t.sessionUsage,n=e?`${e.recordedCount}/${e.requestCount} \u6B21\u8BF7\u6C42\u6709\u5B8C\u6574\u7528\u91CF`:"\u65E5\u5FD7\u672A\u91C7\u96C6",i="\u7D2F\u8BA1\u5305\u542B\u5DF2\u5B8C\u6210\u7684\u56DE\u590D\u4E0E\u538B\u7F29\u8BF7\u6C42\uFF1B\u6309\u65E5\u5FD7\u4E2D\u7684\u8F93\u5165\u3001\u7F13\u5B58\u8BFB\u53D6\u3001\u8F93\u51FA\u76F8\u52A0\uFF0C\u4E0D\u542B\u672A\u8BB0\u5F55\u7684\u7F13\u5B58\u5199\u5165\u3002\u7F13\u5B58\u547D\u4E2D\u7387\u6309\u603B\u91CF\u52A0\u6743\u3002";Et.innerHTML=`<div class="section-title" title="${i}"><span>Token \u4E0E\u7F13\u5B58</span><span class="muted">${l(n)}</span></div>
+  `,pe.querySelectorAll(".spark-col").forEach(c=>{let m=Number(c.dataset.idx);c.classList.toggle("active",m===n.idx)}),he.querySelectorAll(".history-row").forEach(c=>{let m=Number(c.dataset.idx);c.classList.toggle("active",m===n.idx)})}var At=new URLSearchParams(window.location.search);function nt(){return(window.sidecar?.conversationId||At.get("conversationId")||"").trim()}function Ke(e){let t=e?.cacheHitPct;return`<div class="usage-total">${v(e?.totalTokens)} <small>tok</small></div>
+    <div class="stats-note">\u5165 ${v(e?.inputTokens)} \xB7 \u8BFB ${v(e?.cacheReadTokens)} \xB7 \u51FA ${v(e?.outputTokens)}</div>
+    <div class="stats-note">\u7F13\u5B58\u547D\u4E2D ${typeof t=="number"?`${t.toFixed(1)}%`:"--"}</div>`}function He(e){let t=e.at?new Date(e.at).toLocaleString():"\u65F6\u95F4\u672A\u77E5";return`#${e.request} \xB7 ${t} \xB7 ${e.compaction?"\u5DF2\u538B\u7F29":`${e.model} \xB7 ${T(e.contextUsed)}`}`}function Dt(e){for(let l of[Oe,E,Qe])l.style.display=e.found?"flex":"none";if(!e.found)return;let t=e.sessionUsage,n=t?`${t.recordedCount}/${t.requestCount} \u6B21\u8BF7\u6C42`:"\u65E5\u5FD7\u672A\u91C7\u96C6",s="\u7D2F\u8BA1\u5305\u542B\u5DF2\u5B8C\u6210\u7684\u56DE\u590D\u4E0E\u538B\u7F29\u8BF7\u6C42\uFF1B\u6309\u65E5\u5FD7\u4E2D\u7684\u8F93\u5165\u3001\u7F13\u5B58\u8BFB\u53D6\u3001\u8F93\u51FA\u76F8\u52A0\uFF0C\u4E0D\u542B\u672A\u8BB0\u5F55\u7684\u7F13\u5B58\u5199\u5165\u3002\u7F13\u5B58\u547D\u4E2D\u7387\u6309\u603B\u91CF\u52A0\u6743\u3002";Oe.innerHTML=`<div class="section-title" title="${s}"><span>Token \u4E0E\u7F13\u5B58</span><span class="muted">${i(n)}</span></div>
     <div class="usage-grid">
-      <div><div class="stats-label">\u6700\u8FD1\u56DE\u590D</div>${It(t.latestUsage)}</div>
-      <div><div class="stats-label">\u4F1A\u8BDD\u7D2F\u8BA1</div>${It(e)}</div>
-    </div>`;let s=t.contextHistory||[],a=t.compactionCount,m=s.filter(o=>typeof o.contextUsed=="number"),r=Math.max(1,...m.map(o=>o.contextUsed)),c=10,g=350,u=16,p=92,b=g-c,E=o=>s.length<=1?(c+g)/2:c+o*b/(s.length-1),H=o=>p-o/r*(p-u),A=[],w=[],q=()=>{w.length&&A.push(`<polyline class="ctx-line" points="${w.join(" ")}"/>`),w=[]};s.forEach((o,f)=>{if(o.contextUsed===null||o.compaction){q();return}w.push(`${E(f).toFixed(1)},${H(o.contextUsed).toFixed(1)}`)}),q();let O=Number(k.dataset?.activeReq),x=(Number.isFinite(O)?s.find(o=>o.request===O):void 0)||s[s.length-1],G=x?.request??null,et=s.map((o,f)=>{let $=E(f).toFixed(1);return`<line class="ctx-guide${o.request===G?" active":""}" data-req="${o.request}" x1="${$}" x2="${$}" y1="${u}" y2="${p}"/>`}).join(""),Q=s.map((o,f)=>{let $=E(f).toFixed(1),C=o.request===G;if(o.compaction)return`<line class="ctx-compaction" x1="${$}" x2="${$}" y1="${u}" y2="${p}" stroke-dasharray="3 3"><title>${l(dt(o))}</title></line>`;if(o.contextUsed!==null){let D=H(o.contextUsed).toFixed(1);return`<circle class="ctx-dot${C?" active":""}" data-req="${o.request}" cx="${$}" cy="${D}" r="${C?3.5:2}"><title>${l(dt(o))}</title></circle>`}return""}).join(""),L=s.length>0?b/s.length:b,nt=s.map((o,f)=>{let $=E(f),C=Math.max(0,$-L/2).toFixed(1),D=Math.max(6,L).toFixed(1);return`<rect class="ctx-hit" data-req="${o.request}" x="${C}" y="${u-4}" width="${D}" height="${p-u+8}"/>`}).join(""),st=x?(()=>{let o=x.at?new Date(x.at).toLocaleTimeString():"",f=x.model||"",$=x.compaction?"\u5DF2\u538B\u7F29":x.contextUsed!==null?T(x.contextUsed):"--";return`<span><strong>#${x.request}</strong>${f?`<span class="muted"> \xB7 ${l(f)}</span>`:""}</span>
-          <span><span class="tag ${x.compaction?"warn":""}">${l($)}</span>${o?`<span class="muted"> \xB7 ${l(o)}</span>`:""}</span>`})():"",ot=k.querySelector("details")?.open,at="\u6700\u8FD1\u6700\u591A 120 \u6B21\u8BF7\u6C42\uFF1B\u7EB5\u8F74\u81EA\u52A8\u7F29\u653E\uFF0C\u4E0D\u4EE3\u8868\u6A21\u578B\u5BB9\u91CF\u3002\u865A\u7EBF\u4E3A\u65E5\u5FD7\u660E\u786E\u8BB0\u5F55\u7684\u538B\u7F29\u3002";k.innerHTML=`<div class="section-title" title="${at}"><span>\u4E0A\u4E0B\u6587\u8D8B\u52BF</span><span>\u538B\u7F29 ${a??"--"} \u6B21</span></div>
-    ${s.length?`<div id="context-detail" class="spark-detail">${st}</div>
-    <svg class="context-chart" viewBox="0 0 360 112" role="img" aria-label="\u6700\u8FD1 ${s.length} \u6B21\u8BF7\u6C42\u7684\u4E0A\u4E0B\u6587\u4F7F\u7528\u8D8B\u52BF\uFF1B\u865A\u7EBF\u8868\u793A\u5DF2\u53D1\u751F\u7684\u538B\u7F29\uFF0C\u7EB5\u8F74\u6309\u8BB0\u5F55\u81EA\u52A8\u7F29\u653E">
-      <line class="ctx-grid" x1="${c}" x2="${g}" y1="${u}" y2="${u}"/>
-      <line class="ctx-grid" x1="${c}" x2="${g}" y1="${((u+p)/2).toFixed(1)}" y2="${((u+p)/2).toFixed(1)}"/>
-      <line class="ctx-grid" x1="${c}" x2="${g}" y1="${p}" y2="${p}"/>
-      <text x="${c}" y="11">${m.length?v(r):"--"} tok</text>
-      <text x="${g}" y="11" text-anchor="end">\u6700\u8FD1 ${s.length} \u6B21</text>
-      ${et}${A.join("")}${Q}${nt}
-      <text x="${c}" y="106">#${s[0].request}</text>
-      <text x="${g}" y="106" text-anchor="end">#${s[s.length-1].request}</text>
+      <div><div class="stats-label">\u6700\u8FD1\u56DE\u590D</div>${Ke(e.latestUsage)}</div>
+      <div><div class="stats-label">\u4F1A\u8BDD\u7D2F\u8BA1</div>${Ke(t)}</div>
+    </div>`;let o=e.contextHistory||[],a=e.compactionCount,g=o.filter(l=>typeof l.contextUsed=="number"),r=Math.max(1,...g.map(l=>l.contextUsed)),c=10,m=350,d=16,p=92,f=m-c,k=l=>o.length<=1?(c+m)/2:c+l*f/(o.length-1),H=l=>p-l/r*(p-d),C=[],w=[],B=()=>{w.length&&C.push(`<polyline class="ctx-line" points="${w.join(" ")}"/>`),w=[]};o.forEach((l,h)=>{if(l.contextUsed===null||l.compaction){B();return}w.push(`${k(h).toFixed(1)},${H(l.contextUsed).toFixed(1)}`)}),B();let J=Number(E.dataset?.activeReq),y=(Number.isFinite(J)?o.find(l=>l.request===J):void 0)||o[o.length-1],z=y?.request??null,$e=o.map((l,h)=>{let S=k(h).toFixed(1);return`<line class="ctx-guide${l.request===z?" active":""}" data-req="${l.request}" x1="${S}" x2="${S}" y1="${d}" y2="${p}"/>`}).join(""),X=o.map((l,h)=>{let S=k(h).toFixed(1),A=l.request===z;if(l.compaction)return`<line class="ctx-compaction" x1="${S}" x2="${S}" y1="${d}" y2="${p}" stroke-dasharray="3 3"><title>${i(He(l))}</title></line>`;if(l.contextUsed!==null){let D=H(l.contextUsed).toFixed(1);return`<circle class="ctx-dot${A?" active":""}" data-req="${l.request}" cx="${S}" cy="${D}" r="${A?3.5:2}"><title>${i(He(l))}</title></circle>`}return""}).join(""),M=o.length>0?f/o.length:f,be=o.map((l,h)=>{let S=k(h),A=Math.max(0,S-M/2).toFixed(1),D=Math.max(6,M).toFixed(1);return`<rect class="ctx-hit" data-req="${l.request}" x="${A}" y="${d-4}" width="${D}" height="${p-d+8}"/>`}).join(""),ye=y?(()=>{let l=y.at?new Date(y.at).toLocaleTimeString():"",h=y.model||"",S=y.compaction?"\u5DF2\u538B\u7F29":y.contextUsed!==null?T(y.contextUsed):"--";return`<span><strong>#${y.request}</strong>${h?`<span class="muted"> \xB7 ${i(h)}</span>`:""}</span>
+          <span><span class="tag ${y.compaction?"warn":""}">${i(S)}</span>${l?`<span class="muted"> \xB7 ${i(l)}</span>`:""}</span>`})():"",xe=E.querySelector("details")?.open,Te="\u6700\u8FD1\u6700\u591A 120 \u6B21\u8BF7\u6C42\uFF1B\u7EB5\u8F74\u81EA\u52A8\u7F29\u653E\uFF0C\u4E0D\u4EE3\u8868\u6A21\u578B\u5BB9\u91CF\u3002\u865A\u7EBF\u4E3A\u65E5\u5FD7\u660E\u786E\u8BB0\u5F55\u7684\u538B\u7F29\u3002";E.innerHTML=`<div class="section-title" title="${Te}"><span>\u4E0A\u4E0B\u6587\u8D8B\u52BF</span><span>\u538B\u7F29 ${a??"--"} \u6B21</span></div>
+    ${o.length?`<div id="context-detail" class="spark-detail">${ye}</div>
+    <svg class="context-chart" viewBox="0 0 360 112" role="img" aria-label="\u6700\u8FD1 ${o.length} \u6B21\u8BF7\u6C42\u7684\u4E0A\u4E0B\u6587\u4F7F\u7528\u8D8B\u52BF\uFF1B\u865A\u7EBF\u8868\u793A\u5DF2\u53D1\u751F\u7684\u538B\u7F29\uFF0C\u7EB5\u8F74\u6309\u8BB0\u5F55\u81EA\u52A8\u7F29\u653E">
+      <line class="ctx-grid" x1="${c}" x2="${m}" y1="${d}" y2="${d}"/>
+      <line class="ctx-grid" x1="${c}" x2="${m}" y1="${((d+p)/2).toFixed(1)}" y2="${((d+p)/2).toFixed(1)}"/>
+      <line class="ctx-grid" x1="${c}" x2="${m}" y1="${p}" y2="${p}"/>
+      <text x="${c}" y="11">${g.length?v(r):"--"} tok</text>
+      <text x="${m}" y="11" text-anchor="end">\u6700\u8FD1 ${o.length} \u6B21</text>
+      ${$e}${C.join("")}${X}${be}
+      <text x="${c}" y="106">#${o[0].request}</text>
+      <text x="${m}" y="106" text-anchor="end">#${o[o.length-1].request}</text>
     </svg>`:'<div class="stats-note">\u6682\u65E0\u4E0A\u4E0B\u6587\u8BB0\u5F55</div>'}
-    <details ${ot?"open":""}><summary>\u8FD1\u671F\u8BB0\u5F55</summary><div class="context-records">${s.slice(-12).reverse().map(o=>`<div>${l(dt(o))}</div>`).join("")||"\u6682\u65E0\u8BB0\u5F55"}</div></details>`;let V=t.modelUsage||[],Y="\u540C\u4E00\u6A21\u578B\u7684\u601D\u8003\u6863\u4F4D\u5408\u5E76\uFF1B\u901F\u5EA6\u6309\u6709\u6548\u6837\u672C\u7684\u8F93\u51FA\u603B\u91CF / \u8017\u65F6\u603B\u91CF\u8BA1\u7B97\u3002";wt.innerHTML=`<div class="section-title" title="${Y}"><span>\u6309\u6A21\u578B\u7EDF\u8BA1</span></div>
-    ${V.map(o=>{let f=o.cacheHitPct,$=typeof o.avgSpeedTokS=="number"?`${o.avgSpeedTokS.toFixed(1)} tok/s`:"--";return`<div class="model-stat">
+    <details ${xe?"open":""}><summary>\u8FD1\u671F\u8BB0\u5F55</summary><div class="context-records">${o.slice(-12).reverse().map(l=>`<div>${i(He(l))}</div>`).join("")||"\u6682\u65E0\u8BB0\u5F55"}</div></details>`;let Z=e.modelUsage||[],ee="\u540C\u4E00\u6A21\u578B\u7684\u601D\u8003\u6863\u4F4D\u5408\u5E76\uFF1B\u901F\u5EA6\u6309\u6709\u6548\u6837\u672C\u7684\u8F93\u51FA\u603B\u91CF / \u8017\u65F6\u603B\u91CF\u8BA1\u7B97\u3002";Qe.innerHTML=`<div class="section-title" title="${ee}"><span>\u6309\u6A21\u578B\u7EDF\u8BA1</span></div>
+    ${Z.map(l=>{let h=l.cacheHitPct,S=typeof l.avgSpeedTokS=="number"?`${l.avgSpeedTokS.toFixed(1)} tok/s`:"--";return`<div class="model-stat">
         <div class="model-stat-head">
-          <strong>${l(o.model)}</strong>
-          <span class="muted">${o.recordedCount}/${o.requestCount} \u6B21\u8BF7\u6C42\u6709\u5B8C\u6574\u7528\u91CF</span>
+          <strong>${i(l.model)}</strong>
+          <span class="muted">${l.recordedCount}/${l.requestCount} \u6B21\u8BF7\u6C42</span>
         </div>
         <div class="model-stat-metrics">
-          <div class="usage-total">${v(o.totalTokens)} <small>tok</small></div>
-          <span class="muted" title="${o.speedSamples??0} \u4E2A\u6709\u6548\u901F\u5EA6\u6837\u672C">\u5E73\u5747\u8F93\u51FA\u901F\u5EA6 ${$}</span>
+          <div class="usage-total">${v(l.totalTokens)} <small>tok</small></div>
+          <span class="muted" title="${l.speedSamples??0} \u4E2A\u6709\u6548\u901F\u5EA6\u6837\u672C">${S}</span>
         </div>
-        <div class="stats-note">\u5165 ${v(o.inputTokens)} \xB7 \u8BFB ${v(o.cacheReadTokens)} \xB7 \u51FA ${v(o.outputTokens)} \xB7 \u547D\u4E2D ${typeof f=="number"?`${f.toFixed(1)}%`:"--"}</div>
-      </div>`}).join("")||'<div class="stats-note">\u6682\u65E0\u6A21\u578B\u7528\u91CF\u8BB0\u5F55</div>'}`}function ge(t){de(t.recentConversations),Nt=t.contextHistory||[],me(t);let e=qt(),n=!!(t.hookConnected||e);St.classList.toggle("live",n),St.title=e?`\u5DF2\u7ED1\u5B9A\u5F53\u524D\u9762\u677F\u4F1A\u8BDD ${e.slice(0,8)}`:t.hookConnected?"Hook \u5DF2\u5173\u8054\u5B9E\u65F6\u6D3B\u8DC3\u4F1A\u8BDD":"\u7B49\u5F85 Hook \u4E8B\u4EF6\uFF0C\u5F53\u524D\u6309\u6700\u8FD1\u4F1A\u8BDD\u5C55\u793A";let i="";if(t.generatedAt){let S=new Date(t.generatedAt);i=Number.isNaN(S.getTime())?"":S.toLocaleTimeString()}if(!t.found){ut.innerHTML="",bt.innerHTML="",it.style.display="none",t.disabled&&(z.style.display="none",mt.forEach(S=>{S.style.display="none"})),lt.style.display="block",lt.textContent=t.message||"\u6682\u672A\u53D1\u73B0\u672C\u5730 Antigravity \u684C\u9762\u7AEF\u4F1A\u8BDD\u8BB0\u5F55\u3002",Mt(t.quota);return}lt.style.display="none",z.style.display="grid",mt.forEach(S=>{S.style.display=""}),tt(P);let s=[];t.workspaceName&&s.push(t.workspaceName),t.modelName&&s.push(t.modelName),typeof t.turnCount=="number"&&t.turnCount>0&&s.push(`${t.turnCount} \u8F6E`);let a=t.live,m=!!a?.active,r=t.session||null,c=r&&["idle","running","waiting","error"].includes(r.state)?r.state:"idle",g=r&&typeof r.waitSec=="number"&&r.waitSec>=1?N(r.waitSec):"",u=t.config?.layout==="detailed"&&g!==""&&(c==="waiting"||c==="running"),p=!!r&&!(c==="idle"&&r?.code==="idle"),b=r?`<span class="state-chip is-${c}" title="${l(r.detail)}"><i class="state-dot"></i>${p?l(r.label):""}${u?` ${l(g)}`:""}</span>`:"",E=m?`<span class="pill live" title="\u6B63\u5728\u751F\u6210\uFF1A\u7B2C ${a?.stepIdx??"?"} \u6B65\uFF0C\u5DF2\u6D41\u5F0F\u8F93\u51FA ${a?.outputChars??"?"} \u5B57"><i class="live-pulse"></i>\u751F\u6210\u4E2D${typeof a?.elapsedSec=="number"?` \xB7 ${a.elapsedSec.toFixed(0)}s`:""}</span>`:"",H=b||E,A=typeof t.config?.lowSpeedWarnTokS=="number"?t.config.lowSpeedWarnTokS:50,w=i?`<span class="updated-tag" title="\u4E0A\u6B21\u5237\u65B0\u65F6\u95F4">${l(i)}</span>`:"",q=[t.shortId?`\u4F1A\u8BDD ${t.shortId}`:"",t.stepCount?`${t.stepCount} \u6B65`:""].filter(Boolean).join(" \xB7 ");ut.innerHTML=`<div class="meta-main" title="${l(q)}">${H}<span class="meta-text">${l(s.join(" \xB7 ")||"\u6D3B\u8DC3\u4F1A\u8BDD")}</span></div>${w}`;let O=t.lastAvgSpeed!==null&&t.lastAvgSpeed!==void 0?`${t.lastAvgSpeed.toFixed(1)} tok/s`:"--",x=N(t.lastGenDurationSec),G=v(t.outputTokens),et=`\u6700\u8FD1\u4E00\u6B21\u751F\u6210\uFF1A\u8F93\u51FA ${T(t.outputTokens)}\uFF0C\u751F\u6210\u8017\u65F6 ${t.lastGenDurationSec!==null&&t.lastGenDurationSec!==void 0?`${t.lastGenDurationSec.toFixed(2)}s`:"--"}`,Q=a?.estTokPerSec,L=a?.outputChars,nt=typeof Q=="number"?`\u2248 ${Q.toFixed(1)} tok/s`:typeof L=="number"?`${L} \u5B57`:"\u751F\u6210\u4E2D\u2026",st=[typeof L=="number"?`\u5DF2\u8F93\u51FA ${L} \u5B57`:"",typeof a?.charsPerSec=="number"?`${a.charsPerSec.toFixed(0)} \u5B57/s`:"",typeof a?.elapsedSec=="number"?`${a.elapsedSec.toFixed(1)}s`:""].filter(Boolean),ot=`\u751F\u6210\u4E2D\u5B9E\u65F6\u4F30\u7B97\uFF1A\u6D41\u5F0F\u6587\u672C ${L??"?"} \u5B57 \xB7 ${a?.charsPerSec!==null&&a?.charsPerSec!==void 0?`${a.charsPerSec.toFixed(1)} \u5B57/s`:"\u901F\u7387\u5F85\u6D4B"}
-\u6309 ${a?.charsPerToken??"--"} \u5B57/token \u6362\u7B97\u4E3A tok/s\uFF1B\u7CBE\u786E token \u6570\u5728\u6574\u6B65\u5B8C\u6210\u540E\u843D\u5E93`,at=m?`<div class="card live" title="${l(ot)}">
+        <div class="stats-note">\u5165 ${v(l.inputTokens)} \xB7 \u8BFB ${v(l.cacheReadTokens)} \xB7 \u51FA ${v(l.outputTokens)} \xB7 \u547D\u4E2D ${typeof h=="number"?`${h.toFixed(1)}%`:"--"}</div>
+      </div>`}).join("")||'<div class="stats-note">\u6682\u65E0\u6A21\u578B\u7528\u91CF\u8BB0\u5F55</div>'}`}function Pt(e){Ct(e.recentConversations),et=e.contextHistory||[],Dt(e);let t=nt(),n=!!(e.hookConnected||t);Fe.classList.toggle("live",n),Fe.title=t?`\u5DF2\u7ED1\u5B9A\u5F53\u524D\u9762\u677F\u4F1A\u8BDD ${t.slice(0,8)}`:e.hookConnected?"Hook \u5DF2\u5173\u8054\u5B9E\u65F6\u6D3B\u8DC3\u4F1A\u8BDD":"\u7B49\u5F85 Hook \u4E8B\u4EF6\uFF0C\u5F53\u524D\u6309\u6700\u8FD1\u4F1A\u8BDD\u5C55\u793A";let s="";if(e.generatedAt){let b=new Date(e.generatedAt);s=Number.isNaN(b.getTime())?"":b.toLocaleTimeString()}if(!e.found){Ce.innerHTML="",We.innerHTML="",Ee.style.display="none",e.disabled&&(se.style.display="none",Ae.forEach(b=>{b.style.display="none"})),ke.style.display="block",ke.textContent=e.message||"\u6682\u672A\u53D1\u73B0\u672C\u5730 Antigravity \u684C\u9762\u7AEF\u4F1A\u8BDD\u8BB0\u5F55\u3002",Ye(e.quota);return}ke.style.display="none",se.style.display="grid",Ae.forEach(b=>{b.style.display=""}),Se(N);let o=[];e.workspaceName&&o.push(e.workspaceName),e.modelName&&o.push(e.modelName),typeof e.turnCount=="number"&&e.turnCount>0&&o.push(`${e.turnCount} \u8F6E`);let a=e.live,g=!!a?.active,r=e.session||null,c=r&&["idle","running","waiting","error"].includes(r.state)?r.state:"idle",m=r&&typeof r.waitSec=="number"&&r.waitSec>=1?P(r.waitSec):"",d=e.config?.layout==="detailed"&&m!==""&&(c==="waiting"||c==="running"),p=!!r&&!(c==="idle"&&r?.code==="idle"),f=r?`<span class="state-chip is-${c}" title="${i(r.detail)}"><i class="state-dot"></i>${p?i(r.label):""}${d?` ${i(m)}`:""}</span>`:"",k=g?`<span class="pill live" title="\u6B63\u5728\u751F\u6210\uFF1A\u7B2C ${a?.stepIdx??"?"} \u6B65\uFF0C\u5DF2\u6D41\u5F0F\u8F93\u51FA ${a?.outputChars??"?"} \u5B57"><i class="live-pulse"></i>\u751F\u6210\u4E2D${typeof a?.elapsedSec=="number"?` \xB7 ${a.elapsedSec.toFixed(0)}s`:""}</span>`:"",H=f||k,C=typeof e.config?.lowSpeedWarnTokS=="number"?e.config.lowSpeedWarnTokS:50,w=s?`<span class="updated-tag" title="\u4E0A\u6B21\u5237\u65B0\u65F6\u95F4">${i(s)}</span>`:"",B=[e.shortId?`\u4F1A\u8BDD ${e.shortId}`:"",e.stepCount?`${e.stepCount} \u6B65`:""].filter(Boolean).join(" \xB7 ");Ce.innerHTML=`<div class="meta-main" title="${i(B)}">${H}<span class="meta-text">${i(o.join(" \xB7 ")||"\u6D3B\u8DC3\u4F1A\u8BDD")}</span></div>${w}`;let J=e.lastAvgSpeed!==null&&e.lastAvgSpeed!==void 0?`${e.lastAvgSpeed.toFixed(1)} tok/s`:"--",y=P(e.lastGenDurationSec),z=v(e.outputTokens),$e=`\u6700\u8FD1\u4E00\u6B21\u751F\u6210\uFF1A\u8F93\u51FA ${T(e.outputTokens)}\uFF0C\u751F\u6210\u8017\u65F6 ${e.lastGenDurationSec!==null&&e.lastGenDurationSec!==void 0?`${e.lastGenDurationSec.toFixed(2)}s`:"--"}`,X=a?.estTokPerSec,M=a?.outputChars,be=typeof X=="number"?`\u2248 ${X.toFixed(1)} tok/s`:typeof M=="number"?`${M} \u5B57`:"\u751F\u6210\u4E2D\u2026",ye=[typeof M=="number"?`${M} \u5B57`:"",typeof a?.charsPerSec=="number"?`${a.charsPerSec.toFixed(0)} \u5B57/s`:"",typeof a?.elapsedSec=="number"?`${a.elapsedSec.toFixed(1)}s`:""].filter(Boolean),xe=`\u751F\u6210\u4E2D\u5B9E\u65F6\u4F30\u7B97\uFF1A\u6D41\u5F0F\u6587\u672C ${M??"?"} \u5B57 \xB7 ${a?.charsPerSec!==null&&a?.charsPerSec!==void 0?`${a.charsPerSec.toFixed(1)} \u5B57/s`:"\u901F\u7387\u5F85\u6D4B"}
+\u6309 ${a?.charsPerToken??"--"} \u5B57/token \u6362\u7B97\u4E3A tok/s\uFF1B\u7CBE\u786E token \u6570\u5728\u6574\u6B65\u5B8C\u6210\u540E\u843D\u5E93`,Te=g?`<div class="card live" title="${i(xe)}">
       <div class="card-label">
         <span><i class="live-pulse"></i>\u5B9E\u65F6\u901F\u5EA6</span>
       </div>
-      <div class="card-value">${l(nt)}</div>
-      <div class="card-sub">${l(st.join(" \xB7 ")||"\u6B63\u5728\u63A5\u6536\u8F93\u51FA\u2026")}</div>
-    </div>`:`<div class="card ${t.lowSpeedWarning?"warn":""}" title="${l(et)}">
+      <div class="card-value">${i(be)}</div>
+      <div class="card-sub">${i(ye.join(" \xB7 ")||"\u6B63\u5728\u63A5\u6536\u8F93\u51FA\u2026")}</div>
+    </div>`:`<div class="card ${e.lowSpeedWarning?"warn":""}" title="${i($e)}">
       <div class="card-label">
         <span>\u8F93\u51FA\u901F\u5EA6</span>
-        ${t.lowSpeedWarning?"<span>\u504F\u6162</span>":""}
+        ${e.lowSpeedWarning?"<span>\u504F\u6162</span>":""}
       </div>
-      <div class="card-value">${l(O)}</div>
-      <div class="card-sub">${l(G)} \xB7 ${l(x)}</div>
-    </div>`,V=N(t.turnDurationSec),Y=N(t.sessionDurationSec),o=`\u5F53\u524D\u8F6E\u6B21\u8017\u65F6 ${V} \xB7 \u4F1A\u8BDD\u7D2F\u8BA1\u8017\u65F6 ${Y}\uFF08\u5171 ${t.turnCount??0} \u8F6E / ${t.stepCount??0} \u6B65\uFF09`,f=v(t.contextUsed),$=v(t.contextTotal),C=t.contextUsed!==null&&t.contextUsed!==void 0?`${f}/${$}`:"--",D=t.contextPct??0,Ut=`\u5DF2\u7528\u4E0A\u4E0B\u6587: ${T(t.contextUsed)} / \u5BB9\u91CF: ${T(t.contextTotal)} (${D.toFixed(2)}%)${m?`
-\u751F\u6210\u4E2D\uFF1A\u4E0A\u4E0B\u6587\u5360\u7528\u662F prompt \u4FA7\u5B9E\u6D4B\u503C\uFF0C\u6BCF\u6B65\u5B8C\u6210\u540E\u5237\u65B0`:""}`,Ft=t.cacheHitPct!==null&&t.cacheHitPct!==void 0?`${t.cacheHitPct.toFixed(1)}%`:"--",Rt=t.cacheReadTokens!==null&&t.cacheReadTokens!==void 0?`\u8BFB ${v(t.cacheReadTokens)} \xB7 \u5165 ${v(t.inputTokens)}`:"--",_t=`\u7F13\u5B58\u8BFB\u53D6: ${T(t.cacheReadTokens)} \xB7 \u672A\u7F13\u5B58\u8F93\u5165: ${T(t.inputTokens)} \xB7 \u7F13\u5B58\u5199\u5165: ${T(t.cacheWriteTokens)}`;bt.innerHTML=`
-    ${at}
+      <div class="card-value">${i(J)}</div>
+      <div class="card-sub">${i(z)} \xB7 ${i(y)}</div>
+    </div>`,Z=P(e.turnDurationSec),ee=P(e.sessionDurationSec),l=`\u5F53\u524D\u8F6E\u6B21\u8017\u65F6 ${Z} \xB7 \u4F1A\u8BDD\u7D2F\u8BA1\u8017\u65F6 ${ee}\uFF08\u5171 ${e.turnCount??0} \u8F6E / ${e.stepCount??0} \u6B65\uFF09`,h=v(e.contextUsed),S=v(e.contextTotal),A=e.contextUsed!==null&&e.contextUsed!==void 0?`${h}/${S}`:"--",D=e.contextPct??0,at=`\u5DF2\u7528\u4E0A\u4E0B\u6587: ${T(e.contextUsed)} / \u5BB9\u91CF: ${T(e.contextTotal)} (${D.toFixed(2)}%)${g?`
+\u751F\u6210\u4E2D\uFF1A\u4E0A\u4E0B\u6587\u5360\u7528\u662F prompt \u4FA7\u5B9E\u6D4B\u503C\uFF0C\u6BCF\u6B65\u5B8C\u6210\u540E\u5237\u65B0`:""}`,lt=e.cacheHitPct!==null&&e.cacheHitPct!==void 0?`${e.cacheHitPct.toFixed(1)}%`:"--",it=e.cacheReadTokens!==null&&e.cacheReadTokens!==void 0?`\u8BFB ${v(e.cacheReadTokens)} \xB7 \u5165 ${v(e.inputTokens)}`:"--",ct=`\u7F13\u5B58\u8BFB\u53D6: ${T(e.cacheReadTokens)} \xB7 \u672A\u7F13\u5B58\u8F93\u5165: ${T(e.inputTokens)} \xB7 \u7F13\u5B58\u5199\u5165: ${T(e.cacheWriteTokens)}`;We.innerHTML=`
+    ${Te}
 
-    <div class="card" title="${l(Ut)}">
+    <div class="card" title="${i(at)}">
       <div class="card-label">
         <span>\u4E0A\u4E0B\u6587</span>
-        <span>${t.contextPct!==null&&t.contextPct!==void 0?`${t.contextPct.toFixed(1)}%`:""}</span>
+        <span>${e.contextPct!==null&&e.contextPct!==void 0?`${e.contextPct.toFixed(1)}%`:""}</span>
       </div>
-      <div class="card-value">${l(C)}</div>
+      <div class="card-value">${i(A)}</div>
       <div class="bar-track">
         <div class="bar-fill ${D>=80?"high":""}" style="width: ${Math.min(100,Math.max(0,D))}%"></div>
       </div>
     </div>
 
-    <div class="card" title="${l(_t)}">
+    <div class="card" title="${i(ct)}">
       <div class="card-label">
         <span>\u7F13\u5B58\u547D\u4E2D</span>
       </div>
-      <div class="card-value">${l(Ft)}</div>
-      <div class="card-sub">${l(Rt)}</div>
+      <div class="card-value">${i(lt)}</div>
+      <div class="card-sub">${i(it)}</div>
     </div>
 
-    <div class="card" title="${l(o)}">
+    <div class="card" title="${i(l)}">
       <div class="card-label">
         <span>\u8F6E\u6B21\u8017\u65F6</span>
       </div>
-      <div class="card-value">${l(V)}</div>
-      <div class="card-sub">\u7D2F\u8BA1 ${l(Y)}</div>
+      <div class="card-value">${i(Z)}</div>
+      <div class="card-sub">\u7D2F\u8BA1 ${i(ee)}</div>
     </div>
-  `;let M=(t.history||[]).filter(S=>S.speedTokS!==null||S.outputTokens!==null);if(K=M,Pt=t.modelName||"",Mt(t.quota),M.length>0){it.style.display="flex";let S=M.map(d=>d.speedTokS).filter(d=>d!=null),Wt=S.length>0?`${(S.reduce((d,R)=>d+R,0)/S.length).toFixed(1)} tok/s`:"--";Jt.textContent=`\u6700\u8FD1 ${M.length} \u6B21 \xB7 \u5747\u503C ${Wt}`;let ht=[...M].reverse(),jt=Math.max(80,...ht.map(d=>d.speedTokS??0));J.innerHTML=ht.map(d=>{let R=d.speedTokS??0,Gt=Math.max(12,Math.round(R/jt*100)),Qt=d.speedTokS!==null&&d.speedTokS<A?"warn":"",Vt=`#${d.idx} \xB7 ${d.speedTokS!==null?`${d.speedTokS.toFixed(1)} tok/s`:"--"} \xB7 \u8F93\u51FA ${T(d.outputTokens)} \xB7 \u8017\u65F6 ${N(d.durationSec)}`;return`
-          <div class="spark-col" data-idx="${d.idx}" title="${l(Vt)}">
-            <div class="spark-bar ${Qt}" style="height:${Gt}%"></div>
+  `;let L=(e.history||[]).filter(b=>b.speedTokS!==null||b.outputTokens!==null);if(oe=L,tt=e.modelName||"",Ye(e.quota),L.length>0){Ee.style.display="flex";let b=L.map(u=>u.speedTokS).filter(u=>u!=null),rt=b.length>0?`${(b.reduce((u,_)=>u+_,0)/b.length).toFixed(1)} tok/s`:"--";St.textContent=`\u6700\u8FD1 ${L.length} \u6B21 \xB7 \u5747\u503C ${rt}`;let Ue=[...L].reverse(),dt=Math.max(80,...Ue.map(u=>u.speedTokS??0));pe.innerHTML=Ue.map(u=>{let _=u.speedTokS??0,mt=Math.max(12,Math.round(_/dt*100)),gt=u.speedTokS!==null&&u.speedTokS<C?"warn":"",ft=`#${u.idx} \xB7 ${u.speedTokS!==null?`${u.speedTokS.toFixed(1)} tok/s`:"--"} \xB7 \u8F93\u51FA ${T(u.outputTokens)} \xB7 \u8017\u65F6 ${P(u.durationSec)}`;return`
+          <div class="spark-col" data-idx="${u.idx}" title="${i(ft)}">
+            <div class="spark-bar ${gt}" style="height:${mt}%"></div>
           </div>
-        `}).join(""),X.innerHTML=M.slice(0,6).map(d=>{let R=d.speedTokS!==null&&d.speedTokS<A;return`
-          <div class="history-row" data-idx="${d.idx}">
-            <span class="muted">#${d.idx}</span>
-            <span class="muted">${l(d.model||t.modelName||"")}</span>
-            <span class="speed-badge ${R?"warn":""}">${d.speedTokS!==null?`${d.speedTokS.toFixed(1)} tok/s`:"--"}</span>
-            <span class="muted">${v(d.outputTokens)} / ${N(d.durationSec)}</span>
+        `}).join(""),he.innerHTML=L.slice(0,6).map(u=>{let _=u.speedTokS!==null&&u.speedTokS<C;return`
+          <div class="history-row" data-idx="${u.idx}">
+            <span class="muted">#${u.idx}</span>
+            <span class="muted">${i(u.model||e.modelName||"")}</span>
+            <span class="speed-badge ${_?"warn":""}">${u.speedTokS!==null?`${u.speedTokS.toFixed(1)} tok/s`:"--"}</span>
+            <span class="muted">${v(u.outputTokens)} / ${P(u.durationSec)}</span>
           </div>
-        `}).join("");let Ot=_!==null&&M.some(d=>d.idx===_)?_:M[0].idx;j(Ot)}else it.style.display="none"}J.addEventListener("mouseover",t=>{let e=t.target.closest(".spark-col");e&&e.dataset.idx&&j(Number(e.dataset.idx))});J.addEventListener("click",t=>{let e=t.target.closest(".spark-col");e&&e.dataset.idx&&j(Number(e.dataset.idx))});X.addEventListener("mouseover",t=>{let e=t.target.closest(".history-row");e&&e.dataset.idx&&j(Number(e.dataset.idx))});X.addEventListener("click",t=>{let e=t.target.closest(".history-row");e&&e.dataset.idx&&j(Number(e.dataset.idx))});function Bt(t){let e=Nt.find(i=>i.request===t);if(!e)return;k.dataset.activeReq=String(t);let n=document.getElementById("context-detail");if(n){let i=e.at?new Date(e.at).toLocaleTimeString():"",s=e.model||"",a=e.compaction?"\u5DF2\u538B\u7F29":e.contextUsed!==null?T(e.contextUsed):"--";n.innerHTML=`<span><strong>#${e.request}</strong>${s?`<span class="muted"> \xB7 ${l(s)}</span>`:""}</span>
-      <span><span class="tag ${e.compaction?"warn":""}">${l(a)}</span>${i?`<span class="muted"> \xB7 ${l(i)}</span>`:""}</span>`}k.querySelectorAll(".ctx-guide").forEach(i=>{i.classList.toggle("active",Number(i.dataset.req)===t)}),k.querySelectorAll(".ctx-dot").forEach(i=>{let s=Number(i.dataset.req)===t;i.classList.toggle("active",s),i.setAttribute("r",s?"3.5":"2")})}k.addEventListener("mouseover",t=>{let e=t.target.closest(".ctx-hit");e&&e.dataset.req&&Bt(Number(e.dataset.req))});k.addEventListener("click",t=>{let e=t.target.closest(".ctx-hit");e&&e.dataset.req&&Bt(Number(e.dataset.req))});function Ht(){let t=document.createElement("span");t.style.cssText="position:absolute;visibility:hidden;color:var(--background, #f7f7f8)",document.documentElement.appendChild(t);let e=getComputedStyle(t).color;t.remove();let n=(e.match(/[\d.]+/g)||[]).map(Number);if(n.length<3)return;let i=e.startsWith("color(")?1:255,[s,a,m]=n.slice(0,3).map(g=>g/i),c=.2126*s+.7152*a+.0722*m<.5?"dark":"light";document.documentElement.dataset.theme!==c&&(document.documentElement.dataset.theme=c)}function pe(t){let e=document.documentElement,n=t||{},i=n.layout==="detailed"?"detailed":"compact";e.dataset.layout!==i&&(e.dataset.layout=i);let s=n.modules||{};for(let m of["session","quota","history","models","context"])e.classList.toggle(`hide-${m}`,s[m]===!1);s.quota===!1&&P==="quota"&&tt("trends");let a=typeof n.pollSec=="number"?Math.round(n.pollSec):0;if(a!==ct){let m=ct;ct=a;let r=null;try{r=window.localStorage?.getItem(vt)??null}catch{r=null}if(r===null)if(a>0){let c=Math.min(60,Math.max(1,a));if($t.add(c),!Array.from(h.options).some(u=>Number(u.value)===c)){let u=document.createElement("option");u.value=String(c),u.textContent=`${c}s`,h.insertBefore(u,h.lastElementChild)}y=c,h.value=String(c),h.classList.add("active"),F()}else m!==null&&m>0&&(y=3,h.value="3",h.classList.add("active"),F())}}function fe(t){let e=document.getElementById("state-note");if(!e)return;let n=t.session;if(!(t.config?.layout==="detailed")||!n||n.state==="idle"){e.hidden=!0,e.textContent="";return}e.hidden=!1,e.className=`state-note is-${n.state}`,e.textContent=n.detail}function ve(t){let e=document.getElementById("sources-note");if(!e)return;let n=t.sources,i=(n?.notes||[]).filter(r=>r&&typeof r.text=="string");if(!n?.degraded||i.length===0){e.hidden=!0,e.textContent="",e.removeAttribute("title");return}let a=`\u6570\u636E\u4E0D\u5B8C\u6574 \xB7 ${i.map(r=>r.label||"\u6570\u636E\u4E0D\u53EF\u7528").join(" / ")}`,m=t.config?.layout==="detailed";e.hidden=!1,e.textContent=m?`${a}\uFF1A${i[0].text}`:a,e.title=i.map(r=>r.text).join(`
-`)}async function $e(t){let e=window.sidecar?.fetch?window.sidecar.fetch.bind(window.sidecar):fetch,n=t?`?conversationId=${encodeURIComponent(t)}`:"",i=await e(`/api/status${n}`,{method:"GET"});return i.ok?await i.json():null}function At(){if(pt+=1,gt===0||pt<2)return;let t=Date.now()-gt,e=Math.max(6e3,3*Math.max(1,y)*1e3);t<e||(ut.innerHTML=`<div class="meta-main"><span class="state-chip is-error is-offline" title="\u4FA7\u8F66\u540E\u53F0\u5DF2\u7ECF ${Math.round(t/1e3)}s \u6CA1\u6709\u54CD\u5E94\uFF0C\u5C4F\u5E55\u4E0A\u7684\u6570\u5B57\u662F\u6700\u540E\u4E00\u6B21\u6210\u529F\u8BFB\u53D6\u7684\u503C"><i class="state-dot"></i>\u540E\u53F0\u65E0\u54CD\u5E94 \xB7 ${l(N(t/1e3))}</span></div>`)}async function W(){if(!rt){rt=!0;try{let t=U&&U!=="auto"?U:qt()||"auto",e=await $e(t);e?(Z=e,gt=Date.now(),pt=0,ge(e),pe(e.config),fe(e),ve(e)):At()}catch{At()}finally{rt=!1}}}function he(){let t=Z?.lastActivityAt;if(!t)return Number.POSITIVE_INFINITY;let e=Date.parse(t);return Number.isNaN(e)?Number.POSITIVE_INFINITY:Math.max(0,Date.now()-e)}function Se(){if(y<=0||document.hidden)return 0;let t=y*1e3;return Z?.live?.active?Math.min(t,zt):he()/1e3<Kt?t:Math.max(t,Yt)}function F(){I!==null&&(window.clearTimeout(I),I=null);let t=Se();t<=0||(I=window.setTimeout(()=>{I=null,W().then(()=>{F()})},t))}B.addEventListener("change",()=>{U=B.value,_=null,W()});h.addEventListener("change",()=>{let t=Number.parseInt(h.value,10);y=$t.has(t)?t:3,h.value=String(y),h.classList.toggle("active",y>0),ee(y),y>0&&W(),F()});z.addEventListener("click",t=>{let e=t.target.closest(".tab-btn");e&&e.dataset.tab&&tt(e.dataset.tab)});async function be(){tt(P),Ht(),new MutationObserver(()=>{Ht()}).observe(document.documentElement,{attributes:!0,attributeFilter:["style"]}),document.addEventListener("visibilitychange",()=>{if(document.hidden){I!==null&&(window.clearTimeout(I),I=null);return}W().then(()=>{F()})}),await W(),F()}be();})();
+        `}).join("");let ut=V!==null&&L.some(u=>u.idx===V)?V:L[0].idx;K(ut)}else Ee.style.display="none"}pe.addEventListener("mouseover",e=>{let t=e.target.closest(".spark-col");t&&t.dataset.idx&&K(Number(t.dataset.idx))});pe.addEventListener("click",e=>{let t=e.target.closest(".spark-col");t&&t.dataset.idx&&K(Number(t.dataset.idx))});he.addEventListener("mouseover",e=>{let t=e.target.closest(".history-row");t&&t.dataset.idx&&K(Number(t.dataset.idx))});he.addEventListener("click",e=>{let t=e.target.closest(".history-row");t&&t.dataset.idx&&K(Number(t.dataset.idx))});function ot(e){let t=et.find(s=>s.request===e);if(!t)return;E.dataset.activeReq=String(e);let n=document.getElementById("context-detail");if(n){let s=t.at?new Date(t.at).toLocaleTimeString():"",o=t.model||"",a=t.compaction?"\u5DF2\u538B\u7F29":t.contextUsed!==null?T(t.contextUsed):"--";n.innerHTML=`<span><strong>#${t.request}</strong>${o?`<span class="muted"> \xB7 ${i(o)}</span>`:""}</span>
+      <span><span class="tag ${t.compaction?"warn":""}">${i(a)}</span>${s?`<span class="muted"> \xB7 ${i(s)}</span>`:""}</span>`}E.querySelectorAll(".ctx-guide").forEach(s=>{s.classList.toggle("active",Number(s.dataset.req)===e)}),E.querySelectorAll(".ctx-dot").forEach(s=>{let o=Number(s.dataset.req)===e;s.classList.toggle("active",o),s.setAttribute("r",o?"3.5":"2")})}E.addEventListener("mouseover",e=>{let t=e.target.closest(".ctx-hit");t&&t.dataset.req&&ot(Number(t.dataset.req))});E.addEventListener("click",e=>{let t=e.target.closest(".ctx-hit");t&&t.dataset.req&&ot(Number(t.dataset.req))});function Je(){let e=document.createElement("span");e.style.cssText="position:absolute;visibility:hidden;color:var(--background, #f7f7f8)",document.documentElement.appendChild(e);let t=getComputedStyle(e).color;e.remove();let n=(t.match(/[\d.]+/g)||[]).map(Number);if(n.length<3)return;let s=t.startsWith("color(")?1:255,[o,a,g]=n.slice(0,3).map(m=>m/s),c=.2126*o+.7152*a+.0722*g<.5?"dark":"light";document.documentElement.dataset.theme!==c&&(document.documentElement.dataset.theme=c)}function st(e){let t=document.documentElement,n=e||{},s=n.layout==="detailed"?"detailed":"compact";t.dataset.layout!==s&&(t.dataset.layout=s);let o=n.modules||{};for(let c of["session","quota","history","models","context"])t.classList.toggle(`hide-${c}`,o[c]===!1);o.quota===!1&&N==="quota"&&Se("trends");let a=n.notch,g=a?.supported===!0;if(t.classList.toggle("hide-notch",!g),!ne){if(ae&&(ae.value=s),F){let c=String(typeof n.pollSec=="number"?Math.round(n.pollSec):0);if(!Array.from(F.options).some(m=>m.value===c)){let m=document.createElement("option");m.value=c,m.textContent=`${c}s`,F.appendChild(m)}F.value=c}le&&(le.checked=o.session!==!1),ie&&(ie.checked=o.history!==!1),ce&&(ce.checked=o.context!==!1),re&&(re.checked=o.models!==!1),de&&(de.checked=o.quota!==!1),j&&document.activeElement!==j&&typeof n.lowSpeedWarnTokS=="number"&&(j.value=String(Math.round(n.lowSpeedWarnTokS))),G&&document.activeElement!==G&&typeof n.waitSec=="number"&&(G.value=String(Math.round(n.waitSec))),O&&document.activeElement!==O&&typeof n.stallSec=="number"&&(O.value=String(Math.round(n.stallSec))),Q&&document.activeElement!==Q&&typeof n.toolGraceSec=="number"&&(Q.value=String(Math.round(n.toolGraceSec))),a&&(ue&&typeof a.enabled=="boolean"&&(ue.checked=a.enabled),me&&typeof a.hideWhenIdle=="boolean"&&(me.checked=a.hideWhenIdle),ge&&typeof a.screenMode=="string"&&(ge.value=a.screenMode),fe&&typeof a.avoidanceMode=="string"&&(fe.value=a.avoidanceMode))}let r=typeof n.pollSec=="number"?Math.round(n.pollSec):0;if(r!==Ie){let c=Ie;Ie=r;let m=null;try{m=window.localStorage?.getItem(Be)??null}catch{m=null}if(m===null)if(r>0){let d=Math.min(60,Math.max(1,r));if(qe.add(d),!Array.from($.options).some(f=>Number(f.value)===d)){let f=document.createElement("option");f.value=String(d),f.textContent=`${d}s`,$.insertBefore(f,$.lastElementChild)}x=d,$.value=String(d),$.classList.add("active"),R()}else c!==null&&c>0&&(x=3,$.value="3",$.classList.add("active"),R())}}function Nt(e){let t=document.getElementById("state-note");if(!t)return;let n=e.session;if(!(e.config?.layout==="detailed")||!n||n.state==="idle"){t.hidden=!0,t.textContent="";return}t.hidden=!1,t.className=`state-note is-${n.state}`,t.textContent=n.detail}function Bt(e){let t=document.getElementById("sources-note");if(!t)return;let n=e.sources,s=(n?.notes||[]).filter(r=>r&&typeof r.text=="string");if(!n?.degraded||s.length===0){t.hidden=!0,t.textContent="",t.removeAttribute("title");return}let a=`\u6570\u636E\u4E0D\u5B8C\u6574 \xB7 ${s.map(r=>r.label||"\u6570\u636E\u4E0D\u53EF\u7528").join(" / ")}`,g=e.config?.layout==="detailed";t.hidden=!1,t.textContent=g?`${a}\uFF1A${s[0].text}`:a,t.title=s.map(r=>r.text).join(`
+`)}async function qt(e){let t=window.sidecar?.fetch?window.sidecar.fetch.bind(window.sidecar):fetch,n=e?`?conversationId=${encodeURIComponent(e)}`:"",s=await t(`/api/status${n}`,{method:"GET"});return s.ok?await s.json():null}function ze(){if(Pe+=1,De===0||Pe<2)return;let e=Date.now()-De,t=Math.max(6e3,3*Math.max(1,x)*1e3);e<t||(Ce.innerHTML=`<div class="meta-main"><span class="state-chip is-error is-offline" title="\u4FA7\u8F66\u540E\u53F0\u5DF2\u7ECF ${Math.round(e/1e3)}s \u6CA1\u6709\u54CD\u5E94\uFF0C\u5C4F\u5E55\u4E0A\u7684\u6570\u5B57\u662F\u6700\u540E\u4E00\u6B21\u6210\u529F\u8BFB\u53D6\u7684\u503C"><i class="state-dot"></i>\u540E\u53F0\u65E0\u54CD\u5E94 \xB7 ${i(P(e/1e3))}</span></div>`)}async function Y(){if(!Le){Le=!0;try{let e=W&&W!=="auto"?W:nt()||"auto",t=await qt(e);t?(ve=t,De=Date.now(),Pe=0,Pt(t),st(t.config),Nt(t),Bt(t)):ze()}catch{ze()}finally{Le=!1}}}function Ut(){let e=ve?.lastActivityAt;if(!e)return Number.POSITIVE_INFINITY;let t=Date.parse(e);return Number.isNaN(t)?Number.POSITIVE_INFINITY:Math.max(0,Date.now()-t)}function Ft(){if(x<=0||document.hidden)return 0;let e=x*1e3;return ve?.live?.active?Math.min(e,vt):Ut()/1e3<ht?e:Math.max(e,pt)}function R(){I!==null&&(window.clearTimeout(I),I=null);let e=Ft();e<=0||(I=window.setTimeout(()=>{I=null,Y().then(()=>{R()})},e))}U.addEventListener("change",()=>{W=U.value,V=null,Y()});$.addEventListener("change",()=>{let e=Number.parseInt($.value,10);x=qe.has(e)?e:3,$.value=String(x),$.classList.toggle("active",x>0),xt(x),x>0&&Y(),R()});se.addEventListener("click",e=>{let t=e.target.closest(".tab-btn");t&&t.dataset.tab&&Se(t.dataset.tab)});function te(e,t,n,s){let o=e?Number(e.value):s;return Number.isFinite(o)?Math.min(n,Math.max(t,Math.round(o))):s}function Wt(e){return we+=1,ne=!0,Me=Me.then(async()=>{let t;q&&(q.textContent="\u4FDD\u5B58\u4E2D\u2026");try{let s=await(window.sidecar?.fetch?window.sidecar.fetch.bind(window.sidecar):fetch)("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e)});if(!s.ok)throw new Error("save failed");t=await s.json(),q&&(q.textContent="\u5DF2\u4FDD\u5B58")}catch{q&&(q.textContent="\u4FDD\u5B58\u5931\u8D25")}finally{we-=1,ne=we>0,!ne&&t&&st(t)}}),Me}var Rt=[[ae,()=>({layout:ae?.value})],[F,()=>({pollSec:Number(F?.value)})],[j,()=>({lowSpeedWarnTokS:te(j,1,1e4,50)})],[G,()=>({thresholds:{waitSec:te(G,1,3600,20)}})],[O,()=>({thresholds:{stallSec:te(O,1,3600,25)}})],[Q,()=>({thresholds:{toolGraceSec:te(Q,1,3600,120)}})],[le,()=>({modules:{session:le?.checked}})],[ie,()=>({modules:{history:ie?.checked}})],[ce,()=>({modules:{context:ce?.checked}})],[re,()=>({modules:{models:re?.checked}})],[de,()=>({modules:{quota:de?.checked}})],[ue,()=>({notch:{enabled:ue?.checked}})],[me,()=>({notch:{hideWhenIdle:me?.checked}})],[ge,()=>({notch:{screenMode:ge?.value}})],[fe,()=>({notch:{avoidanceMode:fe?.value}})]];for(let[e,t]of Rt)e?.addEventListener("change",()=>{Wt(t())});async function _t(){Se(N),Je(),new MutationObserver(()=>{Je()}).observe(document.documentElement,{attributes:!0,attributeFilter:["style"]}),document.addEventListener("visibilitychange",()=>{if(document.hidden){I!==null&&(window.clearTimeout(I),I=null);return}Y().then(()=>{R()})}),await Y(),R()}_t();})();
 </script>
 </body>
 </html>

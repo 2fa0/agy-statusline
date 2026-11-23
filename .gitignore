@@ -17,3 +17,5 @@ desktop-panel/bin/
 
 # Generated from the repository root VERSION file; never edit by hand.
 /desktop-panel/VERSION
+
+desktop-panel/sidecars/status/agy-notch
