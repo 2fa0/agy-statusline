@@ -159,18 +159,21 @@ MainActor.assumeIsolated {
 
     // One primary + eight probes must count all nine tasks, while rendering four.
     let multiRequestLog = tmp.appendingPathComponent("multi-requests.jsonl")
-    let multiRecent: [[String: String]] = (0..<9).map {
-        ["conversationId": "candidate-\($0)", "lastEvent": "PreInvocation"]
+    let multiRecent: [[String: Any]] = (0..<9).map {
+        ["conversationId": "candidate-\($0)", "lastEvent": "PreInvocation", "terminalEnv": ["TERM_PROGRAM": "iTerm.app"]]
     }
     let multiPath = try! mockBackend(at: tmp, snapshot: [
         "found": true, "conversationId": "primary",
         "session": ["state": "running", "label": "生成中", "code": "streaming"],
+        "terminalEnv": ["TERM_PROGRAM": "ghostty"],
         "recentConversations": multiRecent
     ], requestLog: multiRequestLog)
     let multiClient = BackendLinesClient(backendPath: multiPath, dataDir: tmp.path)
     let multi = NotchStore.fetchSnapshot(client: multiClient, backendPath: multiPath, previouslyActiveIds: [])!
     assert(multi.activeCount == 9 && multi.activeCountTruncated)
     assert(multi.activeTasks.count == 4 && multi.recentTasks.count == 4)
+    assert(multi.activeTasks[0].terminalEnvironment["TERM_PROGRAM"] == "ghostty")
+    assert(multi.activeTasks[1].terminalEnvironment["TERM_PROGRAM"] == "iTerm.app")
     let multiRequests = try! String(contentsOf: multiRequestLog, encoding: .utf8).split(separator: "\n")
     assert(multiRequests.count == 9)
     for (index, line) in multiRequests.enumerated() {
@@ -296,7 +299,26 @@ MainActor.assumeIsolated {
     assert(ghostty.bundleId == "com.mitchellh.ghostty" && ghostty.appName == "Ghostty")
     let iterm = NotchStore.resolveCliTerminalTarget(env: ["TERM_PROGRAM": "iTerm.app"])
     assert(iterm.bundleId == "com.googlecode.iterm2" && iterm.appName == "iTerm2")
+    let integrated = NotchStore.resolveCliTerminalTarget(env: ["TERM_PROGRAM": "vscode", "__CFBundleIdentifier": "com.apple.Terminal"])
+    assert(integrated.bundleId == "com.microsoft.VSCode")
     let unknown = NotchStore.resolveCliTerminalTarget(env: [:])
     assert(unknown.bundleId == nil && unknown.appName == nil)
+    assert(NotchPaths.dataRoot(for: "/tmp/custom-cli/plugin_data/agy-desktop-status") == "/tmp/custom-cli")
+    assert(NotchPaths.dataRoot(for: "/tmp/arbitrary-data") == nil)
+    let cliStore = NotchStore(backendPath: "/nonexistent", dataDir: "/tmp/custom-cli/plugin_data/agy-desktop-status", demoMode: true, isCLI: true)
+    assert(cliStore.isCLI)
+    var firstTerminalTask = runningTask
+    firstTerminalTask.terminalEnvironment = ["TERM_PROGRAM": "ghostty"]
+    var secondTerminalTask = doneTask
+    secondTerminalTask.terminalEnvironment = ["TERM_PROGRAM": "iTerm.app"]
+    var terminals = NotchSnapshot()
+    terminals.activeTasks = [firstTerminalTask]
+    terminals.recentTasks = [firstTerminalTask, secondTerminalTask]
+    cliStore.applyFetchedSnapshot(terminals)
+    cliStore.selectTask(firstTerminalTask)
+    assert(NotchStore.resolveCliTerminalTarget(env: cliStore.displayedTask!.terminalEnvironment).appName == "Ghostty")
+    cliStore.selectTask(secondTerminalTask)
+    assert(NotchStore.resolveCliTerminalTarget(env: cliStore.displayedTask!.terminalEnvironment).appName == "iTerm2")
+    cliStore.shutdown()
     print("macOS notch regressions passed")
 }

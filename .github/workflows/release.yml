@@ -122,6 +122,9 @@ jobs:
           ./desktop-panel/macos-notch/build.sh
           ./desktop-panel/macos-notch/test.sh
           codesign --verify --verbose desktop-panel/sidecars/status/agy-notch
+          cp agy-desktop-backend desktop-panel/sidecars/status/agy-desktop-backend
+          tar -czf agy-statusline-macos-arm64.tar.gz agy-statusline -C desktop-panel sidecars/status/agy-desktop-backend sidecars/status/agy-notch
+          AGY_DESKTOP_BACKEND="$PWD/agy-desktop-backend" AGY_STATUSLINE_BINARY="$PWD/agy-statusline" python3 -m unittest discover -s desktop-panel/tests -p test_native.py
       - uses: actions/upload-artifact@v4
         with:
           name: agy-notch-macos-arm64

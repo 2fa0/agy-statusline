@@ -35,7 +35,7 @@ usage() {
 默认同时安装 CLI 状态栏和 Desktop 右侧面板。
 
 选项:
-  --cli-only        只安装 CLI 状态栏
+  --cli-only        安装 CLI 状态栏（macOS 同时安装刘海支持）
   --panel-only      只安装 Desktop 面板插件
   --link            面板用软链接指向当前源码目录（仅本地源码安装时有效）
   --doctor          只打印安装状态诊断，不做任何修改
@@ -234,6 +234,14 @@ install_cli() { # <tmpdir>
     [[ -f "${src}" ]] || die "本地模式需要先运行 ./build.sh 生成 agy-statusline。"
     mkdir -p "${CLI_DIR}"
     install -m 755 "${src}" "${CLI_DIR}/agy-statusline"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      local sidecars="${LOCAL_ROOT}/desktop-panel/sidecars/status"
+      [[ -f "${sidecars}/agy-desktop-backend" && -f "${sidecars}/agy-notch" ]] ||
+        die "macOS CLI 刘海支持需要先运行 ./desktop-panel/build.sh。"
+      mkdir -p "${CLI_DIR}/sidecars/status"
+      install -m 755 "${sidecars}/agy-desktop-backend" "${CLI_DIR}/sidecars/status/agy-desktop-backend"
+      install -m 755 "${sidecars}/agy-notch" "${CLI_DIR}/sidecars/status/agy-notch"
+    fi
   else
     info "下载 agy-statusline-${PLATFORM}.tar.gz ..."
     fetch "$(release_base)/agy-statusline-${PLATFORM}.tar.gz" "${tmp}/cli.tar.gz"
@@ -241,9 +249,19 @@ install_cli() { # <tmpdir>
     mkdir -p "${CLI_DIR}"
     tar -xzf "${tmp}/cli.tar.gz" -C "${CLI_DIR}"
     chmod +x "${CLI_DIR}/agy-statusline"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      if [[ -f "${CLI_DIR}/sidecars/status/agy-desktop-backend" && -f "${CLI_DIR}/sidecars/status/agy-notch" ]]; then
+        chmod +x "${CLI_DIR}/sidecars/status/agy-desktop-backend" "${CLI_DIR}/sidecars/status/agy-notch"
+      else
+        warn "该发布包仅包含终端状态栏；CLI 刘海支持需要安装较新版本。"
+      fi
+    fi
   fi
   strip_quarantine "${CLI_DIR}" "CLI 安装目录" || die "无法清除 CLI 目录的 quarantine 标记。"
   probe_binary "${CLI_DIR}/agy-statusline" "${CLI_DIR}" "agy-statusline"
+  if [[ "$(uname -s)" == "Darwin" && -f "${CLI_DIR}/sidecars/status/agy-desktop-backend" ]]; then
+    probe_binary "${CLI_DIR}/sidecars/status/agy-desktop-backend" "${CLI_DIR}" "CLI 刘海后台"
+  fi
 }
 
 install_panel() { # <tmpdir>
@@ -493,6 +511,7 @@ uninstall() {
   else
     info "CLI 状态栏未安装"
   fi
+  rm -f "${CLI_DIR}/sidecars/status/agy-desktop-backend" "${CLI_DIR}/sidecars/status/agy-notch"
   info "如果 settings.json 里仍配置了 statusLine，请手动删除（或在 AGY 里运行 /statusline delete）。"
 }
 
@@ -597,6 +616,9 @@ fi
 if [[ "${WANT_CLI}" == "1" ]]; then
   info "CLI：在 ~/.gemini/antigravity-cli/settings.json 中加入"
   printf '\n    {\n      "statusLine": {\n        "type": "command",\n        "command": "%s",\n        "stack_with_default": true\n      }\n    }\n\n' "${CLI_DIR}/agy-statusline"
+  if [[ "$(uname -s)" == "Darwin" && -f "${CLI_DIR}/sidecars/status/agy-notch" ]]; then
+    info "CLI：下一次状态栏刷新会自动启动刘海；关闭 Desktop 不会关闭 CLI 刘海。"
+  fi
 fi
 if [[ "${WANT_PANEL}" == "1" ]]; then
   info "面板：重启 Antigravity Desktop，右上角辅助栏 + → AGY Status"

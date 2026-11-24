@@ -3,6 +3,8 @@ import json
 import os
 import socket
 import sqlite3
+import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -134,6 +136,61 @@ class NativeTests(unittest.TestCase):
         env.pop('PLUGIN_DATA', None)
         proc = subprocess.run([str(BINARY), 'status'], env=env, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(proc.stdout)['conversationId'], CID)
+
+    def test_data_directory_resolves_custom_cli_root_without_environment(self):
+        self.database().close()
+        (self.data / 'active_session.json').write_text(json.dumps({'activeConversationId': CID, 'sessions': {}}))
+        env = dict(self.env)
+        for key in ('AGY_DESKTOP_DATA_DIR', 'ANTIGRAVITY_EXECUTABLE_DATA_DIR'):
+            env.pop(key, None)
+        proc = subprocess.run([str(BINARY), 'status-brief', '--data-dir', str(self.data)],
+                              env=env, capture_output=True, text=True, check=True)
+        self.assertTrue(json.loads(proc.stdout)['found'])
+
+    def test_cli_status_preserves_per_session_terminal_identity(self):
+        other = '22222222-2222-2222-2222-222222222222'
+        for cid, terminal in ((CID, 'ghostty'), (other, 'iTerm.app')):
+            subprocess.run([str(BINARY), 'cli-status', '--desktop-root', str(self.root), '--conversation-id', cid],
+                           env=dict(self.env, TERM_PROGRAM=terminal), cwd=self.root, check=True)
+        state = json.loads((self.data / 'active_session.json').read_text())
+        self.assertEqual(state['clientKind'], 'cli')
+        self.assertEqual(state['sessions'][CID]['terminalEnv']['TERM_PROGRAM'], 'ghostty')
+        self.assertEqual(state['sessions'][other]['terminalEnv']['TERM_PROGRAM'], 'iTerm.app')
+        self.assertEqual(Path(state['sessions'][CID]['cwd']).resolve(), self.root.resolve())
+        snap = self.snapshot(CID)
+        self.assertEqual(snap['terminalEnv']['TERM_PROGRAM'], 'ghostty')
+        recent = {item['conversationId']: item for item in snap['recentConversations']}
+        self.assertEqual(recent[other]['terminalEnv']['TERM_PROGRAM'], 'iTerm.app')
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS CLI menu bar')
+    def test_cli_statusline_starts_notch_with_explicit_root_and_cli_mode(self):
+        cli_binary = os.environ.get('AGY_STATUSLINE_BINARY')
+        if not cli_binary:
+            self.skipTest('Set AGY_STATUSLINE_BINARY to exercise the CLI startup chain')
+        cli = self.root / 'custom-cli'
+        sidecars = cli / 'sidecars/status'
+        sidecars.mkdir(parents=True)
+        shutil.copy2(cli_binary, cli / 'agy-statusline')
+        shutil.copy2(BINARY, sidecars / 'agy-desktop-backend')
+        captured = self.root / 'notch-args'
+        notch = sidecars / 'agy-notch'
+        notch.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > ' + shlex.quote(str(captured)) + '\n')
+        notch.chmod(0o755)
+        env = dict(self.env, AGY_CLI_DIR=str(cli), TERM_PROGRAM='ghostty')
+        env.pop('AGY_NO_NOTCH', None)
+        result = subprocess.run([str(cli / 'agy-statusline')], input=json.dumps({'conversation_id': CID}),
+                                env=env, capture_output=True, text=True, check=True, timeout=3)
+        self.assertIn('Ctx:', result.stdout)
+        deadline = time.time() + 3
+        while not captured.exists() and time.time() < deadline:
+            time.sleep(.01)
+        self.assertTrue(captured.exists())
+        args = captured.read_text().splitlines()
+        self.assertIn('--cli', args)
+        self.assertEqual(args[args.index('--desktop-root') + 1], str(cli))
+        self.assertEqual(args[args.index('--data-dir') + 1], str(cli / 'plugin_data/agy-desktop-status'))
+        state = json.loads((cli / 'plugin_data/agy-desktop-status/active_session.json').read_text())
+        self.assertEqual(state['activeConversationId'], CID)
 
     def install_release_backend(self):
         source = (PANEL / 'install.sh').read_text()

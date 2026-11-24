@@ -15,6 +15,14 @@ fn config(a: A, root_override: ?[]const u8, data_override: ?[]const u8) !telemet
     const user_home = try c.home(a);
     var root = root_override orelse c.env(a, "AGY_DESKTOP_DATA_DIR") orelse "";
     if (root.len == 0) {
+        if (data_override) |data| {
+            const parent = std.fs.path.dirname(data) orelse "";
+            if (c.eq(std.fs.path.basename(data), "agy-desktop-status") and c.eq(std.fs.path.basename(parent), "plugin_data")) {
+                root = std.fs.path.dirname(parent) orelse "";
+            }
+        }
+    }
+    if (root.len == 0) {
         if (c.env(a, "ANTIGRAVITY_EXECUTABLE_DATA_DIR")) |raw| {
             var dir = raw;
             while (std.fs.path.dirname(dir)) |parent| {
@@ -46,6 +54,9 @@ fn updateHook(a: A, cfg: telemetry.Config, item: V) !void {
     const id = std.mem.trim(u8, c.str(c.get(item, "conversationId")), " \t\r\n");
     if (!c.validId(id)) return;
     const path = try c.join(a, &.{ cfg.data, "active_session.json" });
+    try std.fs.cwd().makePath(cfg.data);
+    const lock = try std.fs.cwd().createFile(try c.join(a, &.{ cfg.data, "active_session.lock" }), .{ .truncate = false, .lock = .exclusive, .lock_nonblocking = true });
+    defer lock.close();
     const old = c.readJson(a, path);
     var sessions = c.get(old, "sessions");
     if (sessions != .object) sessions = c.object(a);
@@ -54,7 +65,7 @@ fn updateHook(a: A, cfg: telemetry.Config, item: V) !void {
     const now = c.s(try c.iso(a, std.time.timestamp()));
     try c.put(a, &next, "conversationId", c.s(id));
     try c.put(a, &next, "updatedAt", now);
-    inline for (.{ "modelName", "transcriptPath", "workspacePaths", "cwd", "terminationReason" }) |key| {
+    inline for (.{ "modelName", "transcriptPath", "workspacePaths", "cwd", "terminationReason", "terminalEnv" }) |key| {
         var value = c.get(item, key);
         if (value == .null or (value == .string and value.string.len == 0) or (value == .array and value.array.items.len == 0)) value = c.get(prev, key);
         if (value == .null) value = if (c.eq(key, "workspacePaths")) c.arr(a) else c.s("");
@@ -86,6 +97,8 @@ fn updateHook(a: A, cfg: telemetry.Config, item: V) !void {
     try c.put(a, &state, "activeConversationId", c.s(id));
     try c.put(a, &state, "updatedAt", now);
     try c.put(a, &state, "sessions", sessions);
+    const client_kind = c.get(item, "clientKind");
+    try c.put(a, &state, "clientKind", if (client_kind == .string) client_kind else c.get(old, "clientKind"));
     var dest = try std.fs.cwd().atomicFile(path, .{ .make_path = true });
     defer dest.deinit();
     try dest.file.writeAll(try c.json(a, state));
@@ -213,7 +226,7 @@ fn saveSettings(a: A, cfg: telemetry.Config, body: []const u8) !V {
 
     const resolved = settings.fromJson(root);
     if (resolved.notch.enabled) {
-        ensureMacOsNotchRunning(a, cfg);
+        ensureMacOsNotchRunning(a, cfg, false);
     }
     return try settings.toValue(a, resolved);
 }
@@ -324,7 +337,7 @@ fn jsonLines(cfg: telemetry.Config) !void {
         try std.io.getStdOut().writeAll("\n");
     }
 }
-fn ensureMacOsNotchRunning(a: A, cfg: telemetry.Config) void {
+fn ensureMacOsNotchRunning(a: A, cfg: telemetry.Config, cli: bool) void {
     if (comptime builtin.os.tag != .macos) return;
     if (c.env(a, "AGY_NO_NOTCH") != null) return;
     const resolved = settings.fromJson(c.readJson(a, cfg.settings));
@@ -349,7 +362,11 @@ fn ensureMacOsNotchRunning(a: A, cfg: telemetry.Config) void {
         }
     }
 
-    var child = std.process.Child.init(&.{ notch_bin, "--backend", self_exe, "--data-dir", cfg.data }, a);
+    var args = std.ArrayList([]const u8).init(a);
+    args.appendSlice(&.{ notch_bin, "--backend", self_exe, "--data-dir", cfg.data, "--desktop-root", cfg.root }) catch return;
+    const tracked = c.readJson(a, c.join(a, &.{ cfg.data, "active_session.json" }) catch return);
+    if (cli or c.eq(c.str(c.get(tracked, "clientKind")), "cli")) args.append("--cli") catch return;
+    var child = std.process.Child.init(args.items, a);
     var env = std.process.getEnvMap(a) catch return;
     env.put("AGY_DESKTOP_DATA_DIR", cfg.root) catch return;
     child.env_map = &env;
@@ -372,7 +389,7 @@ pub fn main() !void {
             return;
         }
     }
-    var mode: enum { http, status, hook, lines, settings_patch } = .http;
+    var mode: enum { http, status, hook, lines, settings_patch, cli_status } = .http;
     var root: ?[]const u8 = null;
     var data: ?[]const u8 = null;
     var id: []const u8 = "auto";
@@ -381,6 +398,10 @@ pub fn main() !void {
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
+        if (c.eq(arg, "cli-status")) {
+            mode = .cli_status;
+            continue;
+        }
         if (c.eq(arg, "settings-patch")) {
             mode = .settings_patch;
             continue;
@@ -410,23 +431,38 @@ pub fn main() !void {
             if (mode == .http) mode = .status;
         } else if (c.eq(arg, "--port")) port = try std.fmt.parseInt(u16, args[i], 10) else return error.InvalidArguments;
     }
+    if (mode == .cli_status and root == null) root = c.env(a, "AGY_CLI_DIR") orelse try c.join(a, &.{ try c.home(a), ".gemini", "antigravity-cli" });
     const cfg = try config(a, root, data);
     switch (mode) {
+        .cli_status => {
+            if (!c.validId(id)) return;
+            var item = c.object(a);
+            try c.put(a, &item, "conversationId", c.s(id));
+            try c.put(a, &item, "clientKind", c.s("cli"));
+            try c.put(a, &item, "cwd", c.s(try std.process.getCwdAlloc(a)));
+            var terminal = c.object(a);
+            inline for (.{ "TERM_PROGRAM", "__CFBundleIdentifier" }) |key| {
+                if (c.env(a, key)) |value| try c.put(a, &terminal, key, c.s(value));
+            }
+            try c.put(a, &item, "terminalEnv", terminal);
+            updateHook(a, cfg, item) catch {};
+            ensureMacOsNotchRunning(a, cfg, true);
+        },
         .settings_patch => {
             const body = try std.io.getStdIn().reader().readAllAlloc(a, 16 * 1024);
             try std.io.getStdOut().writeAll(try c.json(a, try saveSettings(a, cfg, body)));
             try std.io.getStdOut().writeAll("\n");
         },
         .hook => {
-            ensureMacOsNotchRunning(a, cfg);
+            ensureMacOsNotchRunning(a, cfg, false);
             try hook(a, cfg);
         },
         .http => {
-            ensureMacOsNotchRunning(a, cfg);
+            ensureMacOsNotchRunning(a, cfg, false);
             try serve(a, cfg, port);
         },
         .lines => {
-            ensureMacOsNotchRunning(a, cfg);
+            ensureMacOsNotchRunning(a, cfg, false);
             try jsonLines(cfg);
         },
         .status => {

@@ -507,6 +507,7 @@ pub fn main() !void {
     }
     const input = std.io.getStdIn().reader().readAllAlloc(a, 1024 * 1024) catch "";
     const state = std.json.parseFromSlice(State, a, input, .{ .ignore_unknown_fields = true }) catch null;
+    if (state) |s| startCliNotch(a, s.value.conversation_id);
     const cw = if (state) |s| s.value.context_window else ContextWindow{};
     const speed = if (state) |s| lastSpeed(a, s.value.conversation_id) else null;
     const quota = if (state) |s| summarizeQuota(s.value.quota) else QuotaSummary{};
@@ -527,6 +528,22 @@ pub fn main() !void {
     } else {
         try writePaddedLine(writer, metrics, width);
     }
+}
+
+fn startCliNotch(a: Allocator, id: []const u8) void {
+    if (comptime builtin.os.tag != .macos) return;
+    const common = @import("desktop-panel/native/common.zig");
+    if (!common.validId(id) or common.env(a, "AGY_NO_NOTCH") != null) return;
+    const exe = std.fs.selfExePathAlloc(a) catch return;
+    const root = common.env(a, "AGY_CLI_DIR") orelse (std.fs.path.dirname(exe) orelse return);
+    const backend = common.join(a, &.{ root, "sidecars", "status", "agy-desktop-backend" }) catch return;
+    std.fs.cwd().access(backend, .{}) catch return;
+    var child = std.process.Child.init(&.{ backend, "cli-status", "--desktop-root", root, "--conversation-id", id }, a);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    // The short-lived statusline must never wait for menu bar startup.
+    _ = child.spawn() catch {};
 }
 
 test "formatting and speed" {

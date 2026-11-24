@@ -99,6 +99,8 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 }
 ```
 
+On macOS 13+, the CLI package also includes the notch app. The next status line refresh launches it without requiring Desktop. The CLI notch stays resident independently; use its menu to hide or disable it. Clicking a task activates that session's recorded terminal application, without selecting a specific tab. For custom CLI directories, install with `AGY_CLI_DIR` and use the status line command printed by the installer.
+
 ### Troubleshooting (`--doctor`)
 
 ```sh
