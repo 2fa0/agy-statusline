@@ -69,11 +69,16 @@ struct NotchSnapshot: Equatable {
     var lowSpeedThreshold: Double = 50
     var contextPct: Double? = nil
     var activeCount: Int = 0
+    var activeCountTruncated: Bool = false
     var activeTasks: [ActiveTaskItem] = []
     var recentTasks: [ActiveTaskItem] = []
     var quotaSummary: String = ""
     var isActive: Bool = false
     var remoteConfig: NotchRemoteConfig? = nil
+
+    var activeCountBadge: String {
+        activeCountTruncated ? "\(activeCount)+" : "\(activeCount)"
+    }
 }
 
 enum ScreenDisplayMode: String, CaseIterable {
@@ -104,11 +109,18 @@ enum NotchAvoidanceMode: String, CaseIterable {
     }
 }
 
+enum BackendRequestResult {
+    case success([String: Any])
+    case backingOff
+    case failed
+}
+
 /// Persistent NDJSON client communicating with `agy-desktop-backend --serve --data-dir <dataDir>`.
 final class BackendLinesClient: @unchecked Sendable {
     private let backendPath: String
-    private let dataDir: String
-    private let lock = NSLock()
+    let dataDir: String
+    private let ioLock = NSLock()
+    private let stateLock = NSLock()
 
     private var process: Process?
     private var stdinHandle: FileHandle?
@@ -116,91 +128,219 @@ final class BackendLinesClient: @unchecked Sendable {
     private var readBuffer = Data()
     private var consecutiveFailures = 0
     private var nextRetryAt: Date = .distantPast
-    private var isClosed = false
+    private var nextFallbackAt: Date = .distantPast
+
+    private var isClosedFlag = false
+    private var currentPID: pid_t = 0
+    private let cancelReadFD: Int32
+    private let cancelWriteFD: Int32
 
     init(backendPath: String, dataDir: String) {
         self.backendPath = backendPath
         self.dataDir = dataDir
+        var fds: [Int32] = [-1, -1]
+        if Darwin.pipe(&fds) == 0 {
+            _ = fcntl(fds[0], F_SETFL, O_NONBLOCK)
+            _ = fcntl(fds[1], F_SETFL, O_NONBLOCK)
+            _ = fcntl(fds[0], F_SETFD, FD_CLOEXEC)
+            _ = fcntl(fds[1], F_SETFD, FD_CLOEXEC)
+            self.cancelReadFD = fds[0]
+            self.cancelWriteFD = fds[1]
+        } else {
+            self.cancelReadFD = -1
+            self.cancelWriteFD = -1
+        }
         signal(SIGPIPE, SIG_IGN)
     }
 
     deinit {
         close()
+        if cancelReadFD >= 0 { Darwin.close(cancelReadFD) }
+        if cancelWriteFD >= 0 { Darwin.close(cancelWriteFD) }
     }
 
-    func request(conversationId: String) -> [String: Any]? {
-        lock.lock()
-        defer { lock.unlock() }
+    var isClosed: Bool {
+        stateLock.lock()
+        let v = isClosedFlag
+        stateLock.unlock()
+        return v
+    }
 
-        guard !isClosed else { return nil }
-        guard startLockedIfNeeded() else { return nil }
-        guard let stdinHandle, let stdoutHandle else { return nil }
+    var cancellationFD: Int32 { cancelReadFD }
 
-        let payloadDict: [String: String] = ["conversationId": conversationId, "op": "brief"]
-        guard var lineData = try? JSONSerialization.data(withJSONObject: payloadDict) else {
-            return nil
+    func request(
+        conversationId: String,
+        op: String = "brief",
+        includeShared: Bool = true,
+        timeout: TimeInterval = 3.0
+    ) -> BackendRequestResult {
+        ioLock.lock()
+        defer { ioLock.unlock() }
+
+        guard !isClosed else { return .failed }
+        switch startLockedIfNeeded() {
+        case .ready:
+            break
+        case .backingOff:
+            return .backingOff
+        case .failed:
+            return .failed
         }
-        lineData.append(0x0A)
+        guard let stdinHandle, let stdoutHandle else { return .failed }
 
-        do {
-            try stdinHandle.write(contentsOf: lineData)
-        } catch {
-            recordFailureAndTeardownLocked()
-            return nil
-        }
-
-        while true {
-            if let newlineRange = readBuffer.firstRange(of: Data([0x0A])) {
-                let line = readBuffer.subdata(in: readBuffer.startIndex..<newlineRange.lowerBound)
-                readBuffer.removeSubrange(readBuffer.startIndex..<newlineRange.upperBound)
-                if line.isEmpty { continue }
-                if let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                   obj["error"] == nil, obj["found"] is Bool {
-                    consecutiveFailures = 0
-                    nextRetryAt = .distantPast
-                    return obj
-                }
-                return nil
+        return autoreleasepool {
+            let payloadDict: [String: Any] = [
+                "conversationId": conversationId,
+                "op": op,
+                "includeShared": includeShared
+            ]
+            guard var lineData = try? JSONSerialization.data(withJSONObject: payloadDict) else {
+                return .failed
             }
+            lineData.append(0x0A)
 
-            let chunk = stdoutHandle.availableData
-            if chunk.isEmpty {
+            do {
+                try stdinHandle.write(contentsOf: lineData)
+            } catch {
                 recordFailureAndTeardownLocked()
-                return nil
+                return .failed
             }
-            readBuffer.append(chunk)
+
+            let deadline = Date().addingTimeInterval(timeout)
+            let stdoutFD = stdoutHandle.fileDescriptor
+            var chunkBuf = [UInt8](repeating: 0, count: 4096)
+
+            while true {
+                if isClosed {
+                    teardownLocked()
+                    return .failed
+                }
+                if let newlineIdx = readBuffer.firstIndex(of: 0x0A) {
+                    let line = readBuffer[readBuffer.startIndex..<newlineIdx]
+                    readBuffer.removeSubrange(readBuffer.startIndex...newlineIdx)
+                    if line.isEmpty { continue }
+                    if let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                       obj["error"] == nil, obj["found"] is Bool {
+                        consecutiveFailures = 0
+                        nextRetryAt = .distantPast
+                        nextFallbackAt = .distantPast
+                        return .success(obj)
+                    }
+                    recordFailureAndTeardownLocked()
+                    return .failed
+                }
+
+                let remaining = deadline.timeIntervalSinceNow
+                if remaining <= 0 {
+                    recordFailureAndTeardownLocked()
+                    return .failed
+                }
+                let waitMs = Int32(min(max(remaining * 1000.0, 1.0), 1000.0))
+                var fds = [
+                    pollfd(fd: stdoutFD, events: Int16(POLLIN), revents: 0),
+                    pollfd(fd: cancelReadFD, events: Int16(POLLIN), revents: 0)
+                ]
+                let nfds: nfds_t = cancelReadFD >= 0 ? 2 : 1
+                let ready = Darwin.poll(&fds, nfds, waitMs)
+                if ready < 0 {
+                    if errno == EINTR { continue }
+                    recordFailureAndTeardownLocked()
+                    return .failed
+                }
+                if ready == 0 {
+                    continue
+                }
+                if nfds == 2 && (fds[1].revents & Int16(POLLIN)) != 0 {
+                    teardownLocked()
+                    return .failed
+                }
+                if (fds[0].revents & Int16(POLLIN | POLLHUP | POLLERR)) != 0 {
+                    let n = Darwin.read(stdoutFD, &chunkBuf, chunkBuf.count)
+                    if n > 0 {
+                        readBuffer.append(contentsOf: chunkBuf[0..<n])
+                    } else if n < 0 && (errno == EINTR || errno == EAGAIN) {
+                        continue
+                    } else {
+                        recordFailureAndTeardownLocked()
+                        return .failed
+                    }
+                }
+            }
         }
     }
 
+    /// Unified rate-limiter for fallback one-shot process queries so sustained
+    /// backend failures cannot repeatedly spawn processes during backoff.
+    func beginFallbackAttempt() -> Bool {
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        guard !isClosed else { return false }
+        let now = Date()
+        guard now >= nextFallbackAt else { return false }
+        nextFallbackAt = now.addingTimeInterval(2.0)
+        return true
+    }
+
+    func recordFallbackResult(success: Bool) {
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        if success {
+            consecutiveFailures = 0
+            nextRetryAt = .distantPast
+            nextFallbackAt = .distantPast
+        } else {
+            consecutiveFailures += 1
+            let delay = min(8.0, 0.5 * pow(2.0, Double(min(consecutiveFailures - 1, 4))))
+            let until = Date().addingTimeInterval(delay)
+            nextRetryAt = max(nextRetryAt, until)
+            nextFallbackAt = max(nextFallbackAt, until)
+        }
+    }
+
+    /// Cancels any in-flight blocking read immediately without risking main-thread deadlock.
     func close() {
-        lock.lock()
-        defer { lock.unlock() }
+        stateLock.lock()
+        isClosedFlag = true
+        let pid = currentPID
+        stateLock.unlock()
 
-        isClosed = true
-        if let proc = process, proc.isRunning {
-            if let stdinHandle {
-                try? stdinHandle.write(contentsOf: Data("{\"op\":\"close\"}\n".utf8))
-                try? stdinHandle.close()
-            }
-            let deadline = Date().addingTimeInterval(0.15)
-            while proc.isRunning && Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.01)
-            }
-            if proc.isRunning {
-                proc.terminate()
-            }
+        if cancelWriteFD >= 0 {
+            var byte: UInt8 = 1
+            _ = Darwin.write(cancelWriteFD, &byte, 1)
         }
-        teardownLocked()
+
+        // If no request is currently holding ioLock, shut down cleanly right now.
+        // If a request is in flight, the wakeup pipe + SIGTERM will unblock it
+        // immediately and it will tear down before releasing ioLock.
+        if ioLock.try() {
+            defer { ioLock.unlock() }
+            if let proc = process, proc.isRunning {
+                if let stdinHandle {
+                    try? stdinHandle.write(contentsOf: Data("{\"op\":\"close\"}\n".utf8))
+                    try? stdinHandle.close()
+                }
+                terminateProcessBounded(proc, graceSeconds: 0.15)
+            }
+            teardownLocked()
+        } else if pid > 0 {
+            _ = Darwin.kill(pid, SIGTERM)
+        }
     }
 
-    private func startLockedIfNeeded() -> Bool {
+    private enum StartOutcome {
+        case ready
+        case backingOff
+        case failed
+    }
+
+    private func startLockedIfNeeded() -> StartOutcome {
         if let proc = process, proc.isRunning {
-            return true
+            return .ready
         }
         teardownLocked()
 
-        guard Date() >= nextRetryAt else { return false }
-        guard FileManager.default.isExecutableFile(atPath: backendPath) else { return false }
+        guard Date() >= nextRetryAt else { return .backingOff }
+        guard FileManager.default.isExecutableFile(atPath: backendPath) else { return .failed }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: backendPath)
@@ -220,14 +360,17 @@ final class BackendLinesClient: @unchecked Sendable {
             try proc.run()
         } catch {
             recordFailureAndTeardownLocked()
-            return false
+            return .failed
         }
 
         process = proc
         stdinHandle = stdinPipe.fileHandleForWriting
         stdoutHandle = stdoutPipe.fileHandleForReading
+        stateLock.lock()
+        currentPID = proc.processIdentifier
+        stateLock.unlock()
         readBuffer.removeAll(keepingCapacity: true)
-        return true
+        return .ready
     }
 
     private func recordFailureAndTeardownLocked() {
@@ -237,6 +380,20 @@ final class BackendLinesClient: @unchecked Sendable {
         teardownLocked()
     }
 
+    private func terminateProcessBounded(_ proc: Process, graceSeconds: TimeInterval) {
+        if proc.isRunning {
+            proc.terminate()
+        }
+        let deadline = Date().addingTimeInterval(graceSeconds)
+        while proc.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if proc.isRunning {
+            _ = Darwin.kill(proc.processIdentifier, SIGKILL)
+        }
+        // Foundation reaps the child; waitUntilExit() can hang across run loops.
+    }
+
     private func teardownLocked() {
         try? stdinHandle?.close()
         try? stdoutHandle?.close()
@@ -244,12 +401,12 @@ final class BackendLinesClient: @unchecked Sendable {
         stdoutHandle = nil
         readBuffer.removeAll(keepingCapacity: false)
         if let proc = process {
-            if proc.isRunning {
-                proc.terminate()
-            }
-            proc.waitUntilExit()
+            terminateProcessBounded(proc, graceSeconds: 0.15)
         }
         process = nil
+        stateLock.lock()
+        currentPID = 0
+        stateLock.unlock()
     }
 }
 
@@ -263,21 +420,51 @@ final class NotchStore: ObservableObject {
     }
 
     @Published var snapshot = NotchSnapshot()
-    @Published var isHovering = false {
+    @Published var hoveredScreenID: CGDirectDisplayID? = nil {
         didSet {
-            if isHovering {
+            if hoveredScreenID != nil {
                 dismissPeekImmediately()
             }
         }
     }
-    @Published var isHiddenByUser: Bool {
+    var isHovering: Bool {
+        hoveredScreenID != nil
+    }
+    /// Session-only temporary hide: does NOT persist `notch.enabled = false` to config.json.
+    @Published var isTemporarilyHidden: Bool = false {
         didSet {
+            if isTemporarilyHidden {
+                hoveredScreenID = nil
+            }
             if !demoMode {
-                UserDefaults.standard.set(isHiddenByUser, forKey: DefaultsKey.isHiddenByUser)
-                persistNotchSettingsIfLocal(["enabled": !isHiddenByUser])
+                scheduleTimer(interval: desiredPollInterval(isActive: snapshot.isActive))
+                if !isHidden {
+                    refreshNow(force: true)
+                }
             }
         }
     }
+    /// Persistent disabled state synced with `notch.enabled` in config.json.
+    @Published var isHiddenByUser: Bool {
+        didSet {
+            if isHiddenByUser {
+                hoveredScreenID = nil
+            }
+            if !demoMode {
+                UserDefaults.standard.set(isHiddenByUser, forKey: DefaultsKey.isHiddenByUser)
+                persistNotchSettingsIfLocal(["enabled": !isHiddenByUser])
+                scheduleTimer(interval: desiredPollInterval(isActive: snapshot.isActive))
+                if !isHidden && !isApplyingRemoteConfig {
+                    refreshNow(force: true)
+                }
+            }
+        }
+    }
+    var isHidden: Bool {
+        isTemporarilyHidden || isHiddenByUser
+    }
+    @Published var isConnectionStale: Bool = false
+    @Published var lastSuccessAt: Date? = nil
     @Published var hideWhenIdle: Bool {
         didSet {
             UserDefaults.standard.set(hideWhenIdle, forKey: DefaultsKey.hideWhenIdle)
@@ -301,16 +488,19 @@ final class NotchStore: ObservableObject {
     @Published var activePeek: NotchPeekEvent? = nil
 
     private let backendPath: String
-    private let dataDir: String
+    let dataDir: String
     private var isApplyingRemoteConfig = false
     private let backendClient: BackendLinesClient
     private let fetchQueue = DispatchQueue(label: "agy.notch.fetch", qos: .userInitiated)
     private var timer: Timer?
+    private var currentPollInterval: TimeInterval = 0
     private var demoPeekTimer: Timer?
     private var dirMonitor: DispatchSourceFileSystemObject?
+    private var dirDebounceWorkItem: DispatchWorkItem?
     private var dirFD: Int32 = -1
     private var isFetching = false
     private var lastFetchAt: Date = .distantPast
+    private var consecutiveFetchFailures = 0
 
     private var hasSeenInitialSnapshot = false
     private var previousTaskStates: [String: (state: NotchSnapshot.RunState, isActive: Bool)] = [:]
@@ -350,6 +540,7 @@ final class NotchStore: ObservableObject {
     deinit {
         timer?.invalidate()
         demoPeekTimer?.invalidate()
+        dirDebounceWorkItem?.cancel()
         dirMonitor?.cancel()
         peekDismissWorkItem?.cancel()
         backendClient.close()
@@ -360,6 +551,8 @@ final class NotchStore: ObservableObject {
         timer = nil
         demoPeekTimer?.invalidate()
         demoPeekTimer = nil
+        dirDebounceWorkItem?.cancel()
+        dirDebounceWorkItem = nil
         dirMonitor?.cancel()
         dirMonitor = nil
         peekDismissWorkItem?.cancel()
@@ -372,8 +565,7 @@ final class NotchStore: ObservableObject {
             if let activeMatch = snapshot.activeTasks.first(where: { $0.id == cid }) {
                 return activeMatch
             }
-            if snapshot.activeTasks.isEmpty,
-               let recentMatch = snapshot.recentTasks.first(where: { $0.id == cid }) {
+            if let recentMatch = snapshot.recentTasks.first(where: { $0.id == cid }) {
                 return recentMatch
             }
         }
@@ -482,12 +674,21 @@ final class NotchStore: ObservableObject {
     }
 
     private func scheduleTimer(interval: TimeInterval) {
+        if timer != nil && abs(currentPollInterval - interval) < 0.01 { return }
+        currentPollInterval = interval
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
+        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
                 self?.refreshNow(force: false)
             }
         }
+        t.tolerance = interval * 0.25
+        timer = t
+    }
+
+    private func desiredPollInterval(isActive: Bool) -> TimeInterval {
+        if isHidden { return 5.0 }
+        return isActive ? 1.0 : 3.5
     }
 
     private func watchDataDirectory() {
@@ -501,8 +702,14 @@ final class NotchStore: ObservableObject {
             queue: DispatchQueue.global(qos: .utility)
         )
         source.setEventHandler { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.refreshNow(force: true)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isHidden else { return }
+                self.dirDebounceWorkItem?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    self?.refreshNow(force: false)
+                }
+                self.dirDebounceWorkItem = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
             }
         }
         source.setCancelHandler { [fd = dirFD] in
@@ -516,30 +723,78 @@ final class NotchStore: ObservableObject {
         if demoMode { return }
         let now = Date()
         if isFetching { return }
-        if !force && now.timeIntervalSince(lastFetchAt) < 0.45 { return }
+        if !force && now.timeIntervalSince(lastFetchAt) < automaticRefreshInterval { return }
 
         isFetching = true
         lastFetchAt = now
         let client = self.backendClient
         let backend = self.backendPath
         let data = self.dataDir
-        let prevActiveIds = Set(snapshot.activeTasks.map(\.id))
+        let configOnly = self.isHidden && !force
+        var prevActiveMap: [String: ActiveTaskItem] = [:]
+        for task in snapshot.activeTasks {
+            prevActiveMap[task.id] = task
+        }
 
         fetchQueue.async { [weak self] in
-            let next = Self.fetchSnapshot(
-                client: client,
-                backendPath: backend,
-                dataDir: data,
-                previouslyActiveIds: prevActiveIds
-            )
+            if configOnly {
+                let remoteCfg: NotchRemoteConfig? = autoreleasepool {
+                    Self.fetchRemoteConfigOnly(client: client, backendPath: backend, dataDir: data)
+                }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.isFetching = false
+                    if let remoteCfg {
+                        let wasHidden = self.isHidden
+                        self.applyRemoteConfig(remoteCfg)
+                        if wasHidden && !self.isHidden {
+                            self.refreshNow(force: true)
+                        }
+                    }
+                }
+                return
+            }
+
+            let next: NotchSnapshot? = autoreleasepool {
+                Self.fetchSnapshot(
+                    client: client,
+                    backendPath: backend,
+                    dataDir: data,
+                    previouslyActiveTasks: prevActiveMap
+                )
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isFetching = false
                 if let next {
+                    self.consecutiveFetchFailures = 0
+                    self.lastSuccessAt = Date()
+                    if self.isConnectionStale {
+                        self.isConnectionStale = false
+                    }
                     self.applyFetchedSnapshot(next)
+                } else {
+                    self.consecutiveFetchFailures += 1
+                    if self.consecutiveFetchFailures >= 2 && !self.isConnectionStale {
+                        self.isConnectionStale = true
+                    }
                 }
             }
         }
+    }
+
+    private var automaticRefreshInterval: TimeInterval {
+        isHidden ? 5.0 : 1.0
+    }
+
+    private func applyRemoteConfig(_ remote: NotchRemoteConfig) {
+        isApplyingRemoteConfig = true
+        let shouldHide = !remote.enabled
+        if isHiddenByUser != shouldHide { isHiddenByUser = shouldHide }
+        if hideWhenIdle != remote.hideWhenIdle { hideWhenIdle = remote.hideWhenIdle }
+        if screenMode != remote.screenMode { screenMode = remote.screenMode }
+        if avoidanceMode != remote.avoidanceMode { avoidanceMode = remote.avoidanceMode }
+        isApplyingRemoteConfig = false
     }
 
     private func persistNotchSettingsIfLocal(_ patch: [String: Any]) {
@@ -562,6 +817,13 @@ final class NotchStore: ObservableObject {
                 try process.run()
                 try pipe.fileHandleForWriting.write(contentsOf: payload)
                 try pipe.fileHandleForWriting.close()
+                let deadline = Date().addingTimeInterval(3.0)
+                while process.isRunning && Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+                if process.isRunning {
+                    process.terminate()
+                }
                 process.waitUntilExit()
             } catch {
                 try? pipe.fileHandleForWriting.close()
@@ -571,32 +833,27 @@ final class NotchStore: ObservableObject {
 
     func applyFetchedSnapshot(_ next: NotchSnapshot) {
         if let remote = next.remoteConfig {
-            isApplyingRemoteConfig = true
-            let shouldHide = !remote.enabled
-            if isHiddenByUser != shouldHide { isHiddenByUser = shouldHide }
-            if hideWhenIdle != remote.hideWhenIdle { hideWhenIdle = remote.hideWhenIdle }
-            if screenMode != remote.screenMode { screenMode = remote.screenMode }
-            if avoidanceMode != remote.avoidanceMode { avoidanceMode = remote.avoidanceMode }
-            isApplyingRemoteConfig = false
+            applyRemoteConfig(remote)
         }
 
-        let wasActive = snapshot.isActive
         evaluatePeekTransitions(for: next)
-        snapshot = next
+        if snapshot != next {
+            snapshot = next
+        }
 
+        let nextSelectedId: String?
         if let cid = selectedConversationId {
             let stillValid = next.activeTasks.contains(where: { $0.id == cid })
-                || (next.activeTasks.isEmpty && next.recentTasks.contains(where: { $0.id == cid }))
-            if !stillValid {
-                selectedConversationId = next.activeTasks.first?.id ?? next.recentTasks.first?.id
-            }
+                || next.recentTasks.contains(where: { $0.id == cid })
+            nextSelectedId = stillValid ? cid : (next.activeTasks.first?.id ?? next.recentTasks.first?.id)
         } else {
-            selectedConversationId = next.activeTasks.first?.id ?? next.recentTasks.first?.id
+            nextSelectedId = next.activeTasks.first?.id ?? next.recentTasks.first?.id
+        }
+        if selectedConversationId != nextSelectedId {
+            selectedConversationId = nextSelectedId
         }
 
-        if next.isActive != wasActive {
-            scheduleTimer(interval: next.isActive ? 1.0 : 3.5)
-        }
+        scheduleTimer(interval: desiredPollInterval(isActive: next.isActive))
     }
 
     private func evaluatePeekTransitions(for next: NotchSnapshot) {
@@ -706,18 +963,71 @@ final class NotchStore: ObservableObject {
         client: BackendLinesClient,
         backendPath: String,
         dataDir: String? = nil,
-        conversationId: String
+        conversationId: String,
+        op: String = "brief",
+        includeShared: Bool = true
     ) -> [String: Any]? {
-        if let served = client.request(conversationId: conversationId) {
+        switch client.request(conversationId: conversationId, op: op, includeShared: includeShared) {
+        case .success(let served):
             return served
+        case .backingOff:
+            // Respect persistent client backoff: do not spawn one-shot fallback processes while backing off.
+            return nil
+        case .failed:
+            guard op != "config", client.beginFallbackAttempt() else { return nil }
+            let result = runBackendStatusFallback(
+                backendPath: backendPath,
+                dataDir: dataDir,
+                conversationId: conversationId,
+                timeout: 3.0,
+                cancelFD: client.cancellationFD
+            )
+            client.recordFallbackResult(success: result != nil)
+            return result
         }
-        return runBackendStatusFallback(backendPath: backendPath, dataDir: dataDir, conversationId: conversationId)
+    }
+
+    nonisolated private static func fetchRemoteConfigOnly(
+        client: BackendLinesClient,
+        backendPath: String,
+        dataDir: String?
+    ) -> NotchRemoteConfig? {
+        guard let json = queryBackend(
+            client: client,
+            backendPath: backendPath,
+            dataDir: dataDir,
+            conversationId: "",
+            op: "config",
+            includeShared: true
+        ) else {
+            return nil
+        }
+        return parseRemoteConfig(from: json)
+    }
+
+    nonisolated private static func parseRemoteConfig(from json: [String: Any]) -> NotchRemoteConfig? {
+        guard let cfg = json["config"] as? [String: Any],
+              let notch = cfg["notch"] as? [String: Any] else {
+            return nil
+        }
+        var rc = NotchRemoteConfig()
+        if let en = notch["enabled"] as? Bool { rc.enabled = en }
+        if let hideIdle = notch["hideWhenIdle"] as? Bool { rc.hideWhenIdle = hideIdle }
+        if let sm = notch["screenMode"] as? String, let parsed = ScreenDisplayMode(rawValue: sm) {
+            rc.screenMode = parsed
+        }
+        if let am = notch["avoidanceMode"] as? String, let parsed = NotchAvoidanceMode(rawValue: am) {
+            rc.avoidanceMode = parsed
+        }
+        return rc
     }
 
     nonisolated private static func runBackendStatusFallback(
         backendPath: String,
         dataDir: String? = nil,
-        conversationId: String? = nil
+        conversationId: String? = nil,
+        timeout: TimeInterval = 3.0,
+        cancelFD: Int32 = -1
     ) -> [String: Any]? {
         guard FileManager.default.isExecutableFile(atPath: backendPath) else { return nil }
         let process = Process()
@@ -745,8 +1055,79 @@ final class NotchStore: ObservableObject {
             return nil
         }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let readHandle = pipe.fileHandleForReading
+        let stdoutFD = readHandle.fileDescriptor
+        let deadline = Date().addingTimeInterval(timeout)
+        var data = Data()
+        var chunkBuf = [UInt8](repeating: 0, count: 4096)
+        var timedOutOrCancelled = false
+
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 {
+                timedOutOrCancelled = true
+                break
+            }
+            let waitMs = Int32(min(max(remaining * 1000.0, 1.0), 1000.0))
+            var fds = [
+                pollfd(fd: stdoutFD, events: Int16(POLLIN), revents: 0),
+                pollfd(fd: cancelFD, events: Int16(POLLIN), revents: 0)
+            ]
+            let nfds: nfds_t = cancelFD >= 0 ? 2 : 1
+            let ready = Darwin.poll(&fds, nfds, waitMs)
+            if ready < 0 {
+                if errno == EINTR { continue }
+                timedOutOrCancelled = true
+                break
+            }
+            if ready == 0 {
+                continue
+            }
+            if nfds == 2 && (fds[1].revents & Int16(POLLIN)) != 0 {
+                timedOutOrCancelled = true
+                break
+            }
+            if (fds[0].revents & Int16(POLLIN | POLLHUP | POLLERR)) != 0 {
+                let n = Darwin.read(stdoutFD, &chunkBuf, chunkBuf.count)
+                if n > 0 {
+                    data.append(contentsOf: chunkBuf[0..<n])
+                } else if n == 0 {
+                    break
+                } else if errno == EINTR || errno == EAGAIN {
+                    continue
+                } else {
+                    timedOutOrCancelled = true
+                    break
+                }
+            }
+        }
+
+        try? readHandle.close()
+        if timedOutOrCancelled {
+            if process.isRunning {
+                process.terminate()
+                let killDeadline = Date().addingTimeInterval(0.15)
+                while process.isRunning && Date() < killDeadline {
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+                if process.isRunning {
+                    _ = Darwin.kill(process.processIdentifier, SIGKILL)
+                }
+            }
+            process.waitUntilExit()
+            return nil
+        }
+
+        let exitDeadline = Date().addingTimeInterval(0.25)
+        while process.isRunning && Date() < exitDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if process.isRunning {
+            process.terminate()
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        }
         process.waitUntilExit()
+
         guard process.terminationStatus == 0,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               json["error"] == nil, json["found"] is Bool else {
@@ -755,19 +1136,25 @@ final class NotchStore: ObservableObject {
         return json
     }
 
-    nonisolated private static func isWithinSeconds(_ isoString: String?, seconds: TimeInterval) -> Bool {
-        guard let isoString, !isoString.isEmpty else { return false }
-        let fmtWithFrac = ISO8601DateFormatter()
-        fmtWithFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fmtWithFrac.date(from: isoString) {
-            return abs(Date().timeIntervalSince(date)) <= seconds
-        }
+    nonisolated private static let isoLock = NSLock()
+    nonisolated(unsafe) private static let isoFormatterWithFrac: ISO8601DateFormatter = {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fmt
+    }()
+    nonisolated(unsafe) private static let isoFormatterPlain: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime]
-        if let date = fmt.date(from: isoString) {
-            return abs(Date().timeIntervalSince(date)) <= seconds
-        }
-        return false
+        return fmt
+    }()
+
+    nonisolated private static func isWithinSeconds(_ isoString: String?, seconds: TimeInterval) -> Bool {
+        guard let isoString, !isoString.isEmpty else { return false }
+        isoLock.lock()
+        let date = isoFormatterWithFrac.date(from: isoString) ?? isoFormatterPlain.date(from: isoString)
+        isoLock.unlock()
+        guard let date else { return false }
+        return abs(Date().timeIntervalSince(date)) <= seconds
     }
 
     nonisolated static func fetchSnapshot(
@@ -775,6 +1162,36 @@ final class NotchStore: ObservableObject {
         backendPath: String,
         dataDir: String? = nil,
         previouslyActiveIds: Set<String>
+    ) -> NotchSnapshot? {
+        var map: [String: ActiveTaskItem] = [:]
+        for cid in previouslyActiveIds {
+            map[cid] = ActiveTaskItem(
+                id: cid,
+                title: String(cid.prefix(8)),
+                commandText: "运行中",
+                modelName: "",
+                workspaceName: "",
+                state: .running,
+                stateLabel: "运行中",
+                tokPerSec: nil,
+                contextPct: nil,
+                isRunning: true,
+                code: ""
+            )
+        }
+        return fetchSnapshot(
+            client: client,
+            backendPath: backendPath,
+            dataDir: dataDir,
+            previouslyActiveTasks: map
+        )
+    }
+
+    nonisolated static func fetchSnapshot(
+        client: BackendLinesClient,
+        backendPath: String,
+        dataDir: String? = nil,
+        previouslyActiveTasks: [String: ActiveTaskItem]
     ) -> NotchSnapshot? {
         guard let json = queryBackend(client: client, backendPath: backendPath, dataDir: dataDir, conversationId: "auto") else {
             return nil
@@ -802,19 +1219,7 @@ final class NotchStore: ObservableObject {
         }
 
         snap.lowSpeedThreshold = (json["config"] as? [String: Any])?["lowSpeedWarnTokS"] as? Double ?? 50
-        if let cfg = json["config"] as? [String: Any],
-           let notch = cfg["notch"] as? [String: Any] {
-            var rc = NotchRemoteConfig()
-            if let en = notch["enabled"] as? Bool { rc.enabled = en }
-            if let hideIdle = notch["hideWhenIdle"] as? Bool { rc.hideWhenIdle = hideIdle }
-            if let sm = notch["screenMode"] as? String, let parsed = ScreenDisplayMode(rawValue: sm) {
-                rc.screenMode = parsed
-            }
-            if let am = notch["avoidanceMode"] as? String, let parsed = NotchAvoidanceMode(rawValue: am) {
-                rc.avoidanceMode = parsed
-            }
-            snap.remoteConfig = rc
-        }
+        snap.remoteConfig = parseRemoteConfig(from: json)
 
         let primaryTranscript = parseTranscriptTail(path: json["transcriptPath"] as? String ?? "")
         snap.title = !primaryTranscript.title.isEmpty
@@ -833,6 +1238,8 @@ final class NotchStore: ObservableObject {
 
         var tasks: [ActiveTaskItem] = []
         var recentList: [ActiveTaskItem] = []
+        var totalActiveCount = 0
+        var activeCountTruncated = false
 
         if !convId.isEmpty {
             let primaryItem = ActiveTaskItem(
@@ -851,28 +1258,58 @@ final class NotchStore: ObservableObject {
             recentList.append(primaryItem)
             if snap.isActive {
                 tasks.append(primaryItem)
+                totalActiveCount += 1
             }
         }
 
         if let recent = json["recentConversations"] as? [[String: Any]] {
-            var probedCount = 0
-            for item in recent {
+            struct Candidate {
+                let index: Int
+                let item: [String: Any]
+                let cid: String
+                let wasActive: Bool
+                let shouldProbe: Bool
+                let priority: Int
+            }
+            var candidates: [Candidate] = []
+            candidates.reserveCapacity(recent.count)
+            for (idx, item) in recent.enumerated() {
                 let cid = (item["conversationId"] as? String) ?? ""
                 if cid.isEmpty || cid == convId { continue }
-
                 let hookFlag = (item["isActive"] as? Bool) ?? false
                 let lastEvent = (item["lastEvent"] as? String) ?? ""
                 let eventActive = lastEvent == "PreInvocation" || lastEvent == "PostInvocation"
-                let wasActive = previouslyActiveIds.contains(cid)
+                let wasActive = previouslyActiveTasks[cid] != nil
                 let recentlyUpdated = isWithinSeconds(item["updatedAt"] as? String, seconds: 180)
                 let shouldProbe = hookFlag || eventActive || wasActive || recentlyUpdated
+                let priority = wasActive ? 3 : ((hookFlag || eventActive) ? 2 : (recentlyUpdated ? 1 : 0))
+                candidates.append(Candidate(
+                    index: idx,
+                    item: item,
+                    cid: cid,
+                    wasActive: wasActive,
+                    shouldProbe: shouldProbe,
+                    priority: priority
+                ))
+            }
+            // Prioritize previously active sessions first so probe budget is spent
+            // on active tasks before merely recently-updated historical sessions.
+            candidates.sort { lhs, rhs in
+                if lhs.priority != rhs.priority { return lhs.priority > rhs.priority }
+                return lhs.index < rhs.index
+            }
 
-                if !shouldProbe && recentList.count >= 4 { continue }
-                if tasks.count >= 4 && recentList.count >= 4 { break }
+            let maxProbes = 8
+            var probedCount = 0
+            for cand in candidates {
+                let item = cand.item
+                let cid = cand.cid
+
+                if !cand.shouldProbe && recentList.count >= 4 { continue }
 
                 var ws = (item["workspace"] as? String) ?? ""
                 var model = (item["modelName"] as? String) ?? ""
-                var tInfo = parseTranscriptTail(path: item["transcriptPath"] as? String ?? "")
+                var transcriptPath = (item["transcriptPath"] as? String) ?? ""
 
                 var active = false
                 var state: NotchSnapshot.RunState = .idle
@@ -880,36 +1317,79 @@ final class NotchStore: ObservableObject {
                 var tok: Double? = nil
                 var ctx: Double? = nil
                 var code = ""
+                var preservedTitle: String? = nil
+                var preservedCmd: String? = nil
 
-                if shouldProbe && probedCount < 6 {
-                    probedCount += 1
-                    if let subJson = queryBackend(client: client, backendPath: backendPath, dataDir: dataDir, conversationId: cid) {
-                        let parsed = parseStateAndSpeed(from: subJson)
-                        active = parsed.isActive
-                        state = parsed.state
-                        label = parsed.label
-                        code = parsed.code
-                        tInfo = parseTranscriptTail(path: subJson["transcriptPath"] as? String ?? "")
-                        tok = parsed.tokPerSec
-                        ctx = subJson["contextPct"] as? Double
-                        if ws.isEmpty, let subWs = subJson["workspaceName"] as? String {
-                            ws = subWs
+                if cand.shouldProbe {
+                    if probedCount < maxProbes {
+                        probedCount += 1
+                        if let subJson = queryBackend(client: client, backendPath: backendPath, dataDir: dataDir, conversationId: cid, includeShared: false) {
+                            let parsed = parseStateAndSpeed(from: subJson)
+                            active = parsed.isActive
+                            state = parsed.state
+                            label = parsed.label
+                            code = parsed.code
+                            if let subPath = subJson["transcriptPath"] as? String, !subPath.isEmpty {
+                                transcriptPath = subPath
+                            }
+                            tok = parsed.tokPerSec
+                            ctx = subJson["contextPct"] as? Double
+                            if ws.isEmpty, let subWs = subJson["workspaceName"] as? String {
+                                ws = subWs
+                            }
+                            if model.isEmpty, let subModel = subJson["modelName"] as? String {
+                                model = subModel
+                            }
+                        } else if let prev = previouslyActiveTasks[cid] {
+                            // Transient backend query failure: preserve previous state and avoid false completion peek.
+                            active = prev.isRunning
+                            state = prev.state
+                            label = prev.stateLabel
+                            tok = nil
+                            ctx = prev.contextPct
+                            code = prev.code
+                            if ws.isEmpty { ws = prev.workspaceName }
+                            if model.isEmpty { model = prev.modelName }
+                            preservedTitle = prev.title
+                            preservedCmd = prev.commandText
+                        } else {
+                            label = "状态未知"
+                            code = "unknown"
                         }
-                        if model.isEmpty, let subModel = subJson["modelName"] as? String {
-                            model = subModel
+                    } else {
+                        // Probe budget exhausted: do not misreport as completed.
+                        activeCountTruncated = true
+                        if let prev = previouslyActiveTasks[cid] {
+                            active = prev.isRunning
+                            state = prev.state
+                            label = prev.stateLabel
+                            tok = nil
+                            ctx = prev.contextPct
+                            code = prev.code
+                            if ws.isEmpty { ws = prev.workspaceName }
+                            if model.isEmpty { model = prev.modelName }
+                            preservedTitle = prev.title
+                            preservedCmd = prev.commandText
+                        } else {
+                            label = "状态未知"
+                            code = "unknown"
                         }
-                    } else if wasActive {
-                        // Transient backend query failure: don't falsely emit a completion peek.
-                        active = true
-                        state = .running
-                        label = "运行中"
                     }
                 }
 
-                if !active && recentList.count >= 4 { continue }
+                if active {
+                    totalActiveCount += 1
+                }
 
-                let title = !tInfo.title.isEmpty ? tInfo.title : (!ws.isEmpty ? ws : String(cid.prefix(8)))
-                let cmd = !tInfo.command.isEmpty ? tInfo.command : label
+                if !active && recentList.count >= 4 { continue }
+                if active && tasks.count >= 4 {
+                    // Already filled the 4 displayed active task slots; keep counting totalActiveCount.
+                    continue
+                }
+
+                let tInfo = parseTranscriptTail(path: transcriptPath)
+                let title = !tInfo.title.isEmpty ? tInfo.title : (preservedTitle ?? (!ws.isEmpty ? ws : String(cid.prefix(8))))
+                let cmd = !tInfo.command.isEmpty ? tInfo.command : (preservedCmd ?? label)
                 let taskItem = ActiveTaskItem(
                     id: cid,
                     title: title,
@@ -936,8 +1416,9 @@ final class NotchStore: ObservableObject {
 
         snap.activeTasks = tasks
         snap.recentTasks = recentList
-        snap.activeCount = tasks.count
-        if !tasks.isEmpty {
+        snap.activeCount = totalActiveCount
+        snap.activeCountTruncated = activeCountTruncated
+        if totalActiveCount > 0 {
             snap.isActive = true
         }
 
@@ -972,6 +1453,33 @@ final class NotchStore: ObservableObject {
         return (state, label, tokPerSec, isActive, session?["code"] as? String ?? "")
     }
 
+    nonisolated static func resolveCliTerminalTarget(env: [String: String]) -> (bundleId: String?, appName: String?) {
+        let cfBundle = (env["__CFBundleIdentifier"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let termProgram = (env["TERM_PROGRAM"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        let mapped: (String, String)? = switch termProgram {
+        case "ghostty": ("com.mitchellh.ghostty", "Ghostty")
+        case "iterm.app": ("com.googlecode.iterm2", "iTerm2")
+        case "apple_terminal": ("com.apple.Terminal", "Terminal")
+        case "warpterminal": ("dev.warp.Warp-Stable", "Warp")
+        case "wezterm": ("com.github.wez.wezterm", "WezTerm")
+        case "alacritty": ("org.alacritty", "Alacritty")
+        case "kitty": ("net.kovidgoyal.kitty", "kitty")
+        case "vscode": ("com.microsoft.VSCode", "Visual Studio Code")
+        case "cursor": ("com.todesktop.230313mzl4w4u92", "Cursor")
+        case "zed": ("dev.zed.Zed", "Zed")
+        default: nil
+        }
+
+        if !cfBundle.isEmpty, !cfBundle.lowercased().contains("antigravity") {
+            return (cfBundle, mapped?.1)
+        }
+        if let mapped {
+            return (mapped.0, mapped.1)
+        }
+        return (nil, nil)
+    }
+
     nonisolated static func formatQuota(_ quota: [String: Any]) -> String {
         var parts: [String] = []
         if let buckets = quota["windows"] as? [[String: Any]] {
@@ -987,47 +1495,115 @@ final class NotchStore: ObservableObject {
         return parts.joined(separator: " · ")
     }
 
+    private struct CachedTranscriptTail {
+        let size: UInt64
+        let mtimeSec: Int
+        let mtimeNsec: Int
+        let inode: UInt64
+        let head: Data
+        let headTitle: String
+        let title: String
+        let command: String
+    }
+
+    nonisolated private static let transcriptCacheLock = NSLock()
+    nonisolated(unsafe) private static var transcriptTailCache: [String: CachedTranscriptTail] = [:]
+
     nonisolated static func parseTranscriptTail(path: String) -> (title: String, command: String) {
         guard !path.isEmpty else { return ("", "") }
-        guard let handle = FileHandle(forReadingAtPath: path) else { return ("", "") }
-        defer { try? handle.close() }
 
-        var title = ""
-        let headData = handle.readData(ofLength: 16384)
-        let headText = String(decoding: headData, as: UTF8.self)
-        for line in headText.split(separator: "\n", maxSplits: 6) {
-            guard let lineData = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
-            if (obj["type"] as? String) == "USER_INPUT",
-               let content = obj["content"] as? String {
-                title = cleanUserRequest(content)
-                if !title.isEmpty { break }
+        var st = stat()
+        guard stat(path, &st) == 0 else { return ("", "") }
+        let fileSize = UInt64(max(0, st.st_size))
+        let mtimeSec = st.st_mtimespec.tv_sec
+        let mtimeNsec = st.st_mtimespec.tv_nsec
+
+        transcriptCacheLock.lock()
+        let cached = transcriptTailCache[path]
+        if let cached,
+           cached.inode == UInt64(st.st_ino),
+           cached.size == fileSize,
+           cached.mtimeSec == mtimeSec,
+           cached.mtimeNsec == mtimeNsec {
+            transcriptCacheLock.unlock()
+            return (cached.title, cached.command)
+        }
+        transcriptCacheLock.unlock()
+
+        let result: (title: String, command: String, head: Data, headTitle: String) = autoreleasepool {
+            guard let handle = FileHandle(forReadingAtPath: path) else { return ("", "", Data(), "") }
+            defer { try? handle.close() }
+
+            var title = ""
+            var titlePrefix = Data()
+            let headData = handle.readData(ofLength: 16384)
+            // Validate the bytes through the title: growth alone does not prove
+            // append-only writes. Retain only this prefix, not the whole head.
+            if let cached, !cached.headTitle.isEmpty,
+               cached.inode == UInt64(st.st_ino), fileSize >= cached.size,
+               headData.starts(with: cached.head) {
+                title = cached.headTitle
+                titlePrefix = cached.head
+            } else {
+                let headText = String(decoding: headData, as: UTF8.self)
+                var prefixLength = 0
+                for line in headText.split(separator: "\n", maxSplits: 6, omittingEmptySubsequences: false) {
+                    prefixLength += line.utf8.count + 1
+                    guard let lineData = line.data(using: .utf8),
+                          let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
+                    if (obj["type"] as? String) == "USER_INPUT",
+                       let content = obj["content"] as? String {
+                        title = cleanUserRequest(content)
+                        if !title.isEmpty {
+                            titlePrefix = Data(headData.prefix(prefixLength))
+                            break
+                        }
+                    }
+                }
             }
+            let headTitle = title
+
+            var command = ""
+            let tailOffset: UInt64 = fileSize > 32768 ? fileSize - 32768 : 0
+            try? handle.seek(toOffset: tailOffset)
+            let tailData = handle.readData(ofLength: 32768)
+            let tailText = String(decoding: tailData, as: UTF8.self)
+            let lines = tailText.split(separator: "\n")
+            for line in lines.reversed() {
+                guard let lineData = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
+                let typ = (obj["type"] as? String) ?? ""
+                if typ == "USER_INPUT", title.isEmpty, let content = obj["content"] as? String {
+                    title = cleanUserRequest(content)
+                }
+                if typ == "PLANNER_RESPONSE",
+                   let calls = obj["tool_calls"] as? [[String: Any]],
+                   let lastCall = calls.last {
+                    command = formatToolCall(lastCall)
+                    if !command.isEmpty { break }
+                }
+            }
+
+            return (title, command, titlePrefix, headTitle)
         }
 
-        var command = ""
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? UInt64) ?? 0
-        let tailOffset: UInt64 = fileSize > 32768 ? fileSize - 32768 : 0
-        try? handle.seek(toOffset: tailOffset)
-        let tailData = handle.readDataToEndOfFile()
-        let tailText = String(decoding: tailData, as: UTF8.self)
-        let lines = tailText.split(separator: "\n")
-        for line in lines.reversed() {
-            guard let lineData = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
-            let typ = (obj["type"] as? String) ?? ""
-            if typ == "USER_INPUT", title.isEmpty, let content = obj["content"] as? String {
-                title = cleanUserRequest(content)
-            }
-            if typ == "PLANNER_RESPONSE",
-               let calls = obj["tool_calls"] as? [[String: Any]],
-               let lastCall = calls.last {
-                command = formatToolCall(lastCall)
-                if !command.isEmpty { break }
-            }
+        transcriptCacheLock.lock()
+        if transcriptTailCache[path] == nil && transcriptTailCache.count >= 64 {
+            transcriptTailCache.removeAll(keepingCapacity: true)
         }
+        transcriptTailCache[path] = CachedTranscriptTail(
+            size: fileSize,
+            mtimeSec: mtimeSec,
+            mtimeNsec: mtimeNsec,
+            inode: UInt64(st.st_ino),
+            head: result.head,
+            headTitle: result.headTitle,
+            title: result.title,
+            command: result.command
+        )
+        transcriptCacheLock.unlock()
 
-        return (title, command)
+        return (result.title, result.command)
     }
 
     nonisolated private static func cleanUserRequest(_ raw: String) -> String {

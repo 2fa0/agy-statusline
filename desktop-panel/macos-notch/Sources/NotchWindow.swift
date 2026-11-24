@@ -7,6 +7,23 @@ final class NotchPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+struct OccupancyState {
+    private(set) var offset: CGFloat = 0
+    private var candidate: CGFloat?
+
+    mutating func update(_ raw: CGFloat, immediate: Bool) -> Bool {
+        if immediate || candidate == raw {
+            offset = raw
+            candidate = nil
+        } else if raw != offset {
+            candidate = raw
+        } else {
+            candidate = nil
+        }
+        return candidate != nil
+    }
+}
+
 @MainActor
 final class NotchPanelController {
     let screenID: CGDirectDisplayID
@@ -26,22 +43,19 @@ final class NotchPanelController {
     private var isFloatingPill: Bool = false
 
     private var renderedPillFrameInPanel: CGRect = .zero
-    private var debouncedOccupiedOffset: CGFloat = 0
-    private var occupiedStreak: Int = 0
-    private var clearStreak: Int = 0
+    private var occupancy = OccupancyState()
 
     private var isInsideLocally = false
     private var hoverEnterWorkItem: DispatchWorkItem?
     private var hoverLeaveWorkItem: DispatchWorkItem?
 
-    private var globalMouseMonitor: Any?
-    private var localMouseMonitor: Any?
-    private var rightClickMonitor: Any?
+    var panelWindow: NSWindow { panel }
 
     init(
         screen: NSScreen,
         screenID: CGDirectDisplayID,
         store: NotchStore,
+        occupantBounds: [CGRect],
         onActivateApp: @escaping () -> Void,
         onBuildContextMenu: @escaping () -> NSMenu
     ) {
@@ -57,22 +71,21 @@ final class NotchPanelController {
         self.notchHeight = metrics.height
 
         if store.avoidanceMode == .autoStackBelow {
-            let raw = Self.detectOccupiedBottomOffset(for: screen, notchWidth: metrics.width)
-            self.debouncedOccupiedOffset = raw
-            self.occupiedStreak = raw > 0 ? 2 : 0
-            self.clearStreak = raw > 0 ? 0 : 2
+            let raw = Self.detectOccupiedBottomOffset(for: screen, notchWidth: metrics.width, bounds: occupantBounds)
+            _ = occupancy.update(raw, immediate: true)
         }
 
         let layout = Self.computeLayout(
             for: screen,
             mode: store.avoidanceMode,
-            occupiedOffset: debouncedOccupiedOffset
+            occupiedOffset: occupancy.offset
         )
         self.topOffset = layout.topOffset
         self.isFloatingPill = layout.isFloating
 
         let placeholderView = NotchView(
             store: store,
+            screenID: screenID,
             hasNotch: metrics.hasNotch,
             hardwareNotchWidth: metrics.width,
             hardwareNotchHeight: metrics.height,
@@ -106,16 +119,12 @@ final class NotchPanelController {
         panel.contentView = hostingView
 
         hostingView.rootView = makeRootView()
-        installMouseMonitors()
         panel.orderFrontRegardless()
     }
 
     deinit {
         hoverEnterWorkItem?.cancel()
         hoverLeaveWorkItem?.cancel()
-        if let m = globalMouseMonitor { NSEvent.removeMonitor(m) }
-        if let m = localMouseMonitor { NSEvent.removeMonitor(m) }
-        if let m = rightClickMonitor { NSEvent.removeMonitor(m) }
         if Thread.isMainThread {
             MainActor.assumeIsolated {
                 panel.orderOut(nil)
@@ -126,6 +135,7 @@ final class NotchPanelController {
     private func makeRootView() -> NotchView {
         NotchView(
             store: store,
+            screenID: screenID,
             hasNotch: hasNotch,
             hardwareNotchWidth: notchWidth,
             hardwareNotchHeight: notchHeight,
@@ -140,6 +150,11 @@ final class NotchPanelController {
         )
     }
 
+    func showContextMenu(with event: NSEvent) {
+        let menu = onBuildContextMenu()
+        NSMenu.popUpContextMenu(menu, with: event, for: hostingView)
+    }
+
     private func openContextMenuFromButton() {
         let menu = onBuildContextMenu()
         let pillRect = currentVisiblePillRectInScreen()
@@ -150,50 +165,38 @@ final class NotchPanelController {
         menu.popUp(positioning: nil, at: anchor, in: hostingView)
     }
 
-    func updateScreen(_ newScreen: NSScreen) {
+    func updateScreen(_ newScreen: NSScreen, occupantBounds: [CGRect]) {
         self.screen = newScreen
         let metrics = Self.computeMetrics(for: newScreen)
+        let metricsChanged = (metrics.hasNotch != hasNotch)
+            || abs(metrics.width - notchWidth) > 0.5
+            || abs(metrics.height - notchHeight) > 0.5
         self.hasNotch = metrics.hasNotch
         self.notchWidth = metrics.width
         self.notchHeight = metrics.height
-        refreshAvoidanceLayout(immediate: true)
+        refreshAvoidanceLayout(occupantBounds: occupantBounds, immediate: true, forceRebuildView: metricsChanged)
     }
 
-    func refreshAvoidanceLayout(immediate: Bool = false) {
-        if store.avoidanceMode == .autoStackBelow {
-            let raw = Self.detectOccupiedBottomOffset(for: screen, notchWidth: notchWidth)
-            if immediate {
-                debouncedOccupiedOffset = raw
-                occupiedStreak = raw > 0 ? 2 : 0
-                clearStreak = raw > 0 ? 0 : 2
-            } else if raw > 0 {
-                occupiedStreak += 1
-                clearStreak = 0
-                if occupiedStreak >= 2 {
-                    debouncedOccupiedOffset = raw
-                }
-            } else {
-                clearStreak += 1
-                occupiedStreak = 0
-                if clearStreak >= 2 {
-                    debouncedOccupiedOffset = 0
-                }
-            }
-        } else {
-            debouncedOccupiedOffset = 0
-            occupiedStreak = 0
-            clearStreak = 0
-        }
+    @discardableResult
+    func refreshAvoidanceLayout(
+        occupantBounds: [CGRect],
+        immediate: Bool = false,
+        forceRebuildView: Bool = false
+    ) -> Bool {
+        let raw = store.avoidanceMode == .autoStackBelow
+            ? Self.detectOccupiedBottomOffset(for: screen, notchWidth: notchWidth, bounds: occupantBounds)
+            : 0
+        let needsConfirmation = occupancy.update(raw, immediate: immediate || store.avoidanceMode != .autoStackBelow)
 
         let layout = Self.computeLayout(
             for: screen,
             mode: store.avoidanceMode,
-            occupiedOffset: debouncedOccupiedOffset
+            occupiedOffset: occupancy.offset
         )
         let changed = abs(layout.topOffset - topOffset) > 1.0 || layout.isFloating != isFloatingPill
         self.topOffset = layout.topOffset
         self.isFloatingPill = layout.isFloating
-        if changed {
+        if changed || forceRebuildView {
             hostingView.rootView = makeRootView()
         }
         let targetFrame = Self.panelFrame(
@@ -206,6 +209,7 @@ final class NotchPanelController {
         if panel.frame != targetFrame {
             panel.setFrame(targetFrame, display: true, animate: changed)
         }
+        return needsConfirmation
     }
 
     func setVisible(_ visible: Bool) {
@@ -214,6 +218,9 @@ final class NotchPanelController {
         } else {
             cancelHoverTimers()
             isInsideLocally = false
+            if store.hoveredScreenID == screenID {
+                store.hoveredScreenID = nil
+            }
             panel.ignoresMouseEvents = true
             panel.orderOut(nil)
         }
@@ -246,17 +253,38 @@ final class NotchPanelController {
         hoverLeaveWorkItem = nil
     }
 
-    private func handleMousePoint(_ screenPoint: NSPoint) {
-        guard !store.isHiddenByUser else {
-            cancelHoverTimers()
-            isInsideLocally = false
-            panel.ignoresMouseEvents = true
+    func handleMousePoint(_ screenPoint: NSPoint) {
+        if store.isHidden {
+            if isInsideLocally || hoverEnterWorkItem != nil || hoverLeaveWorkItem != nil {
+                cancelHoverTimers()
+                isInsideLocally = false
+            }
+            if !panel.ignoresMouseEvents {
+                panel.ignoresMouseEvents = true
+            }
             return
+        }
+
+        let isThisScreenHovered = store.hoveredScreenID == screenID
+
+        // Fast-path reject when cursor is far outside the panel bounds and not tracking hover.
+        let pFrame = panel.frame
+        if !isInsideLocally && !isThisScreenHovered {
+            if screenPoint.y < pFrame.minY - 12
+                || screenPoint.x < pFrame.minX - 12
+                || screenPoint.x > pFrame.maxX + 12 {
+                if !panel.ignoresMouseEvents {
+                    panel.ignoresMouseEvents = true
+                }
+                return
+            }
         }
 
         let hitRect = currentVisiblePillRectInScreen().insetBy(dx: -6, dy: -6)
         let inside = hitRect.contains(screenPoint)
-        panel.ignoresMouseEvents = !inside
+        if panel.ignoresMouseEvents != !inside {
+            panel.ignoresMouseEvents = !inside
+        }
 
         if inside {
             hoverLeaveWorkItem?.cancel()
@@ -264,12 +292,12 @@ final class NotchPanelController {
 
             if !isInsideLocally {
                 isInsideLocally = true
-                if !store.isHovering && hoverEnterWorkItem == nil {
+                if !isThisScreenHovered && hoverEnterWorkItem == nil {
                     let work = DispatchWorkItem { [weak self] in
                         guard let self else { return }
                         self.hoverEnterWorkItem = nil
-                        if self.isInsideLocally && !self.store.isHiddenByUser {
-                            self.store.isHovering = true
+                        if self.isInsideLocally && !self.store.isHidden {
+                            self.store.hoveredScreenID = self.screenID
                         }
                     }
                     hoverEnterWorkItem = work
@@ -282,36 +310,18 @@ final class NotchPanelController {
 
             if isInsideLocally {
                 isInsideLocally = false
-                if store.isHovering && hoverLeaveWorkItem == nil {
+                if isThisScreenHovered && hoverLeaveWorkItem == nil {
                     let work = DispatchWorkItem { [weak self] in
                         guard let self else { return }
                         self.hoverLeaveWorkItem = nil
-                        if !self.isInsideLocally {
-                            self.store.isHovering = false
+                        if !self.isInsideLocally && self.store.hoveredScreenID == self.screenID {
+                            self.store.hoveredScreenID = nil
                         }
                     }
                     hoverLeaveWorkItem = work
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: work)
                 }
             }
-        }
-    }
-
-    private func installMouseMonitors() {
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleMousePoint(NSEvent.mouseLocation)
-            }
-        }
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-            self?.handleMousePoint(NSEvent.mouseLocation)
-            return event
-        }
-        rightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] event in
-            guard let self, event.window === self.panel else { return event }
-            let menu = self.onBuildContextMenu()
-            NSMenu.popUpContextMenu(menu, with: event, for: self.hostingView)
-            return nil
         }
     }
 
@@ -350,45 +360,57 @@ final class NotchPanelController {
         }
     }
 
-    private static func detectOccupiedBottomOffset(for screen: NSScreen, notchWidth: CGFloat) -> CGFloat {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-            return 0
+    nonisolated private static let ignoredOwners: Set<String> = [
+        "WindowServer", "Dock", "SystemUIServer",
+        "Control Center", "ControlCenter",
+        "Notification Center", "NotificationCenter",
+        "Spotlight", "WindowManager"
+    ]
+
+    nonisolated static func occupiedBottomOffset(
+        for bounds: CGRect,
+        screenFrame: CGRect,
+        screenTopCG: CGFloat,
+        notchWidth: CGFloat
+    ) -> CGFloat? {
+        let maxOccupantWidth = min(screenFrame.width * 0.75, 860)
+        guard bounds.width >= 60,
+              bounds.width <= maxOccupantWidth,
+              bounds.height >= 18,
+              bounds.height <= 260 else {
+            return nil
         }
-        let myPID = ProcessInfo.processInfo.processIdentifier
-        let ignoredOwners: Set<String> = [
-            "WindowServer", "Dock", "SystemUIServer",
-            "Control Center", "ControlCenter",
-            "Notification Center", "NotificationCenter",
-            "Spotlight", "WindowManager"
-        ]
-        let primaryHeight = CGDisplayBounds(CGMainDisplayID()).height
-        let screenTopCG = primaryHeight - screen.frame.maxY
-        let notchMinX = screen.frame.midX - notchWidth / 2 - 12
-        let notchMaxX = screen.frame.midX + notchWidth / 2 + 12
-        let minLayer = Int(CGWindowLevelForKey(.statusWindow))
+        let notchMinX = screenFrame.midX - notchWidth / 2 - 12
+        let notchMaxX = screenFrame.midX + notchWidth / 2 + 12
+        let overlapsX = bounds.maxX >= notchMinX && bounds.minX <= notchMaxX
+        let nearTop = abs(bounds.minY - screenTopCG) <= 14
+        guard overlapsX && nearTop else { return nil }
+        return (bounds.maxY - screenTopCG) + 6
+    }
 
-        var maxBottomOffset: CGFloat = 0
-        for win in list {
-            guard let pid = win[kCGWindowOwnerPID as String] as? Int32, pid != myPID else { continue }
-            if let owner = win[kCGWindowOwnerName as String] as? String, ignoredOwners.contains(owner) { continue }
-            let layer = (win[kCGWindowLayer as String] as? Int) ?? 0
-            guard layer >= minLayer else { continue }
-            let alpha = (win[kCGWindowAlpha as String] as? Double) ?? 1.0
-            guard alpha > 0.05 else { continue }
-            guard let boundsDict = win[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsDict) else { continue }
-
-            guard bounds.width >= 60, bounds.height >= 18, bounds.height <= 260 else { continue }
-            let overlapsX = bounds.maxX >= notchMinX && bounds.minX <= notchMaxX
-            let nearTop = abs(bounds.minY - screenTopCG) <= 14
-            if overlapsX && nearTop {
-                let offset = (bounds.maxY - screenTopCG) + 6
-                if offset > maxBottomOffset {
-                    maxBottomOffset = offset
-                }
+    nonisolated static func occupantBounds() -> [CGRect] {
+        autoreleasepool {
+            guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+                return []
+            }
+            let myPID = ProcessInfo.processInfo.processIdentifier
+            let minLayer = Int(CGWindowLevelForKey(.statusWindow))
+            return list.compactMap { win in
+                guard let pid = win[kCGWindowOwnerPID as String] as? Int32, pid != myPID else { return nil }
+                if let owner = win[kCGWindowOwnerName as String] as? String, ignoredOwners.contains(owner) { return nil }
+                guard ((win[kCGWindowLayer as String] as? Int) ?? 0) >= minLayer,
+                      ((win[kCGWindowAlpha as String] as? Double) ?? 1.0) > 0.05,
+                      let boundsDict = win[kCGWindowBounds as String] as? NSDictionary else { return nil }
+                return CGRect(dictionaryRepresentation: boundsDict)
             }
         }
-        return maxBottomOffset
+    }
+
+    private static func detectOccupiedBottomOffset(for screen: NSScreen, notchWidth: CGFloat, bounds: [CGRect]) -> CGFloat {
+        let screenTopCG = CGDisplayBounds(CGMainDisplayID()).height - screen.frame.maxY
+        return bounds.compactMap {
+            occupiedBottomOffset(for: $0, screenFrame: screen.frame, screenTopCG: screenTopCG, notchWidth: notchWidth)
+        }.max() ?? 0
     }
 
     private static func panelFrame(for screen: NSScreen, width: CGFloat, height: CGFloat, topOffset: CGFloat, topRight: Bool) -> CGRect {
@@ -406,6 +428,14 @@ final class NotchWindowManager: NSObject, NSMenuDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var mouseScreenTimer: Timer?
     private var occupancyTimer: Timer?
+    private var occupancyConfirmation: DispatchWorkItem?
+    private let occupancyQueue = DispatchQueue(label: "agy.notch.occupancy", qos: .utility)
+    private var isScanningOccupancy = false
+
+    private var globalMouseMonitor: Any?
+    private var localMouseMonitor: Any?
+    private var rightClickMonitor: Any?
+    private var recoveryStatusItem: NSStatusItem?
 
     init(store: NotchStore) {
         self.store = store
@@ -413,6 +443,8 @@ final class NotchWindowManager: NSObject, NSMenuDelegate {
         rebuildPanels()
         startOccupancyTimer()
         updateFollowTimer(enabled: store.screenMode == .followActive)
+        updateMouseMonitors()
+        updateRecoveryStatusItem()
 
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -424,13 +456,19 @@ final class NotchWindowManager: NSObject, NSMenuDelegate {
             }
         }
 
-        store.$isHiddenByUser
+        Publishers.CombineLatest(store.$isTemporarilyHidden, store.$isHiddenByUser)
             .receive(on: RunLoop.main)
-            .sink { [weak self] hidden in
+            .sink { [weak self] tempHidden, disabled in
+                guard let self else { return }
+                let hidden = tempHidden || disabled
                 if hidden {
-                    self?.store.isHovering = false
+                    self.store.hoveredScreenID = nil
                 }
-                self?.controllers.values.forEach { $0.setVisible(!hidden) }
+                self.controllers.values.forEach { $0.setVisible(!hidden) }
+                self.updateMouseMonitors()
+                self.updateRecoveryStatusItem()
+                self.updateOccupancyTimer(enabled: self.store.avoidanceMode == .autoStackBelow)
+                if !hidden { self.refreshOccupancy(immediate: true) }
             }
             .store(in: &cancellables)
 
@@ -444,8 +482,9 @@ final class NotchWindowManager: NSObject, NSMenuDelegate {
 
         store.$avoidanceMode
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.controllers.values.forEach { $0.refreshAvoidanceLayout(immediate: true) }
+            .sink { [weak self] mode in
+                self?.refreshOccupancy(immediate: true)
+                self?.updateOccupancyTimer(enabled: mode == .autoStackBelow)
             }
             .store(in: &cancellables)
     }
@@ -454,26 +493,178 @@ final class NotchWindowManager: NSObject, NSMenuDelegate {
         if let obs = screenObserver { NotificationCenter.default.removeObserver(obs) }
         mouseScreenTimer?.invalidate()
         occupancyTimer?.invalidate()
+        occupancyConfirmation?.cancel()
+        if let m = globalMouseMonitor { NSEvent.removeMonitor(m) }
+        if let m = localMouseMonitor { NSEvent.removeMonitor(m) }
+        if let m = rightClickMonitor { NSEvent.removeMonitor(m) }
+        if let item = recoveryStatusItem, Thread.isMainThread {
+            MainActor.assumeIsolated {
+                NSStatusBar.system.removeStatusItem(item)
+            }
+        }
+    }
+
+    private func updateMouseMonitors() {
+        let shouldMonitor = !store.isHidden && !controllers.isEmpty
+        if shouldMonitor {
+            if globalMouseMonitor == nil {
+                globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.dispatchMousePoint(NSEvent.mouseLocation)
+                    }
+                }
+            }
+            if localMouseMonitor == nil {
+                localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+                    self?.dispatchMousePoint(NSEvent.mouseLocation)
+                    return event
+                }
+            }
+            if rightClickMonitor == nil {
+                rightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] event in
+                    guard let self, let win = event.window else { return event }
+                    if let controller = self.controllers.values.first(where: { $0.panelWindow === win }) {
+                        controller.showContextMenu(with: event)
+                        return nil
+                    }
+                    return event
+                }
+            }
+        } else {
+            if let m = globalMouseMonitor {
+                NSEvent.removeMonitor(m)
+                globalMouseMonitor = nil
+            }
+            if let m = localMouseMonitor {
+                NSEvent.removeMonitor(m)
+                localMouseMonitor = nil
+            }
+            if let m = rightClickMonitor {
+                NSEvent.removeMonitor(m)
+                rightClickMonitor = nil
+            }
+        }
+    }
+
+    private func dispatchMousePoint(_ point: NSPoint) {
+        for controller in controllers.values {
+            controller.handleMousePoint(point)
+        }
+    }
+
+    /// Shows a minimal menu bar icon only while temporarily hidden so the user
+    /// always has a discoverable one-click way to restore the notch.
+    private func updateRecoveryStatusItem() {
+        let shouldShow = store.isTemporarilyHidden && !store.isHiddenByUser
+        if shouldShow {
+            if recoveryStatusItem == nil {
+                let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+                if let button = item.button {
+                    button.image = NSImage(systemSymbolName: "rectangle.topthird.inset.filled", accessibilityDescription: "显示 agy-notch")
+                    button.toolTip = "agy-notch 已暂时隐藏（点击恢复）"
+                }
+                let menu = NSMenu()
+                let showItem = NSMenuItem(title: "显示刘海状态栏", action: #selector(MenuActions.restoreFromTemporaryHide), keyEquivalent: "")
+                showItem.target = MenuActions.shared
+                menu.addItem(showItem)
+                let disableItem = NSMenuItem(title: "关闭刘海状态栏（可在设置中重新开启）", action: #selector(MenuActions.disableNotch), keyEquivalent: "")
+                disableItem.target = MenuActions.shared
+                menu.addItem(disableItem)
+                menu.addItem(.separator())
+                let quitItem = NSMenuItem(title: "退出 agy-notch", action: #selector(MenuActions.quitApp), keyEquivalent: "q")
+                quitItem.target = MenuActions.shared
+                menu.addItem(quitItem)
+                item.menu = menu
+                recoveryStatusItem = item
+            }
+        } else if let item = recoveryStatusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            recoveryStatusItem = nil
+        }
     }
 
     private func startOccupancyTimer() {
+        updateOccupancyTimer(enabled: store.avoidanceMode == .autoStackBelow)
+    }
+
+    private func updateOccupancyTimer(enabled: Bool) {
         occupancyTimer?.invalidate()
-        occupancyTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, self.store.avoidanceMode == .autoStackBelow else { return }
-                self.controllers.values.forEach { $0.refreshAvoidanceLayout(immediate: false) }
+        occupancyTimer = nil
+        occupancyConfirmation?.cancel()
+        occupancyConfirmation = nil
+        guard enabled, !store.isHidden else { return }
+        let t = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self,
+                      !self.store.isHidden,
+                      self.store.avoidanceMode == .autoStackBelow else { return }
+                self.refreshOccupancy(immediate: false)
             }
+        }
+        t.tolerance = 0.5
+        occupancyTimer = t
+    }
+
+    private func refreshOccupancy(immediate: Bool, confirming: Bool = false) {
+        guard !store.isHidden else { return }
+        if store.avoidanceMode != .autoStackBelow {
+            applyOccupancyBounds([], immediate: immediate, confirming: confirming)
+            return
+        }
+        if immediate {
+            let bounds = NotchPanelController.occupantBounds()
+            applyOccupancyBounds(bounds, immediate: true, confirming: confirming)
+            return
+        }
+        guard !isScanningOccupancy else { return }
+        isScanningOccupancy = true
+        occupancyQueue.async { [weak self] in
+            let bounds = NotchPanelController.occupantBounds()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isScanningOccupancy = false
+                guard !self.store.isHidden, self.store.avoidanceMode == .autoStackBelow else { return }
+                self.applyOccupancyBounds(bounds, immediate: false, confirming: confirming)
+            }
+        }
+    }
+
+    private func applyOccupancyBounds(_ bounds: [CGRect], immediate: Bool, confirming: Bool) {
+        var needsConfirmation = false
+        for controller in controllers.values {
+            if controller.refreshAvoidanceLayout(occupantBounds: bounds, immediate: immediate) {
+                needsConfirmation = true
+            }
+        }
+        occupancyConfirmation?.cancel()
+        occupancyConfirmation = nil
+        if needsConfirmation && !confirming {
+            let work = DispatchWorkItem { [weak self] in
+                self?.refreshOccupancy(immediate: false, confirming: true)
+            }
+            occupancyConfirmation = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
         }
     }
 
     private func updateFollowTimer(enabled: Bool) {
         mouseScreenTimer?.invalidate()
+        mouseScreenTimer = nil
         guard enabled else { return }
-        mouseScreenTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.rebuildPanels()
+        let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.store.isHidden else { return }
+                let targets = self.targetScreens()
+                guard let target = targets.first else { return }
+                let sid = (target.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+                if self.controllers.count == 1 && self.controllers[sid] != nil {
+                    return
+                }
+                self.rebuildPanels()
             }
         }
+        t.tolerance = 0.25
+        mouseScreenTimer = t
     }
 
     private func targetScreens() -> [NSScreen] {
@@ -498,40 +689,90 @@ final class NotchWindowManager: NSObject, NSMenuDelegate {
 
     func rebuildPanels() {
         let targets = targetScreens()
+        let bounds = store.avoidanceMode == .autoStackBelow && !store.isHidden
+            ? NotchPanelController.occupantBounds() : []
         var targetIDs = Set<CGDirectDisplayID>()
 
         for screen in targets {
             let sid = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
             targetIDs.insert(sid)
             if let existing = controllers[sid] {
-                existing.updateScreen(screen)
-                existing.setVisible(!store.isHiddenByUser)
+                existing.updateScreen(screen, occupantBounds: bounds)
+                existing.setVisible(!store.isHidden)
             } else {
                 let ctrl = NotchPanelController(
                     screen: screen,
                     screenID: sid,
                     store: store,
+                    occupantBounds: bounds,
                     onActivateApp: { [weak self] in self?.activateAntigravity() },
                     onBuildContextMenu: { [weak self] in self?.buildContextMenu() ?? NSMenu() }
                 )
-                ctrl.setVisible(!store.isHiddenByUser)
+                ctrl.setVisible(!store.isHidden)
                 controllers[sid] = ctrl
             }
         }
 
         for sid in Array(controllers.keys) where !targetIDs.contains(sid) {
+            if store.hoveredScreenID == sid {
+                store.hoveredScreenID = nil
+            }
             controllers.removeValue(forKey: sid)
+        }
+        updateMouseMonitors()
+    }
+
+    private func activateRunningApp(_ app: NSRunningApplication) {
+        if #available(macOS 14.0, *) {
+            app.activate()
+        } else {
+            app.activate(options: [.activateIgnoringOtherApps])
         }
     }
 
     func activateAntigravity() {
         let running = NSWorkspace.shared.runningApplications
+        if store.dataDir.contains("antigravity-cli") {
+            let target = NotchStore.resolveCliTerminalTarget(env: ProcessInfo.processInfo.environment)
+            if let bid = target.bundleId?.lowercased(),
+               let app = running.first(where: { ($0.bundleIdentifier ?? "").lowercased() == bid }) {
+                activateRunningApp(app)
+                return
+            }
+            if let name = target.appName?.lowercased(),
+               let app = running.first(where: { ($0.localizedName ?? "").lowercased() == name }) {
+                activateRunningApp(app)
+                return
+            }
+            let fallbackTerminalBundles = [
+                "com.mitchellh.ghostty",
+                "com.googlecode.iterm2",
+                "com.apple.Terminal",
+                "dev.warp.Warp-Stable",
+                "net.kovidgoyal.kitty",
+                "com.github.wez.wezterm",
+                "org.alacritty",
+            ]
+            if let app = running.first(where: {
+                let bid = ($0.bundleIdentifier ?? "").lowercased()
+                return fallbackTerminalBundles.contains(where: { $0.lowercased() == bid })
+            }) {
+                activateRunningApp(app)
+                return
+            }
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            proc.arguments = ["-a", target.appName ?? "Terminal"]
+            try? proc.run()
+            return
+        }
+
         if let app = running.first(where: {
             let name = ($0.localizedName ?? "").lowercased()
             let bid = ($0.bundleIdentifier ?? "").lowercased()
             return name.contains("antigravity") || bid.contains("antigravity")
         }) {
-            app.activate(options: [.activateIgnoringOtherApps])
+            activateRunningApp(app)
             return
         }
         let proc = Process()
@@ -558,10 +799,9 @@ final class NotchWindowManager: NSObject, NSMenuDelegate {
         refreshItem.target = MenuActions.shared
         menu.addItem(refreshItem)
 
-        let hideTitle = store.isHiddenByUser ? "显示刘海状态栏" : "暂时隐藏刘海状态栏"
-        let hideItem = NSMenuItem(title: hideTitle, action: #selector(MenuActions.toggleHidden), keyEquivalent: "h")
-        hideItem.target = MenuActions.shared
-        menu.addItem(hideItem)
+        let tempHideItem = NSMenuItem(title: "暂时隐藏刘海状态栏", action: #selector(MenuActions.temporaryHide), keyEquivalent: "h")
+        tempHideItem.target = MenuActions.shared
+        menu.addItem(tempHideItem)
 
         let idleHideItem = NSMenuItem(title: "空闲时隐入刘海", action: #selector(MenuActions.toggleHideWhenIdle), keyEquivalent: "")
         idleHideItem.target = MenuActions.shared
@@ -596,6 +836,10 @@ final class NotchWindowManager: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let disableItem = NSMenuItem(title: "关闭刘海状态栏（可在设置中重新开启）", action: #selector(MenuActions.disableNotch), keyEquivalent: "")
+        disableItem.target = MenuActions.shared
+        menu.addItem(disableItem)
+
         let quitItem = NSMenuItem(title: "退出 agy-notch", action: #selector(MenuActions.quitApp), keyEquivalent: "q")
         quitItem.target = MenuActions.shared
         menu.addItem(quitItem)
@@ -612,8 +856,17 @@ final class MenuActions: NSObject {
         store?.refreshNow(force: true)
     }
 
-    @objc func toggleHidden() {
-        store?.isHiddenByUser.toggle()
+    @objc func temporaryHide() {
+        store?.isTemporarilyHidden = true
+    }
+
+    @objc func restoreFromTemporaryHide() {
+        store?.isTemporarilyHidden = false
+    }
+
+    @objc func disableNotch() {
+        store?.isTemporarilyHidden = false
+        store?.isHiddenByUser = true
     }
 
     @objc func toggleHideWhenIdle() {

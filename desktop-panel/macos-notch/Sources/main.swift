@@ -62,10 +62,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func isAntigravityRunning() -> Bool {
-        NSWorkspace.shared.runningApplications.contains { app in
-            let name = (app.localizedName ?? "").lowercased()
-            let bid = (app.bundleIdentifier ?? "").lowercased()
-            return name.contains("antigravity") || bid.contains("antigravity")
+        autoreleasepool {
+            NSWorkspace.shared.runningApplications.contains { app in
+                let name = (app.localizedName ?? "").lowercased()
+                let bid = (app.bundleIdentifier ?? "").lowercased()
+                return name.contains("antigravity") || bid.contains("antigravity")
+            }
         }
     }
 
@@ -81,8 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let name = (app.localizedName ?? "").lowercased()
             let bid = (app.bundleIdentifier ?? "").lowercased()
             guard name.contains("antigravity") || bid.contains("antigravity") else { return }
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 600_000_000)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 guard let self else { return }
                 if !self.isAntigravityRunning() {
                     NSApp.terminate(nil)
@@ -90,8 +91,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        lifecycleTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
+        let t = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 let running = self.isAntigravityRunning()
                 if running {
@@ -101,6 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        t.tolerance = 4.0
+        lifecycleTimer = t
     }
 
     private var lockFD: Int32 = -1
