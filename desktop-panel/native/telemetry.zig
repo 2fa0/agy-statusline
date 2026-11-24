@@ -810,6 +810,7 @@ fn recent(a: A, runtime: *Runtime, root: []const u8, hooks: V, now: f64) !V {
         try c.put(a, &row, "isActive", c.b(c.eq(id, active)));
         try c.put(a, &row, "transcriptPath", c.s(try transcriptPath(a, root, meta, id)));
         try c.put(a, &row, "lastEvent", c.s(c.str(c.get(meta, "lastEvent"))));
+        try c.put(a, &row, "terminalEnv", c.get(meta, "terminalEnv"));
         try c.add(&out, row);
     }
     return out;
@@ -977,6 +978,7 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
         return out;
     }
     const meta = c.get(c.get(hooks, "sessions"), id);
+    try c.put(a, &out, "terminalEnv", c.get(meta, "terminalEnv"));
     const dbpath = try c.join(a, &.{ cfg.root, "conversations", try c.fmt(a, "{s}.db", .{id}) });
     const db = try runtime.database(id, dbpath, a);
     const transcript_path = try transcriptPath(a, cfg.root, meta, id);

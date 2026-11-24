@@ -5,6 +5,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
+import tarfile
 import unittest
 from pathlib import Path
 
@@ -13,6 +14,77 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @unittest.skipIf(os.name == 'nt', 'Unix installers')
 class InstallerTests(unittest.TestCase):
+    def test_macos_release_cli_archive_installs_standalone_notch(self):
+        for with_notch in (True, False):
+            with self.subTest(with_notch=with_notch), tempfile.TemporaryDirectory(prefix='agy-cli-release-') as tmp:
+                base = Path(tmp)
+                release = base / 'release'
+                release.mkdir()
+                payload = base / 'payload'
+                (payload / 'sidecars/status').mkdir(parents=True)
+                names = ['agy-statusline']
+                if with_notch:
+                    names += ['sidecars/status/agy-desktop-backend', 'sidecars/status/agy-notch']
+                for name in names:
+                    path = payload / name
+                    path.write_text('#!/bin/sh\necho test-version\n')
+                    path.chmod(0o755)
+                with tarfile.open(release / 'agy-statusline-macos-arm64.tar.gz', 'w:gz') as archive:
+                    for name in names:
+                        archive.add(payload / name, arcname=name)
+                mocks = base / 'mocks'
+                mocks.mkdir()
+                for name, text in {
+                    'uname': '#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo arm64;; esac\n',
+                    'xattr': '#!/bin/sh\nexit 0\n',
+                    'curl': '#!/bin/sh\ncp "${2#file://}" "$4"\n',
+                }.items():
+                    path = mocks / name
+                    path.write_text(text)
+                    path.chmod(0o755)
+                cli = base / 'custom-cli'
+                env = dict(os.environ, HOME=str(base / 'home'), AGY_CLI_DIR=str(cli),
+                           AGY_STATUSLINE_RELEASE_BASE='file://' + str(release),
+                           PATH=str(mocks) + os.pathsep + os.environ['PATH'])
+                result = subprocess.run(['bash', '-s', '--', '--cli-only'], input=(ROOT / 'install.sh').read_text(),
+                                        env=env, text=True, capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((cli / 'agy-statusline').is_file())
+                self.assertEqual((cli / 'sidecars/status/agy-notch').is_file(), with_notch)
+                if not with_notch:
+                    self.assertIn('仅包含终端状态栏', result.stderr)
+
+    def test_macos_cli_only_installs_notch_without_desktop_plugin(self):
+        with tempfile.TemporaryDirectory(prefix='agy-cli-installer-') as tmp:
+            base = Path(tmp)
+            source = base / 'source'
+            sidecars = source / 'desktop-panel/sidecars/status'
+            sidecars.mkdir(parents=True)
+            shutil.copyfile(ROOT / 'install.sh', source / 'install.sh')
+            (source / 'main.zig').touch()
+            (source / 'desktop-panel/plugin.json').write_text('{}')
+            for path in (source / 'agy-statusline', sidecars / 'agy-desktop-backend', sidecars / 'agy-notch'):
+                path.write_text('#!/bin/sh\necho test-version\n')
+                path.chmod(0o755)
+            mocks = base / 'mocks'
+            mocks.mkdir()
+            for name, text in {
+                'uname': '#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo arm64;; esac\n',
+                'xattr': '#!/bin/sh\nexit 0\n',
+            }.items():
+                path = mocks / name
+                path.write_text(text)
+                path.chmod(0o755)
+            cli = base / 'custom-cli'
+            home = base / 'home'
+            env = dict(os.environ, HOME=str(home), AGY_CLI_DIR=str(cli), PATH=str(mocks) + os.pathsep + os.environ['PATH'])
+            result = subprocess.run(['bash', str(source / 'install.sh'), '--cli-only'], env=env,
+                                    text=True, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for name in ('agy-desktop-backend', 'agy-notch'):
+                self.assertTrue((cli / 'sidecars/status' / name).is_file())
+            self.assertFalse((home / '.gemini/config/plugins/agy-desktop-status').exists())
+
     def test_source_install_accepts_platforms_without_release_assets(self):
         with tempfile.TemporaryDirectory(prefix='agy-installer-') as tmp:
             base = Path(tmp)

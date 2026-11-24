@@ -99,6 +99,8 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 }
 ```
 
+macOS 13+ 的 CLI 安装包也包含刘海程序；启用上述状态栏后，下一次刷新会自动启动，无需安装或运行 Desktop。CLI 刘海独立常驻，可从菜单暂时隐藏或关闭；关闭 Desktop 不会让它退出。点击任务会激活该会话记录的终端应用，暂不定位到具体标签页。自定义 CLI 目录时使用 `AGY_CLI_DIR` 安装，并使用安装器输出的状态栏命令。
+
 ### 遇到问题？先跑一键诊断
 
 ```sh

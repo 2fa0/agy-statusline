@@ -14,6 +14,16 @@ struct ActiveTaskItem: Identifiable, Equatable {
     var contextPct: Double?
     var isRunning: Bool = true
     var code: String = ""
+    var terminalEnvironment: [String: String] = [:]
+}
+
+enum NotchPaths {
+    static func dataRoot(for dataDir: String) -> String? {
+        let data = URL(fileURLWithPath: dataDir).standardizedFileURL
+        let parent = data.deletingLastPathComponent()
+        guard data.lastPathComponent == "agy-desktop-status", parent.lastPathComponent == "plugin_data" else { return nil }
+        return parent.deletingLastPathComponent().path
+    }
 }
 
 struct NotchPeekEvent: Equatable {
@@ -119,6 +129,7 @@ enum BackendRequestResult {
 final class BackendLinesClient: @unchecked Sendable {
     private let backendPath: String
     let dataDir: String
+    let dataRoot: String?
     private let ioLock = NSLock()
     private let stateLock = NSLock()
 
@@ -135,9 +146,10 @@ final class BackendLinesClient: @unchecked Sendable {
     private let cancelReadFD: Int32
     private let cancelWriteFD: Int32
 
-    init(backendPath: String, dataDir: String) {
+    init(backendPath: String, dataDir: String, dataRoot: String? = nil) {
         self.backendPath = backendPath
         self.dataDir = dataDir
+        self.dataRoot = dataRoot ?? NotchPaths.dataRoot(for: dataDir)
         var fds: [Int32] = [-1, -1]
         if Darwin.pipe(&fds) == 0 {
             _ = fcntl(fds[0], F_SETFL, O_NONBLOCK)
@@ -345,6 +357,7 @@ final class BackendLinesClient: @unchecked Sendable {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: backendPath)
         proc.arguments = ["--serve", "--data-dir", dataDir]
+        if let dataRoot { proc.arguments! += ["--desktop-root", dataRoot] }
 
         var env = ProcessInfo.processInfo.environment
         env["AGY_NO_NOTCH"] = "1"
@@ -489,6 +502,7 @@ final class NotchStore: ObservableObject {
 
     private let backendPath: String
     let dataDir: String
+    let isCLI: Bool
     private var isApplyingRemoteConfig = false
     private let backendClient: BackendLinesClient
     private let fetchQueue = DispatchQueue(label: "agy.notch.fetch", qos: .userInitiated)
@@ -506,10 +520,12 @@ final class NotchStore: ObservableObject {
     private var previousTaskStates: [String: (state: NotchSnapshot.RunState, isActive: Bool)] = [:]
     private var peekDismissWorkItem: DispatchWorkItem?
 
-    init(backendPath: String, dataDir: String, demoMode: Bool = false) {
+    init(backendPath: String, dataDir: String, demoMode: Bool = false, dataRoot: String? = nil, isCLI: Bool = false) {
+        let root = dataRoot ?? NotchPaths.dataRoot(for: dataDir)
         self.backendPath = backendPath
         self.dataDir = dataDir
-        self.backendClient = BackendLinesClient(backendPath: backendPath, dataDir: dataDir)
+        self.backendClient = BackendLinesClient(backendPath: backendPath, dataDir: dataDir, dataRoot: root)
+        self.isCLI = isCLI || root.map { URL(fileURLWithPath: $0).lastPathComponent == "antigravity-cli" } == true
         self.demoMode = demoMode
 
         let defaults = UserDefaults.standard
@@ -802,10 +818,12 @@ final class NotchStore: ObservableObject {
               let payload = try? JSONSerialization.data(withJSONObject: ["notch": patch]) else { return }
         let backend = backendPath
         let data = dataDir
+        let root = backendClient.dataRoot
         fetchQueue.async {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: backend)
             process.arguments = ["settings-patch", "--data-dir", data]
+            if let root { process.arguments! += ["--desktop-root", root] }
             var env = ProcessInfo.processInfo.environment
             env["AGY_NO_NOTCH"] = "1"
             process.environment = env
@@ -979,6 +997,7 @@ final class NotchStore: ObservableObject {
                 backendPath: backendPath,
                 dataDir: dataDir,
                 conversationId: conversationId,
+                dataRoot: client.dataRoot,
                 timeout: 3.0,
                 cancelFD: client.cancellationFD
             )
@@ -1026,6 +1045,7 @@ final class NotchStore: ObservableObject {
         backendPath: String,
         dataDir: String? = nil,
         conversationId: String? = nil,
+        dataRoot: String? = nil,
         timeout: TimeInterval = 3.0,
         cancelFD: Int32 = -1
     ) -> [String: Any]? {
@@ -1033,6 +1053,7 @@ final class NotchStore: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: backendPath)
         var args = ["status-brief"]
+        if let dataRoot { args.append(contentsOf: ["--desktop-root", dataRoot]) }
         if let dataDir, !dataDir.isEmpty {
             args.append(contentsOf: ["--data-dir", dataDir])
         }
@@ -1253,7 +1274,8 @@ final class NotchStore: ObservableObject {
                 tokPerSec: snap.tokPerSec,
                 contextPct: snap.contextPct,
                 isRunning: snap.isActive,
-                code: snap.code
+                code: snap.code,
+                terminalEnvironment: json["terminalEnv"] as? [String: String] ?? [:]
             )
             recentList.append(primaryItem)
             if snap.isActive {
@@ -1401,7 +1423,8 @@ final class NotchStore: ObservableObject {
                     tokPerSec: tok,
                     contextPct: ctx,
                     isRunning: active,
-                    code: code
+                    code: code,
+                    terminalEnvironment: item["terminalEnv"] as? [String: String] ?? previouslyActiveTasks[cid]?.terminalEnvironment ?? [:]
                 )
                 if active && tasks.count < 4 {
                     tasks.append(taskItem)
@@ -1471,11 +1494,11 @@ final class NotchStore: ObservableObject {
         default: nil
         }
 
-        if !cfBundle.isEmpty, !cfBundle.lowercased().contains("antigravity") {
-            return (cfBundle, mapped?.1)
-        }
         if let mapped {
             return (mapped.0, mapped.1)
+        }
+        if !cfBundle.isEmpty, !cfBundle.lowercased().contains("antigravity") {
+            return (cfBundle, nil)
         }
         return (nil, nil)
     }

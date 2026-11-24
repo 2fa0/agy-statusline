@@ -732,37 +732,21 @@ final class NotchWindowManager: NSObject, NSMenuDelegate {
 
     func activateAntigravity() {
         let running = NSWorkspace.shared.runningApplications
-        if store.dataDir.contains("antigravity-cli") {
-            let target = NotchStore.resolveCliTerminalTarget(env: ProcessInfo.processInfo.environment)
+        if store.isCLI {
+            let env = store.displayedTask?.terminalEnvironment ?? [:]
+            let target = NotchStore.resolveCliTerminalTarget(env: env)
             if let bid = target.bundleId?.lowercased(),
                let app = running.first(where: { ($0.bundleIdentifier ?? "").lowercased() == bid }) {
                 activateRunningApp(app)
                 return
             }
-            if let name = target.appName?.lowercased(),
-               let app = running.first(where: { ($0.localizedName ?? "").lowercased() == name }) {
-                activateRunningApp(app)
-                return
-            }
-            let fallbackTerminalBundles = [
-                "com.mitchellh.ghostty",
-                "com.googlecode.iterm2",
-                "com.apple.Terminal",
-                "dev.warp.Warp-Stable",
-                "net.kovidgoyal.kitty",
-                "com.github.wez.wezterm",
-                "org.alacritty",
-            ]
-            if let app = running.first(where: {
-                let bid = ($0.bundleIdentifier ?? "").lowercased()
-                return fallbackTerminalBundles.contains(where: { $0.lowercased() == bid })
-            }) {
-                activateRunningApp(app)
-                return
-            }
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            proc.arguments = ["-a", target.appName ?? "Terminal"]
+            if let bid = target.bundleId {
+                proc.arguments = ["-b", bid]
+            } else {
+                proc.arguments = ["-a", target.appName ?? "Terminal"]
+            }
             try? proc.run()
             return
         }

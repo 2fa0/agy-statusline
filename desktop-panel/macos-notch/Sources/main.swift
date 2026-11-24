@@ -22,12 +22,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var dataDir = ProcessInfo.processInfo.environment["PLUGIN_DATA"]
             ?? "\(home)/.gemini/antigravity/plugin_data/agy-desktop-status"
         var demoMode = false
+        var isCLI = false
+        var dataRoot: String?
 
         var idx = 1
         while idx < args.count {
             let arg = args[idx]
             if arg == "--demo" {
                 demoMode = true
+            } else if arg == "--cli" {
+                isCLI = true
+            } else if arg == "--desktop-root", idx + 1 < args.count {
+                idx += 1
+                dataRoot = args[idx]
             } else if arg == "--backend", idx + 1 < args.count {
                 idx += 1
                 backendPath = args[idx]
@@ -43,12 +50,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        store = NotchStore(backendPath: backendPath, dataDir: dataDir, demoMode: demoMode)
+        store = NotchStore(backendPath: backendPath, dataDir: dataDir, demoMode: demoMode, dataRoot: dataRoot, isCLI: isCLI)
         manager = NotchWindowManager(store: store)
         MenuActions.shared.store = store
         MenuActions.shared.manager = manager
 
-        if !demoMode {
+        if !demoMode && !store.isCLI {
             startAntigravityLifecycleWatch()
         }
     }
