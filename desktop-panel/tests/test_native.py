@@ -398,11 +398,11 @@ class NativeTests(unittest.TestCase):
                 else:
                     self.assertEqual(actual[key], value)
 
-    def test_brief_queries_skip_full_transcript_and_preserve_seven_live_sessions(self):
+    def test_brief_queries_skip_full_transcript_and_preserve_nine_live_sessions(self):
         self.database().close()
         self.log.parent.mkdir(parents=True)
         self.log.write_bytes(b'x' * (17 * 1024 * 1024))
-        ids = [f'12345678-1234-1234-1234-{i:012d}' for i in range(7)]
+        ids = [f'12345678-1234-1234-1234-{i:012d}' for i in range(9)]
         for cid in ids:
             db = sqlite3.connect(self.root / 'conversations' / f'{cid}.db')
             db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,status INTEGER,step_type INTEGER,step_payload BLOB,metadata BLOB)')
@@ -425,6 +425,28 @@ class NativeTests(unittest.TestCase):
             snap = brief(cid)
             self.assertEqual(snap['live']['charsPerSec'], 0)
             self.assertEqual(snap['session']['code'], 'stalled')
+
+    def test_brief_can_omit_shared_fields_without_changing_session(self):
+        self.database().close()
+        proc = self.worker()
+
+        def brief(cid=CID, **options):
+            proc.stdin.write(json.dumps({'op': 'brief', 'conversationId': cid, **options}) + '\n')
+            proc.stdin.flush()
+            return json.loads(proc.stdout.readline())
+
+        full = brief()
+        lean = brief(includeShared=False)
+        for key in ('config', 'quota', 'recentConversations'):
+            self.assertIn(key, full)
+            self.assertNotIn(key, lean)
+            self.assertIn(key, brief())  # The option must reset on each request.
+        for key in ('found', 'conversationId', 'modelName', 'workspaceName', 'transcriptPath', 'contextPct', 'session'):
+            self.assertEqual(lean[key], full[key])
+        self.assertIn('recentConversations', brief('auto', includeShared=False))
+        proc.stdin.write(json.dumps({'conversationId': CID, 'includeShared': False}) + '\n')
+        proc.stdin.flush()
+        self.assertIn('recentConversations', json.loads(proc.stdout.readline()))
 
     def test_brief_database_cache_does_not_truncate_full_statistics(self):
         self.database(entries=[blob()] * 60).close()
@@ -477,6 +499,140 @@ class NativeTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as e:
                 request(path, method=method)
             self.assertEqual(e.exception.code, status); e.exception.close()
+
+    def test_brief_falls_back_to_cli_transcript_when_db_missing(self):
+        cli_log = self.root / 'cli-brain' / CID / 'transcript_full.jsonl'
+        cli_log.parent.mkdir(parents=True)
+        cli_log.write_text('\n'.join([
+            json.dumps({'type': 'USER_INPUT', 'status': 'DONE', 'source': 'USER_EXPLICIT', 'created_at': '2026-11-24T05:00:00Z'}),
+            json.dumps({'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'model': 'gemini-4-hydrogen-medium',
+                        'input_tokens': 4000, 'cache_read_tokens': 60000, 'output_tokens': 500, 'created_at': '2026-11-24T05:00:10Z'}),
+        ]) + '\n')
+        other_cid = '87654321-4321-4321-4321-210987654321'
+        (self.data / 'active_session.json').write_text(json.dumps({
+            'activeConversationId': CID,
+            'updatedAt': '2026-11-24T05:00:12+00:00',
+            'sessions': {
+                CID: {
+                    'conversationId': CID,
+                    'updatedAt': '2026-11-24T05:00:12+00:00',
+                    'modelName': 'gemini-4-hydrogen-medium',
+                    'cwd': '/tmp/cli-repo',
+                    'transcriptPath': str(cli_log),
+                    'lastEvent': 'PreInvocation',
+                },
+                other_cid: {
+                    'conversationId': other_cid,
+                    'updatedAt': '2026-11-24T04:59:00+00:00',
+                    'modelName': 'gemini-4-hydrogen-medium',
+                    'cwd': '/tmp/other-cli',
+                    'lastEvent': 'Stop',
+                },
+            },
+        }))
+        proc = self.worker()
+        proc.stdin.write(json.dumps({'op': 'brief', 'conversationId': 'auto', 'includeShared': True}) + '\n')
+        proc.stdin.flush()
+        snap = json.loads(proc.stdout.readline())
+        self.assertTrue(snap['found'])
+        self.assertEqual(snap['usageSource'], 'transcript')
+        self.assertEqual(snap['contextUsed'], 64000)
+        self.assertEqual(snap['contextTotal'], 1048576)
+        self.assertAlmostEqual(snap['contextPct'], 6.1, places=1)
+        self.assertEqual(snap['modelName'], 'gemini-4-hydrogen-medium')
+        self.assertEqual(snap['workspaceName'], 'cli-repo')
+        recent_ids = [item['conversationId'] for item in snap['recentConversations']]
+        self.assertIn(CID, recent_ids)
+        self.assertIn(other_cid, recent_ids)
+
+    def test_config_only_op_hot_reloads(self):
+        cfg_path = self.root / 'config.json'
+        cfg_path.write_text(json.dumps({'notch': {'enabled': False, 'screenMode': 'allScreens'}}))
+        proc = self.worker()
+        proc.stdin.write(json.dumps({'op': 'config'}) + '\n')
+        proc.stdin.flush()
+        resp = json.loads(proc.stdout.readline())
+        self.assertTrue(resp['configOnly'])
+        self.assertFalse(resp['config']['notch']['enabled'])
+        self.assertEqual(resp['config']['notch']['screenMode'], 'allScreens')
+        cfg_path.write_text(json.dumps({'notch': {'enabled': True, 'screenMode': 'notchOrMain'}}))
+        proc.stdin.write(json.dumps({'op': 'config'}) + '\n')
+        proc.stdin.flush()
+        resp2 = json.loads(proc.stdout.readline())
+        self.assertTrue(resp2['config']['notch']['enabled'])
+        self.assertEqual(resp2['config']['notch']['screenMode'], 'notchOrMain')
+
+    def test_cli_transcripts_remain_independent_across_nine_sessions(self):
+        ids = [f'12345678-1234-1234-1234-{i:012d}' for i in range(9)]
+        logs = []
+        for i, cid in enumerate(ids):
+            path = self.root / 'brain' / cid / '.system_generated' / 'logs' / 'transcript.jsonl'
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'model': 'gemini-demo',
+                                        'input_tokens': i + 1, 'cache_read_tokens': 0, 'output_tokens': 10}) + '\n')
+            logs.append(path)
+        proc = self.worker()
+        def brief(cid):
+            proc.stdin.write(json.dumps({'op': 'brief', 'conversationId': cid, 'includeShared': False}) + '\n')
+            proc.stdin.flush()
+            return json.loads(proc.stdout.readline())
+        for _ in range(2):
+            for i, cid in enumerate(ids):
+                snap = brief(cid)
+                self.assertEqual(snap['contextUsed'], i + 1)
+                self.assertEqual(snap['sessionUsage']['requestCount'], 1)
+        with logs[0].open('a') as log:
+            log.write(json.dumps({'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'model': 'claude-demo',
+                                  'input_tokens': 100, 'cache_read_tokens': 0, 'output_tokens': 10}) + '\n')
+        self.assertEqual(brief(ids[0])['contextUsed'], 100)
+        self.assertEqual(brief(ids[1])['contextUsed'], 2)
+        logs[0].write_text(json.dumps({'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'model': 'claude-demo',
+                                      'input_tokens': 7, 'cache_read_tokens': 0, 'output_tokens': 10}) + '\n')
+        snap = brief(ids[0])
+        self.assertEqual(snap['contextUsed'], 7)
+        self.assertEqual(snap['sessionUsage']['requestCount'], 1)
+
+    def test_recent_cache_keeps_both_newly_updated_hook_databases(self):
+        ids = [f'12345678-1234-1234-1234-{i:012d}' for i in range(26)]
+        base = int(time.time()) - 1000
+        for i, cid in enumerate(ids):
+            path = self.root / 'conversations' / f'{cid}.db'
+            sqlite3.connect(path).close()
+            os.utime(path, (base + i, base + i))
+        proc = self.worker()
+        self.query(proc)
+        # These two DBs were outside the top-24 cache. Updating contents does
+        # not change the directory signature, so the incremental path is used.
+        for i, cid in enumerate(ids[:2]):
+            os.utime(self.root / 'conversations' / f'{cid}.db', (base + 100 - i, base + 100 - i))
+        (self.data / 'active_session.json').write_text(json.dumps({'sessions': {
+            cid: {'updatedAt': '2020-01-01T00:00:00Z'} for cid in ids[:2]
+        }}))
+        recent_ids = [item['conversationId'] for item in self.query(proc)['recentConversations']]
+        self.assertEqual(recent_ids[:2], ids[:2])
+
+    def test_multi_slot_db_cache_and_recent_dir_cache(self):
+        cid_a = '11111111-1111-1111-1111-111111111111'
+        cid_b = '22222222-2222-2222-2222-222222222222'
+        cid_c = '33333333-3333-3333-3333-333333333333'
+        for cid, tok in [(cid_a, 100), (cid_b, 200)]:
+            db = sqlite3.connect(self.root / 'conversations' / f'{cid}.db')
+            db.execute('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB)')
+            db.execute('INSERT INTO gen_metadata VALUES(0,?)', (blob(tok, 2),))
+            db.commit(); db.close()
+        proc = self.worker()
+        self.assertEqual(self.query(proc, cid_a)['outputTokens'], 100)
+        self.assertEqual(self.query(proc, cid_b)['outputTokens'], 200)
+        self.assertEqual(self.query(proc, cid_a)['outputTokens'], 100)
+        # Adding a new DB file must invalidate the directory cache and appear in recentConversations.
+        db_c = sqlite3.connect(self.root / 'conversations' / f'{cid_c}.db')
+        db_c.execute('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB)')
+        db_c.execute('INSERT INTO gen_metadata VALUES(0,?)', (blob(300, 2),))
+        db_c.commit(); db_c.close()
+        snap = self.query(proc, cid_c)
+        self.assertEqual(snap['outputTokens'], 300)
+        recent_ids = [item['conversationId'] for item in snap['recentConversations']]
+        self.assertIn(cid_c, recent_ids)
 
 
 if __name__ == '__main__':

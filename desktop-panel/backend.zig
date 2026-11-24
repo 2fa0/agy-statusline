@@ -300,8 +300,21 @@ fn jsonLines(cfg: telemetry.Config) !void {
         defer arena.deinit();
         const a = arena.allocator();
         const req = c.parse(a, line.items) catch .null;
-        if (c.eq(c.str(c.get(req, "op")), "close")) break;
-        runtime.summary_only = c.eq(c.str(c.get(req, "op")), "brief");
+        const op = c.str(c.get(req, "op"));
+        if (c.eq(op, "close")) break;
+        if (c.eq(op, "config")) {
+            const resolved = runtime.settingsFor(cfg.settings, a);
+            var cfg_out = c.object(a);
+            try c.put(a, &cfg_out, "found", c.b(false));
+            try c.put(a, &cfg_out, "configOnly", c.b(true));
+            try c.put(a, &cfg_out, "config", try settings.toValue(a, resolved));
+            try std.io.getStdOut().writeAll(try c.json(a, cfg_out));
+            try std.io.getStdOut().writeAll("\n");
+            continue;
+        }
+        runtime.summary_only = c.eq(op, "brief");
+        const shared = c.get(req, "includeShared");
+        runtime.include_shared = shared != .bool or shared.bool;
         const snap = telemetry.snapshot(a, &runtime, cfg, c.str(c.get(req, "conversationId"))) catch blk: {
             var failed = c.object(a);
             try c.put(a, &failed, "error", c.s("telemetry unavailable"));
