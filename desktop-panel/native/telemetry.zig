@@ -107,6 +107,7 @@ const Transcript = struct {
     points: [120]Point = undefined,
     point_count: usize = 0,
     latest: ?[3]?i64 = null,
+    latest_model: []const u8 = "",
     fn init() Transcript {
         return .{ .arena = std.heap.ArenaAllocator.init(std.heap.c_allocator), .models = std.StringArrayHashMap(Usage).init(std.heap.c_allocator) };
     }
@@ -141,7 +142,10 @@ const Transcript = struct {
         self.usage.ingest(vals);
         entry.value_ptr.ingest(vals);
         const compact = c.eq(typ, "CHECKPOINT");
-        if (compact) self.compactions += 1 else self.latest = vals;
+        if (compact) self.compactions += 1 else {
+            self.latest = vals;
+            if (c.str(item.model).len > 0) self.latest_model = entry.key_ptr.*;
+        }
         if (self.point_count == self.points.len) {
             std.mem.copyForwards(Point, self.points[0 .. self.points.len - 1], self.points[1..]);
             self.point_count -= 1;
@@ -472,24 +476,69 @@ const LiveSlot = struct {
     last_used: f64 = 0,
 };
 
-pub const Runtime = struct {
-    // Brief queries omit transcript statistics and bound database history reads.
-    summary_only: bool = false,
-    transcript: Transcript = Transcript.init(),
-    db_arena: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(std.heap.c_allocator),
-    db_id: [36]u8 = @splat(0),
+const DbCacheSlot = struct {
+    arena: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(std.heap.c_allocator),
+    id: [36]u8 = @splat(0),
     db_sig: c.Sig = .{},
     wal_sig: c.Sig = .{},
     db: ?DbResult = null,
-    db_summary_only: bool = false,
-    // The notch probes up to seven conversations per poll.
-    live_slots: [8]LiveSlot = [_]LiveSlot{.{}} ** 8,
+    summary_only: bool = false,
+    last_used: u64 = 0,
+};
+
+const TranscriptCacheSlot = struct {
+    transcript: Transcript = Transcript.init(),
+    last_used: u64 = 0,
+};
+
+// One primary conversation plus the notch's eight additional probes.
+const cached_conversations = 9;
+
+pub const Runtime = struct {
+    // Brief queries omit transcript statistics and bound database history reads.
+    summary_only: bool = false,
+    include_shared: bool = true,
+    transcripts: [cached_conversations]TranscriptCacheSlot = [_]TranscriptCacheSlot{.{}} ** cached_conversations,
+    transcript_clock: u64 = 0,
+    // Bounded multi-slot LRU DB cache so probing multiple conversations per poll
+    // does not evict unchanged inactive/completed conversations.
+    db_cache: [cached_conversations]DbCacheSlot = [_]DbCacheSlot{.{}} ** cached_conversations,
+    db_clock: u64 = 0,
+    // Cached top candidate conversations from directory scan, refreshed on dir
+    // mtime change or low-frequency fallback interval.
+    recent_cache: [24]Recent = undefined,
+    recent_cache_count: usize = 0,
+    recent_dir_sig: c.Sig = .{},
+    recent_scan_at: f64 = 0,
+    recent_cache_valid: bool = false,
+    live_slots: [cached_conversations]LiveSlot = [_]LiveSlot{.{}} ** cached_conversations,
     settings: settings_mod.Settings = .{},
     settings_sig: c.Sig = .{},
     settings_loaded: bool = false,
     pub fn deinit(self: *Runtime) void {
-        self.transcript.deinit();
-        self.db_arena.deinit();
+        for (&self.transcripts) |*slot| {
+            slot.transcript.deinit();
+        }
+        for (&self.db_cache) |*slot| {
+            slot.arena.deinit();
+        }
+    }
+    fn transcriptFor(self: *Runtime, path: []const u8) *Transcript {
+        self.transcript_clock +%= 1;
+        var free_idx: ?usize = null;
+        var oldest_idx: usize = 0;
+        for (&self.transcripts, 0..) |*slot, idx| {
+            if (c.eq(slot.transcript.path, path)) {
+                slot.last_used = self.transcript_clock;
+                return &slot.transcript;
+            }
+            if (slot.transcript.path.len == 0 and free_idx == null) free_idx = idx;
+            if (slot.last_used < self.transcripts[oldest_idx].last_used) oldest_idx = idx;
+        }
+        const slot = &self.transcripts[free_idx orelse oldest_idx];
+        slot.last_used = self.transcript_clock;
+        // update() resets the parser when a slot is reused for a different path.
+        return &slot.transcript;
     }
     /// Hot reload: the config is re-read only when the file signature moves, so
     /// a 1 Hz poll costs one stat, not a parse. Saving the file takes effect on
@@ -532,17 +581,38 @@ pub const Runtime = struct {
     fn database(self: *Runtime, id: []const u8, path: []const u8, a: A) !DbResult {
         const sig = c.sig(path);
         const wal = c.sig(try c.fmt(a, "{s}-wal", .{path}));
-        // Never serve an active live step from cache: streaming state and
-        // completion transitions must re-read SQLite on every poll.
-        if (self.db != null and self.db_summary_only == self.summary_only and c.eq(&self.db_id, id) and std.meta.eql(sig, self.db_sig) and std.meta.eql(wal, self.wal_sig) and self.db.?.readable and !self.db.?.live) return self.db.?;
-        _ = self.db_arena.reset(.free_all);
-        self.db = null;
-        const result = try readDb(self.db_arena.allocator(), path, self.summary_only);
-        @memcpy(&self.db_id, id);
-        self.db_sig = sig;
-        self.wal_sig = wal;
-        self.db = result;
-        self.db_summary_only = self.summary_only;
+        self.db_clock +%= 1;
+
+        var match_idx: ?usize = null;
+        var free_idx: ?usize = null;
+        var oldest_idx: usize = 0;
+        for (&self.db_cache, 0..) |*slot, idx| {
+            if (slot.id[0] != 0 and c.eq(&slot.id, id)) {
+                match_idx = idx;
+                // Never serve an active live step from cache: streaming state and
+                // completion transitions must re-read SQLite on every poll.
+                if (slot.db != null and slot.summary_only == self.summary_only and std.meta.eql(sig, slot.db_sig) and std.meta.eql(wal, slot.wal_sig) and slot.db.?.readable and !slot.db.?.live) {
+                    slot.last_used = self.db_clock;
+                    return slot.db.?;
+                }
+                break;
+            }
+            if (slot.id[0] == 0 and free_idx == null) free_idx = idx;
+            if (slot.last_used < self.db_cache[oldest_idx].last_used) oldest_idx = idx;
+        }
+
+        const chosen = match_idx orelse free_idx orelse oldest_idx;
+        const slot = &self.db_cache[chosen];
+        _ = slot.arena.reset(.free_all);
+        slot.db = null;
+        slot.id = @splat(0);
+        const result = try readDb(slot.arena.allocator(), path, self.summary_only);
+        if (id.len == 36) @memcpy(&slot.id, id);
+        slot.db_sig = sig;
+        slot.wal_sig = wal;
+        slot.db = result;
+        slot.summary_only = self.summary_only;
+        slot.last_used = self.db_clock;
         return result;
     }
     fn rate(self: *Runtime, id: []const u8, db: DbResult, now: f64) ?f64 {
@@ -598,33 +668,124 @@ fn transcriptPath(a: A, root: []const u8, meta: V, id: []const u8) ![]const u8 {
     if (path.len > 0 and c.sig(path).exists) return path;
     return c.join(a, &.{ root, "brain", id, ".system_generated", "logs", "transcript.jsonl" });
 }
-fn recent(a: A, root: []const u8, hooks: V) !V {
+fn sortRecent(items: []Recent) void {
+    std.mem.sort(Recent, items, {}, struct {
+        fn less(_: void, x: Recent, y: Recent) bool {
+            return x.at > y.at;
+        }
+    }.less);
+}
+fn statDbAt(dir: std.fs.Dir, id: []const u8) ?i128 {
+    var db_name: [48]u8 = undefined;
+    const db_file = std.fmt.bufPrint(&db_name, "{s}.db", .{id}) catch return null;
+    const st = dir.statFile(db_file) catch return null;
+    var wal_name: [64]u8 = undefined;
+    const wal = dir.statFile(std.fmt.bufPrint(&wal_name, "{s}.db-wal", .{id}) catch "") catch null;
+    return @max(st.mtime, if (wal) |w| w.mtime else 0);
+}
+fn recent(a: A, runtime: *Runtime, root: []const u8, hooks: V, now: f64) !V {
     const dirpath = try c.join(a, &.{ root, "conversations" });
+    const dir_sig = c.sig(dirpath);
+    const need_full_scan = !runtime.recent_cache_valid or !std.meta.eql(dir_sig, runtime.recent_dir_sig) or (now - runtime.recent_scan_at) >= 10.0 or now < runtime.recent_scan_at;
+
+    if (need_full_scan) {
+        var scanned: [25]Recent = undefined;
+        var scanned_count: usize = 0;
+        if (std.fs.cwd().openDir(dirpath, .{ .iterate = true })) |d| {
+            var dir = d;
+            defer dir.close();
+            var it = dir.iterate();
+            while (try it.next()) |entry| {
+                if (entry.name.len != 39 or !std.mem.endsWith(u8, entry.name, ".db") or !c.validId(entry.name[0..36])) continue;
+                const st = dir.statFile(entry.name) catch continue;
+                var wal_name: [128]u8 = undefined;
+                const wal = dir.statFile(try std.fmt.bufPrint(&wal_name, "{s}-wal", .{entry.name})) catch null;
+                const at = @max(st.mtime, if (wal) |w| w.mtime else 0);
+                if (scanned_count == 24 and at <= scanned[scanned_count - 1].at) continue;
+                var item: Recent = .{ .id = undefined, .at = at };
+                @memcpy(&item.id, entry.name[0..36]);
+                scanned[scanned_count] = item;
+                scanned_count += 1;
+                sortRecent(scanned[0..scanned_count]);
+                scanned_count = @min(scanned_count, 24);
+            }
+        } else |_| {}
+        @memcpy(runtime.recent_cache[0..scanned_count], scanned[0..scanned_count]);
+        runtime.recent_cache_count = scanned_count;
+        runtime.recent_dir_sig = dir_sig;
+        runtime.recent_scan_at = now;
+        runtime.recent_cache_valid = true;
+    } else if (dir_sig.exists) {
+        if (std.fs.cwd().openDir(dirpath, .{})) |d| {
+            var dir = d;
+            defer dir.close();
+            var kept: usize = 0;
+            for (runtime.recent_cache[0..runtime.recent_cache_count]) |item| {
+                if (statDbAt(dir, &item.id)) |at| {
+                    runtime.recent_cache[kept] = .{ .id = item.id, .at = at };
+                    kept += 1;
+                }
+            }
+            runtime.recent_cache_count = kept;
+            sortRecent(runtime.recent_cache[0..kept]);
+            // Also refresh mtime for any active/hook-tracked sessions that might not be in the top-24 cache yet.
+            const sessions_obj_refresh = c.get(hooks, "sessions");
+            if (sessions_obj_refresh == .object) {
+                for (sessions_obj_refresh.object.keys()) |sid| {
+                    if (!c.validId(sid)) continue;
+                    var in_cache = false;
+                    for (runtime.recent_cache[0..runtime.recent_cache_count]) |item| {
+                        if (c.eq(&item.id, sid)) {
+                            in_cache = true;
+                            break;
+                        }
+                    }
+                    if (in_cache) continue;
+                    if (statDbAt(dir, sid)) |at| {
+                        if (runtime.recent_cache_count < 24) {
+                            var item: Recent = .{ .id = undefined, .at = at };
+                            @memcpy(&item.id, sid[0..36]);
+                            runtime.recent_cache[runtime.recent_cache_count] = item;
+                            runtime.recent_cache_count += 1;
+                        } else if (at > runtime.recent_cache[23].at) {
+                            @memcpy(&runtime.recent_cache[23].id, sid[0..36]);
+                            runtime.recent_cache[23].at = at;
+                        }
+                        sortRecent(runtime.recent_cache[0..runtime.recent_cache_count]);
+                    }
+                }
+            }
+            sortRecent(runtime.recent_cache[0..runtime.recent_cache_count]);
+        } else |_| {}
+    }
+
     var items: [16]Recent = undefined;
-    var count: usize = 0;
-    if (std.fs.cwd().openDir(dirpath, .{ .iterate = true })) |d| {
-        var dir = d;
-        defer dir.close();
-        var it = dir.iterate();
-        while (try it.next()) |entry| {
-            if (entry.name.len != 39 or !std.mem.endsWith(u8, entry.name, ".db") or !c.validId(entry.name[0..36])) continue;
-            const st = dir.statFile(entry.name) catch continue;
-            var wal_name: [128]u8 = undefined;
-            const wal = dir.statFile(try std.fmt.bufPrint(&wal_name, "{s}-wal", .{entry.name})) catch null;
-            const at = @max(st.mtime, if (wal) |w| w.mtime else 0);
+    var count: usize = @min(runtime.recent_cache_count, 15);
+    @memcpy(items[0..count], runtime.recent_cache[0..count]);
+    const sessions_obj = c.get(hooks, "sessions");
+    if (sessions_obj == .object) {
+        for (sessions_obj.object.keys(), sessions_obj.object.values()) |sid, val| {
+            if (!c.validId(sid)) continue;
+            var exists = false;
+            for (items[0..count]) |item| {
+                if (c.eq(&item.id, sid)) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (exists) continue;
+            const ts = c.timestamp(c.str(c.get(val, "updatedAt"))) orelse continue;
+            if (ts < 0 or ts > 253402300799) continue;
+            const at: i128 = @intFromFloat(ts * 1e9);
             if (count == 15 and at <= items[count - 1].at) continue;
             var item: Recent = .{ .id = undefined, .at = at };
-            @memcpy(&item.id, entry.name[0..36]);
+            @memcpy(&item.id, sid[0..36]);
             items[count] = item;
             count += 1;
-            std.mem.sort(Recent, items[0..count], {}, struct {
-                fn less(_: void, x: Recent, y: Recent) bool {
-                    return x.at > y.at;
-                }
-            }.less);
+            sortRecent(items[0..count]);
             count = @min(count, 15);
         }
-    } else |_| {}
+    }
     const active = c.str(c.get(hooks, "activeConversationId"));
     var found = false;
     for (items[0..count]) |item| {
@@ -784,19 +945,20 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     }
     const hooks = c.readJson(a, try c.join(a, &.{ cfg.data, "active_session.json" }));
     const active = c.str(c.get(hooks, "activeConversationId"));
-    const conversations = try recent(a, cfg.root, hooks);
     var id = std.mem.trim(u8, requested, " \t\r\n");
+    const include_shared = !runtime.summary_only or runtime.include_shared or id.len == 0 or c.eq(id, "auto");
+    const conversations = if (include_shared) try recent(a, runtime, cfg.root, hooks, now) else c.arr(a);
     if (id.len == 0 or c.eq(id, "auto")) id = active;
     if (id.len == 0 and conversations.array.items.len > 0) id = c.str(c.get(conversations.array.items[0], "conversationId"));
     var out = c.object(a);
-    try c.put(a, &out, "config", try settings_mod.toValue(a, settings));
+    if (include_shared) try c.put(a, &out, "config", try settings_mod.toValue(a, settings));
     try c.put(a, &out, "found", c.b(false));
     try c.put(a, &out, "conversationId", c.s(if (c.validId(id)) id else ""));
-    try c.put(a, &out, "recentConversations", conversations);
+    if (include_shared) try c.put(a, &out, "recentConversations", conversations);
     try c.put(a, &out, "hookConnected", c.b(active.len > 0));
     var quota_state: QuotaState = .disabled;
     var quota_value: V = .null;
-    if (settings.quota) {
+    if (include_shared and settings.quota) {
         quota_value = try quota(a, cfg.quota, @intFromFloat(now));
         quota_state = if (quota_value != .object)
             (if (c.sig(cfg.quota).exists) .unreadable else .missing)
@@ -805,7 +967,7 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
         else
             .ok;
     }
-    try c.put(a, &out, "quota", quota_value);
+    if (include_shared) try c.put(a, &out, "quota", quota_value);
     try c.put(a, &out, "generatedAt", try timeValue(a, now));
     var live = c.object(a);
     try c.put(a, &live, "active", c.b(false));
@@ -820,18 +982,22 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     const transcript_path = try transcriptPath(a, cfg.root, meta, id);
     try c.put(a, &out, "transcriptPath", c.s(transcript_path));
     var transcript_state: TranscriptState = .ok;
+    const tracker = runtime.transcriptFor(transcript_path);
     const has_log = blk: {
-        if (runtime.summary_only) break :blk false;
-        if (runtime.transcript.update(transcript_path)) |_| {
+        // In brief mode (used by the notch bar), skip full transcript parsing
+        // when the Desktop DB is readable; fall back to the transcript for
+        // CLI sessions that do not write a Desktop .db file.
+        if (runtime.summary_only and db.readable) break :blk false;
+        if (tracker.update(transcript_path)) |_| {
             break :blk true;
         } else |err| {
             transcript_state = if (err == error.FileNotFound) .missing else .failed;
             break :blk false;
         }
     };
-    const tracker = &runtime.transcript;
     var model: []const u8 = if (db.latest) |r| r.model else "";
     if (model.len == 0) model = c.str(c.get(meta, "modelName"));
+    if (!db.readable and model.len == 0 and has_log) model = tracker.latest_model;
     var input: ?i64 = null;
     var cached: ?i64 = null;
     var written: ?i64 = null;
@@ -849,6 +1015,14 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
             cached = r.cached;
             written = r.written;
             source = "gen_metadata";
+        }
+    }
+    if (!db.readable and c.eq(source, "none") and has_log) {
+        if (tracker.latest) |vals| {
+            input = vals[0];
+            cached = vals[1];
+            if (output == null) output = vals[2];
+            source = "transcript";
         }
     }
     const total: ?i64 = if (input != null or cached != null or written != null) (input orelse 0) +| (cached orelse 0) +| (written orelse 0) else null;
@@ -974,4 +1148,41 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     }
     try c.put(a, &out, "sources", try sourcesValue(a, db, transcript_state, active.len > 0, quota_state));
     return out;
+}
+
+test "transcript cache retains nine parsers and evicts the least recently used" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    var runtime: Runtime = .{};
+    defer runtime.deinit();
+    var paths: [10][]const u8 = undefined;
+    for (&paths, 0..) |*path, i| {
+        const name = try c.fmt(a, "{d}.jsonl", .{i});
+        try tmp.dir.writeFile(.{ .sub_path = name, .data = "{\"type\":\"USER_INPUT\"}\n" });
+        path.* = try c.join(a, &.{ root, name });
+    }
+    for (paths[0..9]) |path| {
+        try runtime.transcriptFor(path).update(path);
+    }
+    for (paths[0..9]) |path| {
+        const tracker = runtime.transcriptFor(path);
+        try std.testing.expectEqual(@as(i64, 1), tracker.steps);
+        try tracker.update(path);
+        try std.testing.expectEqual(@as(i64, 1), tracker.steps);
+    }
+    const first = runtime.transcriptFor(paths[0]);
+    const second = runtime.transcriptFor(paths[1]);
+    // Touch the first slot again so the second is the oldest.
+    _ = runtime.transcriptFor(paths[0]);
+    // Slots 2..8 were touched after slot 1 in the loop above; make slot 1 oldest.
+    for (paths[2..9]) |path| _ = runtime.transcriptFor(path);
+    const evicted = runtime.transcriptFor(paths[9]);
+    try std.testing.expect(evicted == second);
+    try evicted.update(paths[9]);
+    try std.testing.expectEqualStrings(paths[9], evicted.path);
+    try std.testing.expectEqual(@as(i64, 1), first.steps);
 }
