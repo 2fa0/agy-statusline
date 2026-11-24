@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 
 /// Continuous-curvature notch shape:
@@ -71,6 +72,7 @@ private enum NotchDisplayPhase: Equatable {
 
 struct NotchView: View {
     @ObservedObject var store: NotchStore
+    let screenID: CGDirectDisplayID
     let hasNotch: Bool
     let hardwareNotchWidth: CGFloat
     let hardwareNotchHeight: CGFloat
@@ -81,9 +83,10 @@ struct NotchView: View {
 
     private var snap: NotchSnapshot { store.snapshot }
     private var currentTask: ActiveTaskItem? { store.displayedTask }
+    private var isThisScreenHovering: Bool { store.hoveredScreenID == screenID }
 
     private var phase: NotchDisplayPhase {
-        if store.isHovering {
+        if isThisScreenHovering {
             return .expanded
         }
         if let peek = store.activePeek {
@@ -149,6 +152,17 @@ struct NotchView: View {
 
     private var displayWorkspace: String {
         currentTask?.workspaceName ?? snap.workspaceName
+    }
+
+    private var staleNoticeText: String {
+        if let last = store.lastSuccessAt {
+            let secs = max(0, Int(Date().timeIntervalSince(last)))
+            if secs < 60 {
+                return "连接异常 · 数据未更新（\(secs)s 前）"
+            }
+            return "连接异常 · 数据未更新（\(secs / 60)m 前）"
+        }
+        return "连接异常 · 数据未更新"
     }
 
     private var barHeight: CGFloat {
@@ -259,8 +273,8 @@ struct NotchView: View {
                 } else if snap.isActive || isExpanded || isPeeking {
                     HStack(spacing: 6) {
                         StatusDot(
-                            color: Color(nsColor: displayState.color),
-                            pulsing: displayState == .running,
+                            color: store.isConnectionStale ? Color.orange : Color(nsColor: displayState.color),
+                            pulsing: displayState == .running && !store.isConnectionStale,
                             size: 6.5
                         )
                         Text(displayWorkspace.isEmpty ? displayStateLabel : displayWorkspace)
@@ -301,7 +315,7 @@ struct NotchView: View {
                             Button {
                                 store.cycleNextTask()
                             } label: {
-                                Text("\(snap.activeCount)")
+                                Text(snap.activeCountBadge)
                                     .font(.system(size: 10.5, weight: .bold, design: .rounded))
                                     .foregroundColor(.white.opacity(0.92))
                                     .padding(.horizontal, 5.5)
@@ -346,8 +360,8 @@ struct NotchView: View {
             } else if snap.isActive || isExpanded || isPeeking {
                 HStack(spacing: 8) {
                     StatusDot(
-                        color: Color(nsColor: displayState.color),
-                        pulsing: displayState == .running,
+                        color: store.isConnectionStale ? Color.orange : Color(nsColor: displayState.color),
+                        pulsing: displayState == .running && !store.isConnectionStale,
                         size: 6.5
                     )
                     Text(displayWorkspace.isEmpty ? displayStateLabel : displayWorkspace)
@@ -364,7 +378,7 @@ struct NotchView: View {
                         Button {
                             store.cycleNextTask()
                         } label: {
-                            Text("\(snap.activeCount)")
+                            Text(snap.activeCountBadge)
                                 .font(.system(size: 10.5, weight: .bold, design: .rounded))
                                 .foregroundColor(.white.opacity(0.92))
                                 .padding(.horizontal, 5.5)
@@ -404,7 +418,12 @@ struct NotchView: View {
 
     @ViewBuilder
     private var activeRightMetricView: some View {
-        if let tok = displayTokPerSec {
+        if store.isConnectionStale {
+            Text("连接异常")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundColor(Color(red: 0.98, green: 0.72, blue: 0.25))
+                .lineLimit(1)
+        } else if let tok = displayTokPerSec {
             Text("\(Int(tok.rounded())) t/s")
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundColor(.white.opacity(0.76))
@@ -458,11 +477,28 @@ struct NotchView: View {
 
             // Tier 1: Primary Task Card
             VStack(alignment: .leading, spacing: 7) {
+                if store.isConnectionStale {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Color(red: 0.98, green: 0.72, blue: 0.25))
+                        Text(staleNoticeText)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundColor(Color(red: 0.98, green: 0.78, blue: 0.35))
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.orange.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+
                 HStack(spacing: 6) {
                     HStack(spacing: 4) {
                         StatusDot(
-                            color: Color(nsColor: displayState.color),
-                            pulsing: displayState == .running,
+                            color: store.isConnectionStale ? Color.orange : Color(nsColor: displayState.color),
+                            pulsing: displayState == .running && !store.isConnectionStale,
                             size: 6
                         )
                         Text(displayStateLabel)
@@ -474,7 +510,7 @@ struct NotchView: View {
                     .background(Color(nsColor: displayState.color).opacity(0.16))
                     .clipShape(Capsule())
 
-                    if let tok = displayTokPerSec {
+                    if !store.isConnectionStale, let tok = displayTokPerSec {
                         let isSlow = tok < snap.lowSpeedThreshold
                         Text(String(format: "%.1f t/s", tok))
                             .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
@@ -575,9 +611,7 @@ struct NotchView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            if task.isRunning {
-                                store.selectTask(task)
-                            }
+                            store.selectTask(task)
                         }
                     }
                 }
@@ -617,7 +651,7 @@ struct NotchView: View {
                         store.refreshNow(force: true)
                     }
                     FooterIconButton(systemName: "eye.slash", help: "暂时隐藏") {
-                        store.isHiddenByUser = true
+                        store.isTemporarilyHidden = true
                     }
                     FooterIconButton(systemName: "ellipsis.circle", help: "选项菜单") {
                         onOpenMenu()
@@ -668,12 +702,89 @@ private struct FooterIconButton: View {
     }
 }
 
-struct StatusDot: View {
+/// Core Animation drives the pulse without updating SwiftUI state every frame.
+final class PulsingDotNSView: NSView {
+    private let dotLayer = CALayer()
+    private var isPulsing = false
+    private var dotSize: CGFloat = 7
+    private var currentCGColor: CGColor = NSColor.white.cgColor
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = false
+        layer?.addSublayer(dotLayer)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        dotLayer.bounds = CGRect(x: 0, y: 0, width: dotSize, height: dotSize)
+        dotLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        dotLayer.cornerRadius = dotSize / 2
+        CATransaction.commit()
+    }
+
+    func configure(color: NSColor, pulsing: Bool, size: CGFloat) {
+        let cgColor = color.cgColor
+        let sizeChanged = abs(dotSize - size) > 0.01
+        if sizeChanged {
+            dotSize = size
+            needsLayout = true
+        }
+        if currentCGColor != cgColor || sizeChanged {
+            currentCGColor = cgColor
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            dotLayer.backgroundColor = cgColor
+            if sizeChanged {
+                dotLayer.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+                dotLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+                dotLayer.cornerRadius = size / 2
+            }
+            CATransaction.commit()
+        }
+        if pulsing != isPulsing {
+            isPulsing = pulsing
+            if pulsing {
+                startPulseAnimation()
+            } else {
+                dotLayer.removeAnimation(forKey: "pulse")
+                dotLayer.opacity = 1.0
+                dotLayer.transform = CATransform3DIdentity
+            }
+        }
+    }
+
+    private func startPulseAnimation() {
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.92
+        scale.toValue = 1.18
+
+        let opacity = CABasicAnimation(keyPath: "opacity")
+        opacity.fromValue = 0.55
+        opacity.toValue = 1.0
+
+        let group = CAAnimationGroup()
+        group.animations = [scale, opacity]
+        group.duration = 1.2
+        group.autoreverses = true
+        group.repeatCount = .infinity
+        group.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        group.isRemovedOnCompletion = false
+        dotLayer.add(group, forKey: "pulse")
+    }
+}
+
+struct StatusDot: NSViewRepresentable {
     let color: Color
     let pulsing: Bool
     var size: CGFloat = 7
-
-    private var pulseState = State(initialValue: false)
 
     init(color: Color, pulsing: Bool, size: CGFloat = 7) {
         self.color = color
@@ -681,26 +792,17 @@ struct StatusDot: View {
         self.size = size
     }
 
-    var body: some View {
-        let pulse = pulseState.wrappedValue
-        Circle()
-            .fill(color)
-            .frame(width: size, height: size)
-            .scaleEffect(pulsing && pulse ? 1.18 : 0.92)
-            .opacity(pulsing ? (pulse ? 1.0 : 0.55) : 1.0)
-            .animation(
-                pulsing ? .easeInOut(duration: 1.2).repeatForever(autoreverses: true) : .default,
-                value: pulse
-            )
-            .onAppear {
-                if pulsing {
-                    DispatchQueue.main.async {
-                        pulseState.wrappedValue = true
-                    }
-                }
-            }
-            .onChange(of: pulsing) { newValue in
-                pulseState.wrappedValue = newValue
-            }
+    func makeNSView(context: Context) -> PulsingDotNSView {
+        let view = PulsingDotNSView(frame: CGRect(x: 0, y: 0, width: size, height: size))
+        view.configure(color: NSColor(color), pulsing: pulsing, size: size)
+        return view
+    }
+
+    func updateNSView(_ nsView: PulsingDotNSView, context: Context) {
+        nsView.configure(color: NSColor(color), pulsing: pulsing, size: size)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: PulsingDotNSView, context: Context) -> CGSize? {
+        CGSize(width: size, height: size)
     }
 }

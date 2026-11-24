@@ -1,10 +1,11 @@
 import AppKit
 import Foundation
 
-func mockBackend(at directory: URL, snapshot: [String: Any]) throws -> String {
+func mockBackend(at directory: URL, snapshot: [String: Any], requestLog: URL? = nil) throws -> String {
     let path = directory.appendingPathComponent(UUID().uuidString)
     let json = String(data: try JSONSerialization.data(withJSONObject: snapshot), encoding: .utf8)!
     let quoted = json.replacingOccurrences(of: "'", with: "'\\''")
+    let logRequest = requestLog.map { "printf '%s\\n' \"$line\" >> '\($0.path.replacingOccurrences(of: "'", with: "'\\''"))'" } ?? ":"
     let script = """
     #!/bin/sh
     if [ "$1" = "status-brief" ]; then
@@ -12,6 +13,7 @@ func mockBackend(at directory: URL, snapshot: [String: Any]) throws -> String {
       exit 0
     fi
     while IFS= read -r line; do
+      \(logRequest)
       printf '%s\\n' '\(quoted)'
     done
     """
@@ -54,12 +56,94 @@ MainActor.assumeIsolated {
     """.write(to: utf8BoundaryLog, atomically: true, encoding: .utf8)
     let boundaryTail = NotchStore.parseTranscriptTail(path: utf8BoundaryLog.path)
     assert(boundaryTail.title == "边界标题" && boundaryTail.command == "$ git status")
+    // Appending keeps the title and refreshes the command, including on cache hits.
+    let appendHandle = try! FileHandle(forWritingTo: utf8BoundaryLog)
+    try! appendHandle.seekToEnd()
+    try! appendHandle.write(contentsOf: Data("{\"type\":\"PLANNER_RESPONSE\",\"tool_calls\":[{\"name\":\"run_command\",\"arguments\":{\"CommandLine\":\"echo updated\"}}]}\n".utf8))
+    try! appendHandle.close()
+    for _ in 0..<2 {
+        let updated = NotchStore.parseTranscriptTail(path: utf8BoundaryLog.path)
+        assert(updated.title == "边界标题" && updated.command == "$ echo updated")
+    }
+    // An in-place rewrite may grow too; growth must not preserve a stale title.
+    let rewriteHandle = try! FileHandle(forWritingTo: utf8BoundaryLog)
+    let rewritten = "{\"type\":\"USER_INPUT\",\"content\":\"改写标题\"}\n" + String(repeating: " ", count: 40000)
+    try! rewriteHandle.write(contentsOf: Data(rewritten.utf8))
+    try! rewriteHandle.truncate(atOffset: UInt64(rewritten.utf8.count))
+    try! rewriteHandle.close()
+    assert(NotchStore.parseTranscriptTail(path: utf8BoundaryLog.path).title == "改写标题")
+    try! "{\"type\":\"USER_INPUT\",\"content\":\"替换\"}\n".write(to: utf8BoundaryLog, atomically: true, encoding: .utf8)
+    assert(NotchStore.parseTranscriptTail(path: utf8BoundaryLog.path).title == "替换")
+    let truncateHandle = try! FileHandle(forWritingTo: utf8BoundaryLog)
+    try! truncateHandle.truncate(atOffset: 0)
+    try! truncateHandle.close()
+    assert(NotchStore.parseTranscriptTail(path: utf8BoundaryLog.path).title.isEmpty)
 
     let badPath = try! mockBackend(at: tmp, snapshot: ["error": "telemetry unavailable"])
     let badClient = BackendLinesClient(backendPath: badPath, dataDir: tmp.path)
-    assert(badClient.request(conversationId: "auto") == nil)
+    if case .success = badClient.request(conversationId: "auto") {
+        assertionFailure("expected bad backend request to fail")
+    }
+    if case .backingOff = badClient.request(conversationId: "auto") {
+        // Error responses must back off just like timeouts and broken pipes.
+    } else {
+        assertionFailure("expected .backingOff after error response")
+    }
     assert(NotchStore.fetchSnapshot(client: badClient, backendPath: badPath, previouslyActiveIds: []) == nil)
     badClient.close()
+
+    // Hung backend must time out and close() must return immediately without deadlocking.
+    let hungPath = tmp.appendingPathComponent("hung-backend")
+    try! """
+    #!/bin/sh
+    sleep 30
+    """.write(to: hungPath, atomically: true, encoding: .utf8)
+    try! FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hungPath.path)
+    let hungClient = BackendLinesClient(backendPath: hungPath.path, dataDir: tmp.path)
+    let t0 = Date()
+    if case .success = hungClient.request(conversationId: "auto", timeout: 0.25) {
+        assertionFailure("expected hung backend request to time out")
+    }
+    assert(Date().timeIntervalSince(t0) < 1.5)
+    // Immediate retry while backing off must return .backingOff without spawning a new process.
+    if case .backingOff = hungClient.request(conversationId: "auto", timeout: 0.25) {
+        // expected
+    } else {
+        assertionFailure("expected .backingOff after timeout failure")
+    }
+    hungClient.close()
+
+    // close() while a request is blocked in flight must unblock immediately.
+    let cancelClient = BackendLinesClient(backendPath: hungPath.path, dataDir: tmp.path)
+    let cancelGroup = DispatchGroup()
+    cancelGroup.enter()
+    let cancelStart = Date()
+    DispatchQueue.global().async {
+        _ = cancelClient.request(conversationId: "auto", timeout: 5.0)
+        cancelGroup.leave()
+    }
+    Thread.sleep(forTimeInterval: 0.08)
+    let closeStart = Date()
+    cancelClient.close()
+    assert(Date().timeIntervalSince(closeStart) < 0.5)
+    assert(cancelGroup.wait(timeout: .now() + 1.5) == .success)
+    assert(Date().timeIntervalSince(cancelStart) < 1.5)
+
+    // A client launched on the fetch queue must also close on the main thread
+    // without waiting on Foundation's launching run loop.
+    let closePath = try! mockBackend(at: tmp, snapshot: ["found": true])
+    for _ in 0..<12 {
+        let client = BackendLinesClient(backendPath: closePath, dataDir: tmp.path)
+        let ready = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = client.request(conversationId: "auto")
+            ready.signal()
+        }
+        assert(ready.wait(timeout: .now() + 2) == .success)
+        let start = Date()
+        client.close()
+        assert(Date().timeIntervalSince(start) < 0.5)
+    }
 
     let failedPath = try! mockBackend(at: tmp, snapshot: [
         "found": true, "conversationId": "task", "transcriptPath": log.path,
@@ -72,6 +156,63 @@ MainActor.assumeIsolated {
     assert(failed.recentTasks[0].code == "terminated_error")
     assert(failed.title == "custom title" && failed.lowSpeedThreshold == 80)
     failedClient.close()
+
+    // One primary + eight probes must count all nine tasks, while rendering four.
+    let multiRequestLog = tmp.appendingPathComponent("multi-requests.jsonl")
+    let multiRecent: [[String: String]] = (0..<9).map {
+        ["conversationId": "candidate-\($0)", "lastEvent": "PreInvocation"]
+    }
+    let multiPath = try! mockBackend(at: tmp, snapshot: [
+        "found": true, "conversationId": "primary",
+        "session": ["state": "running", "label": "生成中", "code": "streaming"],
+        "recentConversations": multiRecent
+    ], requestLog: multiRequestLog)
+    let multiClient = BackendLinesClient(backendPath: multiPath, dataDir: tmp.path)
+    let multi = NotchStore.fetchSnapshot(client: multiClient, backendPath: multiPath, previouslyActiveIds: [])!
+    assert(multi.activeCount == 9 && multi.activeCountTruncated)
+    assert(multi.activeTasks.count == 4 && multi.recentTasks.count == 4)
+    let multiRequests = try! String(contentsOf: multiRequestLog, encoding: .utf8).split(separator: "\n")
+    assert(multiRequests.count == 9)
+    for (index, line) in multiRequests.enumerated() {
+        let request = try! JSONSerialization.jsonObject(with: Data(line.utf8)) as! [String: Any]
+        assert(request["includeShared"] as? Bool == (index == 0))
+    }
+    multiClient.close()
+
+    // File events and timer callbacks share the hidden refresh limit;
+    // manual refresh and showing the notch must still query immediately.
+    let defaults = UserDefaults.standard
+    let hiddenKey = "agy.notch.isHiddenByUser"
+    let previousHidden = defaults.object(forKey: hiddenKey)
+    defer {
+        if let previousHidden { defaults.set(previousHidden, forKey: hiddenKey) }
+        else { defaults.removeObject(forKey: hiddenKey) }
+    }
+    defaults.set(true, forKey: hiddenKey)
+    let requestLog = tmp.appendingPathComponent("requests.jsonl")
+    let refreshBackend = try! mockBackend(at: tmp, snapshot: ["found": true], requestLog: requestLog)
+    let refreshingStore = NotchStore(backendPath: refreshBackend, dataDir: tmp.appendingPathComponent("data").path)
+    func requestCount() -> Int {
+        ((try? String(contentsOf: requestLog, encoding: .utf8)) ?? "").split(separator: "\n").count
+    }
+    func pumpUntil(_ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(3)
+        while !condition() && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        assert(condition())
+    }
+    pumpUntil { refreshingStore.snapshot.found }
+    for _ in 0..<20 { refreshingStore.refreshNow(force: false) }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    assert(requestCount() == 1)
+    refreshingStore.refreshNow(force: true)
+    pumpUntil { requestCount() == 2 }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    refreshingStore.isHiddenByUser = false
+    pumpUntil { requestCount() == 3 }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    refreshingStore.shutdown()
 
     let store = NotchStore(backendPath: "/nonexistent", dataDir: tmp.path, demoMode: true)
     var task = ActiveTaskItem(id: "task", title: "test", commandText: "", modelName: "model-b",
@@ -99,5 +240,63 @@ MainActor.assumeIsolated {
     applyTask()
     assert(store.activePeek?.statusText == "✓ 已完成")
     store.shutdown()
+
+    // Selecting a completed/failed task in recentTasks must persist even while another task is running.
+    let selStore = NotchStore(backendPath: "/nonexistent", dataDir: tmp.path, demoMode: true)
+    let runningTask = ActiveTaskItem(id: "run-1", title: "running", commandText: "", modelName: "m", workspaceName: "w1", state: .running, stateLabel: "生成中", tokPerSec: 60, contextPct: 20, isRunning: true, code: "streaming")
+    let doneTask = ActiveTaskItem(id: "done-1", title: "done", commandText: "", modelName: "m", workspaceName: "w2", state: .idle, stateLabel: "已完成", tokPerSec: nil, contextPct: 10, isRunning: false, code: "idle")
+    var selSnap = NotchSnapshot()
+    selSnap.conversationId = runningTask.id
+    selSnap.activeTasks = [runningTask]
+    selSnap.recentTasks = [runningTask, doneTask]
+    selSnap.activeCount = 1
+    selSnap.isActive = true
+    selStore.applyFetchedSnapshot(selSnap)
+    selStore.selectTask(doneTask)
+    assert(selStore.displayedTask?.id == "done-1")
+    selStore.applyFetchedSnapshot(selSnap)
+    assert(selStore.displayedTask?.id == "done-1")
+    // Temporary hide must not persist isHiddenByUser.
+    selStore.isTemporarilyHidden = true
+    assert(selStore.isHidden && !selStore.isHiddenByUser)
+    selStore.isTemporarilyHidden = false
+    assert(!selStore.isHidden)
+    // Badge formatting for truncated counts.
+    selSnap.activeCount = 5
+    selSnap.activeCountTruncated = true
+    assert(selSnap.activeCountBadge == "5+")
+    selSnap.activeCountTruncated = false
+    assert(selSnap.activeCountBadge == "5")
+    selStore.shutdown()
+
+    let screenFrame = CGRect(x: 0, y: 0, width: 1512, height: 982)
+    var occupancy = OccupancyState()
+    assert(!occupancy.update(0, immediate: true))
+    assert(occupancy.update(44, immediate: false) && occupancy.offset == 0)
+    assert(!occupancy.update(0, immediate: false) && occupancy.offset == 0) // Transient occupant.
+    assert(occupancy.update(44, immediate: false))
+    assert(!occupancy.update(44, immediate: false) && occupancy.offset == 44)
+    assert(occupancy.update(0, immediate: false) && occupancy.offset == 44)
+    assert(!occupancy.update(0, immediate: false) && occupancy.offset == 0)
+    // Fullscreen app toolbar / menu bar strip spanning the screen must not trigger notch avoidance.
+    assert(NotchPanelController.occupiedBottomOffset(
+        for: CGRect(x: 0, y: 0, width: 1512, height: 38),
+        screenFrame: screenFrame,
+        screenTopCG: 0,
+        notchWidth: 180
+    ) == nil)
+    // A real third-party notch app centered over the notch should still trigger avoidance.
+    assert(NotchPanelController.occupiedBottomOffset(
+        for: CGRect(x: 576, y: 0, width: 360, height: 38),
+        screenFrame: screenFrame,
+        screenTopCG: 0,
+        notchWidth: 180
+    ) == 44)
+    let ghostty = NotchStore.resolveCliTerminalTarget(env: ["__CFBundleIdentifier": "com.mitchellh.ghostty", "TERM_PROGRAM": "ghostty"])
+    assert(ghostty.bundleId == "com.mitchellh.ghostty" && ghostty.appName == "Ghostty")
+    let iterm = NotchStore.resolveCliTerminalTarget(env: ["TERM_PROGRAM": "iTerm.app"])
+    assert(iterm.bundleId == "com.googlecode.iterm2" && iterm.appName == "iTerm2")
+    let unknown = NotchStore.resolveCliTerminalTarget(env: [:])
+    assert(unknown.bundleId == nil && unknown.appName == nil)
     print("macOS notch regressions passed")
 }
