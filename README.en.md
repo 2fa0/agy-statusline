@@ -54,7 +54,7 @@
 | **All-in-One Surfaces** | Single-surface only, or relies on external windows | **Notch + Desktop + CLI**: macOS notch bar + native Desktop `AUX_PANE` sidecar + terminal `statusLine` |
 | **Live Speed** | Only shows total duration after a turn ends | **Real-time `≈ tok/s` while streaming**: 1s live updates, yellow alert below `50 tok/s`, plus a 12-turn bar chart |
 | **Why Is It Waiting?** | Hard to tell queueing from tool runs or errors | **4-State Chip + Plain-English Reason**: shows whether it's waiting for first token, running local tools, warming cache, or failed |
-| **Quota Reset Time** | Relative countdowns like "2d 4h left" | **Absolute Local Timestamps**: e.g. `Today 11:29` / `Mon 11/23 11:29`, separating Gemini / Argon / Claude 3p pools |
+| **Quota Reset Time** | Relative countdowns like "2d 4h left" | **Absolute Local Timestamps**: e.g. `Today 11:29` / `Mon 11/23 11:29`, separating Gemini / Claude 3p pools |
 | **Context & Cache** | Current percentage only | **120-Request Curve + Compaction Markers**: spots `CHECKPOINT` events and breaks down tokens, cache hit rate & speed per model |
 | **Footprint** | Persistent Node.js / Python runtimes (tens/hundreds of MB) | **Native Zig**: ~`582 KB` CLI (exits immediately), Desktop daemon uses only **`3.3–6.8 MB RSS`** |
 
