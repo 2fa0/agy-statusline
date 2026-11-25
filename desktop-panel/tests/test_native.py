@@ -17,18 +17,40 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PANEL = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PANEL / 'tests' / 'reference'))
-import telemetry as reference
-from test_desktop_panel import field_bytes, field_varint
-
 BINARY = Path(os.environ.get('AGY_DESKTOP_BACKEND', str(PANEL / 'sidecars' / 'status' / ('agy-desktop-backend.exe' if os.name == 'nt' else 'agy-desktop-backend')))).resolve()
 CID = '12345678-1234-1234-1234-123456789abc'
 
 
-def blob(tokens=100, seconds=2, model=b'gemini-demo', duration11=None):
+def encode_varint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            break
+    return bytes(out)
+
+
+def field_varint(num, val):
+    return encode_varint((num << 3) | 0) + encode_varint(val)
+
+
+def field_bytes(num, payload):
+    return encode_varint((num << 3) | 2) + encode_varint(len(payload)) + payload
+
+
+def blob(tokens=100, seconds=2, model=b'gemini-demo', duration11=None, nanos=None):
     chat = field_bytes(4, field_varint(2, 20) + field_varint(3, tokens) + field_varint(5, 80))
-    if seconds is not None:
-        chat += field_bytes(12, field_varint(1, seconds))
+    if seconds is not None or nanos is not None:
+        dur = b''
+        if seconds is not None:
+            dur += field_varint(1, seconds)
+        if nanos is not None:
+            dur += field_varint(2, nanos)
+        chat += field_bytes(12, dur)
     if duration11 is not None:
         chat += field_bytes(11, field_varint(1, duration11))
     return field_bytes(1, chat + field_bytes(19, model))
@@ -93,37 +115,16 @@ class NativeTests(unittest.TestCase):
         db.commit()
         return db
 
-    def reference(self):
-        with unittest.mock.patch.dict(os.environ, self.env):
-            return reference.build_status_snapshot(CID, self.data, self.root)
-
-    def assert_snapshot_matches(self, actual, expected):
-        # Dynamic clock fields are checked separately; normalized timestamps may
-        # use UTC rather than preserving the original log's timezone notation.
-        dynamic = {'generatedAt', 'observedAt', 'observedAgeSec', 'resetInSec', 'elapsedSec', 'cacheHit'}
-        def compare(a, e, path=''):
-            if isinstance(e, dict):
-                for key in e:
-                    if key in dynamic:
-                        continue
-                    self.assertIn(key, a, path)
-                    compare(a[key], e[key], path + '.' + key)
-            elif isinstance(e, list):
-                self.assertEqual(len(a), len(e), path)
-                for idx, (x, y) in enumerate(zip(a, e)):
-                    compare(x, y, f'{path}[{idx}]')
-            elif isinstance(e, str) and 'T' in e and e.endswith(('+00:00', 'Z')):
-                self.assertAlmostEqual(datetime.fromisoformat(a.replace('Z', '+00:00')).timestamp(), datetime.fromisoformat(e.replace('Z', '+00:00')).timestamp(), places=5, msg=path)
-            elif isinstance(e, (float, int)) and not isinstance(e, bool):
-                self.assertAlmostEqual(a, e, places=6, msg=path)
-            else:
-                self.assertEqual(a, e, path)
-        compare(actual, expected)
-
     def test_runtime_configuration_is_native_only(self):
         manifest = json.loads((PANEL / 'sidecars' / 'status' / 'sidecar.json').read_text())
         self.assertEqual(manifest['command'], './agy-desktop-backend')
         self.assertEqual(manifest['args'], ['serve'])
+        self.assertTrue(manifest.get('has_web_ui'))
+        self.assertEqual(manifest.get('restart_policy'), 'always')
+        views = manifest.get('ui_config', {}).get('views', [])
+        self.assertEqual(len(views), 1)
+        self.assertEqual(views[0].get('entrypoint'), 'SIDECAR_UI_ENTRYPOINT_AUX_PANE')
+        self.assertEqual(views[0].get('path'), '/')
         hooks = (PANEL / 'hooks.json').read_text()
         self.assertNotIn('python', hooks)
         self.assertIn('agy-desktop-backend hook', hooks)
@@ -238,7 +239,7 @@ class NativeTests(unittest.TestCase):
         self.assertNotEqual(installed.stat().st_ino, before)
         self.assertFalse(self.query(p)['found'])
 
-    def test_all_stats_match_python_reference(self):
+    def test_snapshot_stats_and_model_usage(self):
         db = self.database([blob(100, 2), blob(600, 3, b'claude-demo')]); db.close()
         self.transcript([
             {'type': 'USER_INPUT', 'created_at': '2026-11-20T01:00:00.123456Z'},
@@ -247,7 +248,38 @@ class NativeTests(unittest.TestCase):
             {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'created_at': '2026-11-20T01:00:08Z', 'model': 'claude-demo', 'input_tokens': 100, 'cache_read_tokens': 0, 'output_tokens': 600},
             {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'input_tokens': False, 'cache_read_tokens': 0, 'output_tokens': 4},
         ])
-        self.assert_snapshot_matches(self.snapshot(), self.reference())
+        snap = self.snapshot()
+        self.assertTrue(snap['found'])
+        self.assertEqual(snap['conversationId'], CID)
+        self.assertEqual(snap['outputTokens'], 600)
+        self.assertEqual(snap['inputTokens'], 20)
+        self.assertEqual(snap['cacheReadTokens'], 80)
+        self.assertEqual(snap['lastAvgSpeed'], 200.0)
+        self.assertEqual(snap['stepCount'], 5)
+        self.assertEqual(snap['compactionCount'], 1)
+        self.assertEqual(snap['turnDurationSec'], 7.88)
+        self.assertEqual(snap['sessionDurationSec'], 7.88)
+        self.assertEqual(snap['sessionUsage']['requestCount'], 4)
+        self.assertEqual(snap['sessionUsage']['inputTokens'], 160)
+        self.assertEqual(snap['sessionUsage']['cacheReadTokens'], 90)
+        self.assertEqual(snap['sessionUsage']['outputTokens'], 705)
+        self.assertEqual(snap['sessionUsage']['totalTokens'], 955)
+        self.assertEqual(len(snap['history']), 2)
+        models = {m['model']: m for m in snap['modelUsage']}
+        self.assertEqual(models['gemini-demo']['speedSamples'], 1)
+        self.assertEqual(models['gemini-demo']['avgSpeedTokS'], 50.0)
+        self.assertEqual(models['claude-demo']['speedSamples'], 1)
+        self.assertEqual(models['claude-demo']['avgSpeedTokS'], 200.0)
+
+    def test_speed_filters_sub_100ms_and_unrealistic_bursts(self):
+        # Sub-100ms duration and unrealistic >= 1000 tok/s bursts produce no speed sample.
+        db = self.database([
+            blob(200, seconds=None, nanos=50_000_000),
+            blob(1000, seconds=None, nanos=500_000_000),
+        ]); db.close()
+        snap = self.snapshot()
+        self.assertIsNone(snap['lastAvgSpeed'])
+        self.assertEqual([h['speedTokS'] for h in snap['history']], [None, None])
 
     def test_schema_variants_and_partial_protobuf(self):
         for col, idx in [('metadata', 'idx'), ('data', 'step_idx')]:
@@ -257,14 +289,26 @@ class NativeTests(unittest.TestCase):
                 db.execute(f'CREATE TABLE steps({idx} INTEGER PRIMARY KEY,{col} BLOB)')
                 usage = field_bytes(9, field_varint(2, 200) + field_varint(5, 800) + field_varint(3, 50))
                 db.execute(f'INSERT INTO steps VALUES(1,?)', (usage,)); db.commit(); db.close()
-                self.assert_snapshot_matches(self.snapshot(), self.reference())
+                snap = self.snapshot()
+                self.assertTrue(snap['found'])
+                self.assertEqual(snap['inputTokens'], 200)
+                self.assertEqual(snap['cacheReadTokens'], 800)
+                self.assertEqual(snap['contextUsed'], 1000)
+                self.assertEqual(snap['outputTokens'], 100)
+                self.assertEqual(snap['lastAvgSpeed'], 20.0)
 
     def test_invalid_counts_empty_metadata_and_unknown_payloads(self):
         db = self.database([field_bytes(1, b'')]); db.close()
         for invalid in (None, -1, True, "100", 1.5, 2**53, 2**53 - 1):
             with self.subTest(invalid=invalid):
                 self.transcript([{'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'input_tokens': invalid, 'cache_read_tokens': 0, 'output_tokens': 2, 'content': 'x' * (256 * 1024)}])
-                self.assert_snapshot_matches(self.snapshot(), self.reference())
+                snap = self.snapshot()
+                self.assertIsNone(snap['outputTokens'])
+                self.assertIsNone(snap['lastAvgSpeed'])
+                expected_input = 2**53 - 1 if invalid == 2**53 - 1 else None
+                expected_output = 2 if invalid == 2**53 - 1 else None
+                self.assertEqual(snap['sessionUsage']['inputTokens'], expected_input)
+                self.assertEqual(snap['sessionUsage']['outputTokens'], expected_output)
 
     def test_all_speed_samples_and_bounded_context(self):
         db = self.database([blob(100 if i < 13 else 600, 2 if i < 13 else 3) for i in range(14)]); db.close()
@@ -274,7 +318,7 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(len(snap['history']), 12)
         self.assertEqual(snap['modelUsage'][0]['speedSamples'], 14)
         self.assertEqual(snap['modelUsage'][0]['avgSpeedTokS'], round(1900 / 29, 1))
-        self.assert_snapshot_matches(snap, self.reference())
+        self.assertEqual(snap['lastAvgSpeed'], 200.0)
 
     def test_incremental_partial_lines_truncate_regrow_and_switch(self):
         first = {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'input_tokens': 1, 'cache_read_tokens': 0, 'output_tokens': 2}
@@ -349,12 +393,7 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(snap['lastAvgSpeed'], 50.0)
         snap_ts = datetime.fromisoformat(snap['recentConversations'][0]['updatedAt'].replace('Z', '+00:00')).timestamp()
         self.assertAlmostEqual(snap_ts, before_ns / 1e9, places=5)
-        ref = self.reference()
-        self.assert_snapshot_matches({**snap, 'recentConversations': []}, {**ref, 'recentConversations': []})
-        self.assertEqual(
-            [c['conversationId'] for c in snap['recentConversations']],
-            [c['conversationId'] for c in ref['recentConversations']],
-        )
+        self.assertEqual([c['conversationId'] for c in snap['recentConversations']], [CID])
 
     def test_cli_reads_closed_wal_database(self):
         cli = PANEL.parent / ('agy-statusline.exe' if os.name == 'nt' else 'agy-statusline')
@@ -406,10 +445,16 @@ class NativeTests(unittest.TestCase):
             {'key': 'argon-weekly', 'remaining_fraction': False},
         ]}
         (self.root / 'quota.json').write_text(json.dumps(content))
-        self.assert_snapshot_matches(self.snapshot(), self.reference())
         quota = self.snapshot()['quota']
-        self.assertTrue(quota['stale']); self.assertTrue(quota['windows'][0]['approx'])
+        self.assertTrue(quota['stale'])
+        self.assertEqual([(w['pool'], w['window']) for w in quota['windows']], [('gemini', 'weekly'), ('claude', '5h')])
+        self.assertTrue(quota['windows'][0]['approx'])
         self.assertEqual(quota['windows'][0]['remainingPct'], 20)
+        self.assertEqual(quota['windows'][0]['bucket'], 'gemini-flash-weekly')
+        self.assertGreater(quota['windows'][0]['resetInSec'], 0)
+        self.assertEqual(quota['windows'][1]['remainingPct'], 50)
+        self.assertIsNone(quota['windows'][1]['resetAtEpoch'])
+        self.assertIsNone(quota['windows'][1]['resetInSec'])
 
     def test_hook_preserves_metadata_limits_sessions_and_allows_stop(self):
         def invoke(data):

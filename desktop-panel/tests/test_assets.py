@@ -70,6 +70,10 @@ class AssetDriftTests(unittest.TestCase):
         for bad in ('<link rel="stylesheet"', ' src="http', ' src="//', 'url(http'):
             self.assertNotIn(bad, html)
         self.assertIn('<script>', html)
+        self.assertEqual(html.count('<!DOCTYPE html>'), 1)
+        self.assertEqual(html.count('</head>'), 1)
+        self.assertFalse((PANEL / 'mcp_config.json').exists())
+        self.assertFalse((PANEL / 'server.py').exists())
 
 
 if __name__ == '__main__':

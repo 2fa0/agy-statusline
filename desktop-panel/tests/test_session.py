@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PANEL = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PANEL / 'tests' / 'reference'))
+sys.path.insert(0, str(PANEL / 'tests'))
 from test_native import BINARY, CID, blob, field_bytes
 
 CONFIG = 'config.json'
