@@ -76,6 +76,7 @@
 curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash
 ```
 
+- Homebrew（CLI + macOS 刘海）：`brew install 2fa0/tap/agy-vitals`
 - 只装一端：`... | bash -s -- --panel-only` 或 `--cli-only`
 - 升级 / 重装：再跑一次同一条命令即可
 - 卸载：`... | bash -s -- --uninstall`（保留你的 `config.json` 与 `quota.json`）

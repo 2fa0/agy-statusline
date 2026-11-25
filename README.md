@@ -76,6 +76,7 @@ One command installs both the **Desktop Side Panel** and **CLI Status Line** (ve
 curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash
 ```
 
+- Homebrew (CLI + macOS Notch): `brew install 2fa0/tap/agy-vitals`
 - Install one side only: `... | bash -s -- --panel-only` or `--cli-only`
 - Upgrade / Reinstall: run the same command again
 - Uninstall: `... | bash -s -- --uninstall` (preserves your `config.json` and `quota.json`)
