@@ -519,6 +519,7 @@ final class NotchStore: ObservableObject {
     private var hasSeenInitialSnapshot = false
     private var previousTaskStates: [String: (state: NotchSnapshot.RunState, isActive: Bool)] = [:]
     private var peekDismissWorkItem: DispatchWorkItem?
+    private var manuallySelectedTaskId: String? = nil
 
     init(backendPath: String, dataDir: String, demoMode: Bool = false, dataRoot: String? = nil, isCLI: Bool = false) {
         let root = dataRoot ?? NotchPaths.dataRoot(for: dataDir)
@@ -590,12 +591,14 @@ final class NotchStore: ObservableObject {
 
     func selectTask(_ task: ActiveTaskItem) {
         selectedConversationId = task.id
+        manuallySelectedTaskId = task.isRunning ? nil : task.id
     }
 
     func cycleNextTask() {
         guard snapshot.activeTasks.count > 1 else { return }
         let currentIdx = snapshot.activeTasks.firstIndex(where: { $0.id == displayedTask?.id }) ?? 0
         let nextIdx = (currentIdx + 1) % snapshot.activeTasks.count
+        manuallySelectedTaskId = nil
         selectedConversationId = snapshot.activeTasks[nextIdx].id
     }
 
@@ -854,6 +857,9 @@ final class NotchStore: ObservableObject {
             applyRemoteConfig(remote)
         }
 
+        let previousActiveIds = Set(snapshot.activeTasks.map(\.id))
+        let hasNewActiveTask = next.activeTasks.contains { !previousActiveIds.contains($0.id) }
+
         evaluatePeekTransitions(for: next)
         if snapshot != next {
             snapshot = next
@@ -861,10 +867,26 @@ final class NotchStore: ObservableObject {
 
         let nextSelectedId: String?
         if let cid = selectedConversationId {
-            let stillValid = next.activeTasks.contains(where: { $0.id == cid })
-                || next.recentTasks.contains(where: { $0.id == cid })
-            nextSelectedId = stillValid ? cid : (next.activeTasks.first?.id ?? next.recentTasks.first?.id)
+            let isCurrentActive = next.activeTasks.contains(where: { $0.id == cid })
+            let isCurrentRecent = next.recentTasks.contains(where: { $0.id == cid })
+            if isCurrentActive {
+                nextSelectedId = cid
+            } else if !next.activeTasks.isEmpty {
+                let keepManualIdle = (cid == manuallySelectedTaskId) && isCurrentRecent && !hasNewActiveTask
+                if keepManualIdle {
+                    nextSelectedId = cid
+                } else {
+                    manuallySelectedTaskId = nil
+                    nextSelectedId = next.activeTasks.first?.id
+                }
+            } else if isCurrentRecent {
+                nextSelectedId = cid
+            } else {
+                manuallySelectedTaskId = nil
+                nextSelectedId = next.recentTasks.first?.id
+            }
         } else {
+            manuallySelectedTaskId = nil
             nextSelectedId = next.activeTasks.first?.id ?? next.recentTasks.first?.id
         }
         if selectedConversationId != nextSelectedId {
