@@ -7,12 +7,8 @@
 
 <p align="left">
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square" alt="Platform" />
-  <img src="https://img.shields.io/badge/macOS-Dynamic%20Island%20Notch-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS Dynamic Island Notch" />
-  <img src="https://img.shields.io/badge/Antigravity-Desktop%202.0%20%26%20CLI-6366f1?style=flat-square" alt="Antigravity Desktop 2.0 & CLI" />
-  <img src="https://img.shields.io/badge/Network-Zero%20Network%20(100%25%20Local)-16a34a?style=flat-square" alt="Zero Network" />
-  <img src="https://img.shields.io/badge/Compliance-Official%20Extension%20API-0ea5e9?style=flat-square" alt="Official Extension API" />
   <img src="https://img.shields.io/badge/Built%20with-Zig%20%2B%20Swift-f59e0b?style=flat-square" alt="Built with Zig + Swift" />
-  <img src="https://img.shields.io/badge/Memory-~3--7%20MB%20RSS-10b981?style=flat-square" alt="Memory ~3-7 MB RSS" />
+  <img src="https://img.shields.io/badge/Network-100%25%20Local-16a34a?style=flat-square" alt="100% Local" />
 </p>
 
 ## 实景预览（macOS 刘海 · Desktop · CLI）
