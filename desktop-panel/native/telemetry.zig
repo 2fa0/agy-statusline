@@ -225,14 +225,11 @@ fn generation(idx: i64, raw: []const u8) ?Gen {
     }
     out.exec = c.duration(c.bytes(chat, 11));
     out.duration = c.duration(c.bytes(chat, 12));
-    for ([_]?f64{ out.duration, out.exec }) |dur| {
-        if (dur) |d| {
-            if (d >= 0.1 and (out.output orelse 0) > 0) {
-                const speed = @as(f64, @floatFromInt(out.output.?)) / d;
-                if (speed > 0 and speed < 1000) {
-                    out.speed = speed;
-                    break;
-                }
+    if (out.duration) |d| {
+        if (d >= 0.1 and (out.output orelse 0) > 0) {
+            const speed = @as(f64, @floatFromInt(out.output.?)) / d;
+            if (speed > 0 and speed < 1000) {
+                out.speed = speed;
             }
         }
     }
@@ -1033,7 +1030,27 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     const capacity: ?i64 = if (contains(lower, "gemini") or contains(lower, "hydrogen") or contains(lower, "argon") or contains(lower, "flash")) 1048576 else if (contains(lower, "claude") or contains(lower, "sonnet") or contains(lower, "opus") or contains(lower, "haiku")) (if (contains(lower, "1m")) @as(i64, 1000000) else @as(i64, 200000)) else null;
     const denom: f64 = @floatFromInt((input orelse 0) +| (cached orelse 0));
     const hit: ?f64 = if (input != null and cached != null and denom > 0 and ((written orelse 0) == 0 or cached.? > 0)) 100 * @as(f64, @floatFromInt(cached.?)) / denom else null;
-    const speed = if (db.latest) |r| r.speed else null;
+    var steady_out: f64 = 0;
+    var steady_sec: f64 = 0;
+    var short_out: f64 = 0;
+    var short_sec: f64 = 0;
+    for (db.history[0..db.count]) |rec| {
+        if (rec.speed != null and (rec.output orelse 0) > 0 and (rec.duration orelse 0) >= 0.1) {
+            if (rec.duration.? >= 0.3) {
+                steady_out += @floatFromInt(rec.output.?);
+                steady_sec += rec.duration.?;
+            } else {
+                short_out += @floatFromInt(rec.output.?);
+                short_sec += rec.duration.?;
+            }
+        }
+    }
+    const speed: ?f64 = if (steady_sec >= 0.3 and steady_out > 0)
+        steady_out / steady_sec
+    else if (short_sec >= 0.1 and short_out > 0)
+        short_out / short_sec
+    else
+        null;
     const dur = if (db.latest) |r| r.exec orelse r.duration else null;
     var workspace = c.str(c.get(meta, "cwd"));
     const paths = c.get(meta, "workspacePaths");

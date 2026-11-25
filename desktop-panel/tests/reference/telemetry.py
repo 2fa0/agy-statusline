@@ -149,16 +149,12 @@ def parse_gen_metadata_blob(idx: int, data: bytes) -> Optional[GenRecord]:
     gen_dur = _parse_duration(_last_bytes(chat, 12))
 
     # Match agy-statusline speed semantics: output tokens / duration(field 12),
-    # falling back to field 11 when field 12 is absent or represents a sub-100ms
-    # TTFB/first-chunk timestamp whose implied speed would exceed 1000 tok/s.
+    # filtering sub-100ms durations and >= 1000 tok/s outliers without mixing field 11 (TTFT).
     speed: Optional[float] = None
-    if output_tokens and output_tokens > 0:
-        for dur in (gen_dur, exec_dur):
-            if dur is not None and dur >= 0.1:
-                candidate = float(output_tokens) / dur
-                if 0.0 < candidate < 1000.0:
-                    speed = candidate
-                    break
+    if output_tokens and output_tokens > 0 and gen_dur is not None and gen_dur >= 0.1:
+        candidate = float(output_tokens) / gen_dur
+        if 0.0 < candidate < 1000.0:
+            speed = candidate
 
     served_model = ""
     model_raw = _last_bytes(chat, 19)
@@ -1159,7 +1155,29 @@ def build_status_snapshot(
     if ctx_used is not None and ctx_total and ctx_total > 0:
         ctx_pct = min(100.0, 100.0 * float(ctx_used) / float(ctx_total))
 
-    last_speed = latest_gen.speed_tok_s if latest_gen else None
+    steady_out = 0
+    steady_sec = 0.0
+    short_out = 0
+    short_sec = 0.0
+    for rec in gen_records[:12]:
+        if (
+            rec.speed_tok_s is not None
+            and rec.output_tokens
+            and rec.duration_sec is not None
+            and rec.duration_sec >= 0.1
+        ):
+            if rec.duration_sec >= 0.3:
+                steady_out += rec.output_tokens
+                steady_sec += rec.duration_sec
+            else:
+                short_out += rec.output_tokens
+                short_sec += rec.duration_sec
+    if steady_sec >= 0.3 and steady_out > 0:
+        last_speed = float(steady_out) / steady_sec
+    elif short_sec >= 0.1 and short_out > 0:
+        last_speed = float(short_out) / short_sec
+    else:
+        last_speed = None
     last_gen_duration = None
     if latest_gen:
         last_gen_duration = (

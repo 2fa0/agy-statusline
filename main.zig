@@ -72,7 +72,34 @@ fn field(data: []const u8, wanted: u64) ?Field {
 }
 fn bytes(data: []const u8, id: u64) ?[]const u8 { const v = field(data, id) orelse return null; return if (v == .bytes) v.bytes else null; }
 fn number(data: []const u8, id: u64) u64 { const v = field(data, id) orelse return 0; return if (v == .number) v.number else 0; }
-fn metadataSpeed(data: []const u8) ?f64 {
+const SpeedSample = struct { output: u64, seconds: f64 };
+const SpeedAccumulator = struct {
+    steady_output: f64 = 0,
+    steady_seconds: f64 = 0,
+    short_output: f64 = 0,
+    short_seconds: f64 = 0,
+
+    fn add(self: *SpeedAccumulator, sample: SpeedSample) void {
+        if (sample.seconds >= 0.3) {
+            self.steady_output += @floatFromInt(sample.output);
+            self.steady_seconds += sample.seconds;
+        } else {
+            self.short_output += @floatFromInt(sample.output);
+            self.short_seconds += sample.seconds;
+        }
+    }
+
+    fn finish(self: SpeedAccumulator) ?f64 {
+        if (self.steady_seconds >= 0.3 and self.steady_output > 0) {
+            return self.steady_output / self.steady_seconds;
+        }
+        if (self.short_seconds >= 0.1 and self.short_output > 0) {
+            return self.short_output / self.short_seconds;
+        }
+        return null;
+    }
+};
+fn metadataSample(data: []const u8) ?SpeedSample {
     const chat = bytes(data, 1) orelse return null;
     const usage = bytes(chat, 4) orelse return null;
     const duration = bytes(chat, 12) orelse return null;
@@ -82,7 +109,12 @@ fn metadataSpeed(data: []const u8) ?f64 {
     const output = number(usage, 3);
     if (seconds < 0.1 or output == 0) return null;
     const speed = @as(f64, @floatFromInt(output)) / seconds;
-    return if (speed > 0 and speed < 1000) speed else null;
+    if (speed <= 0 or speed >= 1000) return null;
+    return .{ .output = output, .seconds = seconds };
+}
+fn metadataSpeed(data: []const u8) ?f64 {
+    const sample = metadataSample(data) orelse return null;
+    return @as(f64, @floatFromInt(sample.output)) / sample.seconds;
 }
 fn fileUri(allocator: Allocator, path: []const u8, query: []const u8) ![:0]const u8 {
     var out = std.ArrayList(u8).init(allocator);
@@ -120,20 +152,28 @@ fn querySpeed(target: [:0]const u8, flags: c_int, err_out: *c_int, speed_out: *?
     }
     defer _ = sqlite3_close(db);
     var stmt: ?*anyopaque = null;
-    if (sqlite3_prepare_v2(db, "SELECT data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC LIMIT 1", -1, &stmt, null) != 0) {
+    if (sqlite3_prepare_v2(db, "SELECT data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC LIMIT 12", -1, &stmt, null) != 0) {
         err_out.* = sqlite3_errcode(db);
         return false;
     }
     defer _ = sqlite3_finalize(stmt);
-    const rc = sqlite3_step(stmt);
-    if (rc == 101) return true;
-    if (rc != 100) {
-        err_out.* = sqlite3_errcode(db);
-        return false;
+    var acc: SpeedAccumulator = .{};
+    while (true) {
+        const rc = sqlite3_step(stmt);
+        if (rc == 101) break;
+        if (rc != 100) {
+            err_out.* = sqlite3_errcode(db);
+            return false;
+        }
+        const ptr = sqlite3_column_blob(stmt, 0) orelse continue;
+        const len = sqlite3_column_bytes(stmt, 0);
+        if (len > 0) {
+            if (metadataSample(ptr[0..@intCast(len)])) |sample| {
+                acc.add(sample);
+            }
+        }
     }
-    const ptr = sqlite3_column_blob(stmt, 0) orelse return true;
-    const len = sqlite3_column_bytes(stmt, 0);
-    if (len > 0) speed_out.* = metadataSpeed(ptr[0..@intCast(len)]);
+    speed_out.* = acc.finish();
     return true;
 }
 fn lastSpeed(allocator: Allocator, id: []const u8) ?f64 {
@@ -553,6 +593,19 @@ test "formatting and speed" {
     try std.testing.expectEqualStrings("1,234K", text);
     const data = [_]u8{0x0a,0x08,0x22,0x02,0x18,0x64,0x62,0x02,0x08,0x02};
     try std.testing.expectEqual(@as(?f64, 50), metadataSpeed(&data));
+    // Unrealistic burst (>=1000 tok/s) is filtered out.
+    const burst = [_]u8{0x0a,0x0d,0x22,0x03,0x18,0xe8,0x07,0x62,0x06,0x08,0x00,0x10,0x80,0x94,0xeb,0xdc,0x03};
+    // output=1000, seconds=0.5 (500_000_000 ns) -> 2000 tok/s -> null
+    try std.testing.expectEqual(@as(?f64, null), metadataSpeed(&burst));
+    // Prefer steady (>=0.3s) samples over short (0.1s..0.3s) burst samples, falling back only when no steady sample exists.
+    var acc_steady: SpeedAccumulator = .{};
+    acc_steady.add(.{ .output = 160, .seconds = 0.2 }); // 800 tok/s short burst
+    acc_steady.add(.{ .output = 200, .seconds = 1.0 }); // 200 tok/s steady
+    try std.testing.expectApproxEqAbs(@as(f64, 200), acc_steady.finish().?, 1e-6);
+    var acc_short: SpeedAccumulator = .{};
+    acc_short.add(.{ .output = 100, .seconds = 0.2 }); // 500 tok/s short fallback
+    try std.testing.expectApproxEqAbs(@as(f64, 500), acc_short.finish().?, 1e-6);
+    try std.testing.expectEqual(@as(?f64, null), (SpeedAccumulator{}).finish());
     try std.testing.expectEqual(@as(?f64, null), metadataSpeed(&.{0x0a,0xff}));
     const line = try render(a, .{ .context_window_size = 1_048_576, .current_usage = .{ .input_tokens = 200, .cache_read_input_tokens = 800, .cache_creation_input_tokens = 0 } }, 12.6, .{}); defer a.free(line);
     try std.testing.expectEqualStrings("\x1b[43;30mCache hit: 80.0% | Cache read: 800 | Ctx: 1K/1,048K | Last avg speed: 13 token/s\x1b[0m\n", line);
