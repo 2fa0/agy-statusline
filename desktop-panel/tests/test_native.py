@@ -254,7 +254,7 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(snap['outputTokens'], 600)
         self.assertEqual(snap['inputTokens'], 20)
         self.assertEqual(snap['cacheReadTokens'], 80)
-        self.assertEqual(snap['lastAvgSpeed'], 200.0)
+        self.assertEqual(snap['lastAvgSpeed'], 140.0)
         self.assertEqual(snap['stepCount'], 5)
         self.assertEqual(snap['compactionCount'], 1)
         self.assertEqual(snap['turnDurationSec'], 7.88)
@@ -272,14 +272,34 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(models['claude-demo']['avgSpeedTokS'], 200.0)
 
     def test_speed_filters_sub_100ms_and_unrealistic_bursts(self):
-        # Sub-100ms duration and unrealistic >= 1000 tok/s bursts produce no speed sample.
+        # Sub-100ms field 12 must not fall back to field 11, and >= 1000 tok/s bursts are ignored.
         db = self.database([
-            blob(200, seconds=None, nanos=50_000_000),
+            blob(200, seconds=None, nanos=50_000_000, duration11=5),
             blob(1000, seconds=None, nanos=500_000_000),
         ]); db.close()
         snap = self.snapshot()
         self.assertIsNone(snap['lastAvgSpeed'])
         self.assertEqual([h['speedTokS'] for h in snap['history']], [None, None])
+
+    def test_last_avg_speed_prefers_steady_samples_and_falls_back_to_short(self):
+        # idx 0..1: older than recent 12 (excluded from lastAvgSpeed)
+        # idx 2..11: steady 200 tok / 1.0s = 200 tok/s
+        # idx 12: short burst 160 tok / 0.2s = 800 tok/s (ignored because steady samples exist)
+        # idx 13: corrupt burst 1000 tok / 0.5s = 2000 tok/s (>= 1000, filtered out)
+        entries = [
+            blob(50, 1),
+            blob(50, 1),
+            *[blob(200, 1) for _ in range(10)],
+            blob(160, seconds=None, nanos=200_000_000),
+            blob(1000, seconds=None, nanos=500_000_000),
+        ]
+        db = self.database(entries); db.close()
+        self.assertAlmostEqual(self.snapshot()['lastAvgSpeed'], 200.0)
+
+        # When only short (0.1s..0.3s, < 1000 tok/s) samples exist, fall back instead of returning None.
+        self.path.unlink()
+        db2 = self.database([blob(100, seconds=None, nanos=200_000_000)]); db2.close()
+        self.assertAlmostEqual(self.snapshot()['lastAvgSpeed'], 500.0)
 
     def test_schema_variants_and_partial_protobuf(self):
         for col, idx in [('metadata', 'idx'), ('data', 'step_idx')]:
@@ -295,7 +315,7 @@ class NativeTests(unittest.TestCase):
                 self.assertEqual(snap['cacheReadTokens'], 800)
                 self.assertEqual(snap['contextUsed'], 1000)
                 self.assertEqual(snap['outputTokens'], 100)
-                self.assertEqual(snap['lastAvgSpeed'], 20.0)
+                self.assertIsNone(snap['lastAvgSpeed'])
 
     def test_invalid_counts_empty_metadata_and_unknown_payloads(self):
         db = self.database([field_bytes(1, b'')]); db.close()
@@ -318,7 +338,7 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(len(snap['history']), 12)
         self.assertEqual(snap['modelUsage'][0]['speedSamples'], 14)
         self.assertEqual(snap['modelUsage'][0]['avgSpeedTokS'], round(1900 / 29, 1))
-        self.assertEqual(snap['lastAvgSpeed'], 200.0)
+        self.assertEqual(snap['lastAvgSpeed'], round(1700 / 25, 1))
 
     def test_incremental_partial_lines_truncate_regrow_and_switch(self):
         first = {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'input_tokens': 1, 'cache_read_tokens': 0, 'output_tokens': 2}
