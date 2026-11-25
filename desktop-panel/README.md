@@ -172,7 +172,7 @@ npm run build
 
 所以构建顺序是**先前端、后后台**。要临时构建到别的路径（CI/测试用）可设 `AGY_UI_OUT=/tmp/x.html`，此时不写 `manifest.json`。
 
-前端构建后再运行 `./build.sh`，将更新后的页面嵌入后台。运行原生集成测试与旧实现的差异对照测试（Python 仅作为开发测试驱动）：
+前端构建后再运行 `./build.sh`，将更新后的页面嵌入后台。运行原生集成测试（Python 仅作为开发测试驱动）：
 
 ```sh
 python3 -m unittest discover -s tests
@@ -186,7 +186,7 @@ node --test tests/test_sidecar.mjs
 ./macos-notch/test.sh
 ```
 
-`tests/reference/` 保存迁移前的 Python 实现，仅用于核对统计口径，不进入发布包。可通过 `AGY_DESKTOP_BACKEND` 指定测试二进制。
+可通过 `AGY_DESKTOP_BACKEND` 指定测试二进制。
 
 ### 版本号
 
