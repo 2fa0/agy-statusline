@@ -3,7 +3,7 @@ set -euo pipefail
 
 PLUGIN_NAME="agy-desktop-status"
 TARGET_DIR="${HOME}/.gemini/config/plugins/${PLUGIN_NAME}"
-REPO_SLUG="${AGY_STATUSLINE_REPO:-2fa0/agy-statusline}"
+REPO_SLUG="${AGY_STATUSLINE_REPO:-2fa0/agy-vitals}"
 RELEASE_TAG="${AGY_STATUSLINE_TAG:-latest}"
 
 usage() {

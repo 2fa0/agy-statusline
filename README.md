@@ -1,4 +1,4 @@
-# agy-statusline — Google Antigravity 状态与额度监控套件
+# agy-vitals — Google Antigravity 状态与额度监控套件
 
 中文 | [English](./README.en.md)
 
@@ -46,9 +46,9 @@
 
 ---
 
-## 为什么选择 agy-statusline？
+## 为什么选择 agy-vitals？
 
-| 你关心的问题 | 默认状态 / 常见脚本 | `agy-statusline` |
+| 你关心的问题 | 默认状态 / 常见脚本 | `agy-vitals` |
 | :--- | :--- | :--- |
 | **macOS 刘海沉浸监控** | 切走窗口或全屏写代码时看不到生成进度 | **原生 Swift 刘海状态栏**：紧凑态常显速度 / 上下文环，悬停展开多任务、当前工具与额度，空闲可自动隐入物理刘海 |
 | **三端一体体验** | 只顾一头，或需要外接悬浮窗 / 浏览器 | **刘海 + Desktop + CLI 一次装齐**：macOS 刘海状态栏 + 桌面端右侧常驻面板 + 终端底部状态栏 |
@@ -77,7 +77,7 @@
 一条命令同时安装 **Desktop 右侧面板** 与 **CLI 状态栏**（自动校验 SHA256、清理 macOS 隔离标记并自检）：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash
 ```
 
 - 只装一端：`... | bash -s -- --panel-only` 或 `--cli-only`
@@ -104,7 +104,7 @@ macOS 13+ 的 CLI 安装包也包含刘海程序；启用上述状态栏后，�
 ### 遇到问题？先跑一键诊断
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash -s -- --doctor
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash -s -- --doctor
 ```
 
 会自动检查安装路径、二进制自检、macOS `quarantine`、代码签名与 Gatekeeper / MDM 策略（支持 `--doctor --json` 输出结构化错误码）。
@@ -136,7 +136,7 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 
 ### 2. Windows / 手动下载 Releases 安装
 
-前往 [Releases](https://github.com/2fa0/agy-statusline/releases) 下载对应包：
+前往 [Releases](https://github.com/2fa0/agy-vitals/releases) 下载对应包：
 - **桌面端面板**：`agy-desktop-status-plugin.tar.gz`（macOS/Linux）或 `agy-desktop-status-plugin.zip`（Windows PowerShell 运行 `powershell -ExecutionPolicy Bypass -File .\install.ps1`）。
 - **CLI 状态栏**：下载对应平台压缩包解压，并在 `settings.json` 的 `statusLine.command` 填入可执行文件路径（CLI 支持 `AGY_STATUSLINE_TAG=v0.4.0` 指定版本安装）。
 

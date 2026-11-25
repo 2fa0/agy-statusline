@@ -197,7 +197,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("tag")
     parser.add_argument("-o", "--output", help="write to file instead of stdout")
-    parser.add_argument("--repo", default="2fa0/agy-statusline")
+    parser.add_argument("--repo", default="2fa0/agy-vitals")
     args = parser.parse_args()
 
     body = build(args.tag, args.repo)

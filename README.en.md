@@ -1,4 +1,4 @@
-# agy-statusline — Status & Quota Monitor for Google Antigravity
+# agy-vitals — Status & Quota Monitor for Google Antigravity
 
 [中文](./README.md) | English
 
@@ -46,9 +46,9 @@
 
 ---
 
-## Why `agy-statusline`?
+## Why `agy-vitals`?
 
-| What You Care About | Default / Typical Scripts | `agy-statusline` |
+| What You Care About | Default / Typical Scripts | `agy-vitals` |
 | :--- | :--- | :--- |
 | **macOS Notch Monitor** | Lose sight of generation progress when switching apps or fullscreen | **Native Swift Dynamic Island**: compact live speed / context ring, hover to switch tasks & inspect tools/quota, auto-hides into the physical notch when idle |
 | **All-in-One Surfaces** | Single-surface only, or relies on external windows | **Notch + Desktop + CLI**: macOS notch bar + native Desktop `AUX_PANE` sidecar + terminal `statusLine` |
@@ -77,7 +77,7 @@
 One command installs both the **Desktop Side Panel** and **CLI Status Line** (verifies `SHA256SUMS.txt`, clears macOS `quarantine`, and runs a self-check):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash
 ```
 
 - Install one side only: `... | bash -s -- --panel-only` or `--cli-only`
@@ -104,7 +104,7 @@ On macOS 13+, the CLI package also includes the notch app. The next status line 
 ### Troubleshooting (`--doctor`)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash -s -- --doctor
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash -s -- --doctor
 ```
 
 Checks install paths, binary self-tests, macOS `quarantine`, code-signing integrity, and Gatekeeper / MDM policies (supports `--doctor --json` for machine-readable error codes).
@@ -136,7 +136,7 @@ Created on first install and hot-reloaded within one poll cycle without restarti
 
 ### 2. Windows & Manual Release Install
 
-Download archives from [Releases](https://github.com/2fa0/agy-statusline/releases):
+Download archives from [Releases](https://github.com/2fa0/agy-vitals/releases):
 - **Desktop Panel**: `agy-desktop-status-plugin.tar.gz` (macOS/Linux) or `agy-desktop-status-plugin.zip` (Windows: `powershell -ExecutionPolicy Bypass -File .\install.ps1`).
 - **CLI Status Line**: Extract the binary for your platform and point `statusLine.command` in `settings.json` to it (you can also pin a version via `AGY_STATUSLINE_TAG=v0.4.0`).
 

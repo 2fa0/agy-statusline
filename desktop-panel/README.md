@@ -41,13 +41,13 @@
 ### 方式 A：一行命令自动安装（推荐，macOS / Linux）
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash
 ```
 
 这是仓库根目录的 **统一安装器**，默认同时装好 CLI 状态栏和本面板插件；只装面板用：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash -s -- --panel-only
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash -s -- --panel-only
 ```
 
 它会下载对应平台的原生后台、按 `SHA256SUMS.txt` 校验完整性、剥掉解包文件上的 `com.apple.quarantine`（并回读确认），然后用 `agy-desktop-backend --version` 自检——如果被 Gatekeeper 拦截，你会当场看到错误和修复命令，而不是一个白屏面板。升级就是再跑一次同一条命令。
@@ -55,7 +55,7 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh
 只想装插件本身（不装 CLI 状态栏）也可以直接用插件自带的安装脚本：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-panel/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/desktop-panel/install.sh | bash
 ```
 
 ### 方式 B：从 Release 压缩包或本地目录安装
@@ -79,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/desktop-pa
 ```sh
 ./install.sh --doctor        # 源码目录下
 # 或
-curl -fsSL https://raw.githubusercontent.com/2fa0/agy-statusline/main/install.sh | bash -s -- --doctor
+curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash -s -- --doctor
 ```
 
 会打印平台、插件目录、`quarantine` 状态、代码签名、签名完整性、二进制自检，以及系统安全环境（Gatekeeper 开关、是否受 MDM 纳管、是否被要求 Developer ID）。macOS 上最常见的几个原因：
