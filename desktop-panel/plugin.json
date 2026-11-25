@@ -2,7 +2,7 @@
   "name": "agy-desktop-status",
   "displayName": "AGY Desktop Status",
   "description": "Read-only right-pane telemetry monitor for Antigravity Desktop: live streaming tok/s and context usage, weekly/5h quota reset times, speed trend, turn/session duration, and prompt cache hit rate.",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "logo": "assets/logo.svg",
   "repository": "https://github.com/2fa0/agy-vitals",
   "homepage": "https://github.com/2fa0/agy-vitals",
