@@ -1,6 +1,7 @@
 """Native runtime regressions. Python is a test driver, never a plugin dependency."""
 import json
 import os
+import secrets
 import socket
 import sqlite3
 import shutil
@@ -520,7 +521,8 @@ class NativeTests(unittest.TestCase):
         # Reserve a port only for choosing its number; the backend owns binding.
         with socket.socket() as s:
             s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]
-        env = dict(self.env, ANTIGRAVITY_SIDECAR_UI_TOKEN='test-token')
+        token = secrets.token_hex(8)
+        env = dict(self.env, ANTIGRAVITY_SIDECAR_UI_TOKEN=token)
         p = subprocess.Popen([str(BINARY), 'serve', '--port', str(port), *self.args()], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.processes.append(p)
         self.assertIn('listening on 127.0.0.1:', p.stderr.readline())
@@ -539,16 +541,16 @@ class NativeTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as e:
             request('/api/status')
         self.assertEqual(e.exception.code, 401); e.exception.close()
-        with request('/api/status?conversationId=auto', headers={'X-Sidecar-Token': 'test-token'}) as r:
+        with request('/api/status?conversationId=auto', headers={'X-Sidecar-Token': token}) as r:
             self.assertFalse(json.load(r)['found'])
         with self.assertRaises(urllib.error.HTTPError) as e:
             request('/api/settings', data=b'{"layout":"detailed"}', method='POST')
         self.assertEqual(e.exception.code, 401); e.exception.close()
         with request('/api/settings', data=b'{"layout":"detailed","pollSec":7}', method='POST',
-                     headers={'X-Sidecar-Token': 'test-token', 'Content-Type': 'application/json'}) as r:
+                     headers={'X-Sidecar-Token': token, 'Content-Type': 'application/json'}) as r:
             self.assertEqual(json.load(r)['layout'], 'detailed')
         with request('/api/settings', data=b'{"modules":{"quota":false}}', method='POST',
-                     headers={'X-Sidecar-Token': 'test-token'}) as r:
+                     headers={'X-Sidecar-Token': token}) as r:
             saved = json.load(r)
             self.assertEqual(saved['pollSec'], 7)
             self.assertFalse(saved['modules']['quota'])
