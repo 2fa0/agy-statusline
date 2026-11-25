@@ -1,9 +1,9 @@
 ---
 name: agy-statusline
-description: Install, diagnose, configure or build agy-statusline (AGY Desktop Status panel + agy CLI statusline) on macOS, Windows and Linux. Use when asked to install, update, uninstall, tune config.json, interpret `install.sh --doctor --json` codes, or modify the Zig backend / single-file panel UI.
+description: Install, diagnose, configure or build agy-vitals (AGY Desktop Status panel + agy-statusline CLI) on macOS, Windows and Linux. Use when asked to install, update, uninstall, tune config.json, interpret `install.sh --doctor --json` codes, or modify the Zig backend / single-file panel UI.
 ---
 
-# agy-statusline — agent operations guide
+# agy-vitals — agent operations guide
 
 Two independent deliverables share one telemetry core:
 

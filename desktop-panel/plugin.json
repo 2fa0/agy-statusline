@@ -4,8 +4,8 @@
   "description": "Read-only right-pane telemetry monitor for Antigravity Desktop: live streaming tok/s and context usage, weekly/5h quota reset times, speed trend, turn/session duration, and prompt cache hit rate.",
   "version": "0.5.2",
   "logo": "assets/logo.svg",
-  "repository": "https://github.com/2fa0/agy-statusline",
-  "homepage": "https://github.com/2fa0/agy-statusline",
+  "repository": "https://github.com/2fa0/agy-vitals",
+  "homepage": "https://github.com/2fa0/agy-vitals",
   "suggestedPrompts": [
     "Open the AGY Status side panel",
     "Show my current session speed and context usage",

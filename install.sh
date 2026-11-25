@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Unified installer for the agy-statusline suite:
+# Unified installer for the agy-vitals suite:
 #   * agy-statusline      — Antigravity CLI terminal statusline
 #   * AGY Desktop Status  — Antigravity 2.0 Desktop right-pane panel plugin
 #
 # Works both as `curl -fsSL .../install.sh | bash` and from a source checkout.
 set -euo pipefail
 
-REPO_SLUG="${AGY_STATUSLINE_REPO:-2fa0/agy-statusline}"
+REPO_SLUG="${AGY_STATUSLINE_REPO:-2fa0/agy-vitals}"
 RELEASE_TAG="${AGY_STATUSLINE_TAG:-latest}"
 CLI_DIR="${AGY_CLI_DIR:-${HOME}/.gemini/antigravity-cli}"
 PLUGIN_NAME="agy-desktop-status"
@@ -45,7 +45,7 @@ usage() {
 
 环境变量:
   AGY_STATUSLINE_TAG   固定版本标签，例如 v0.4.0（默认 latest）
-  AGY_STATUSLINE_REPO  覆盖仓库 slug（默认 2fa0/agy-statusline）
+  AGY_STATUSLINE_REPO  覆盖仓库 slug（默认 2fa0/agy-vitals）
   AGY_STATUSLINE_RELEASE_BASE  直接指定发布包基址（镜像/离线分发）
   AGY_CLI_DIR          覆盖 CLI 安装目录
 EOF
