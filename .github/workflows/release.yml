@@ -42,11 +42,11 @@ jobs:
             -target x86_64-linux-musl -O ReleaseSafe -lc -fcompiler-rt \
             -femit-bin=backend.o
           zig cc backend.o sqlite3.o -target x86_64-linux-musl -s -lc -o agy-desktop-backend
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agy-desktop-backend-linux-x64
           path: agy-desktop-backend
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agy-statusline-linux-x64
           path: agy-statusline-linux-x64.tar.gz
@@ -87,11 +87,11 @@ jobs:
               break
             fi
           done
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agy-desktop-backend-linux-arm64
           path: agy-desktop-backend
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agy-statusline-linux-arm64
           path: agy-statusline-linux-arm64.tar.gz
@@ -125,7 +125,7 @@ jobs:
           cp agy-desktop-backend desktop-panel/sidecars/status/agy-desktop-backend
           tar -czf agy-statusline-macos-arm64.tar.gz agy-statusline -C desktop-panel sidecars/status/agy-desktop-backend sidecars/status/agy-notch
           AGY_DESKTOP_BACKEND="$PWD/agy-desktop-backend" AGY_STATUSLINE_BINARY="$PWD/agy-statusline" python3 -m unittest discover -s desktop-panel/tests -p test_native.py
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agy-notch-macos-arm64
           path: desktop-panel/sidecars/status/agy-notch
@@ -152,11 +152,11 @@ jobs:
           fi
           "${installed}" --version
           ./install.sh --doctor
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agy-desktop-backend-macos-arm64
           path: agy-desktop-backend
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agy-statusline-macos-arm64
           path: agy-statusline-macos-arm64.tar.gz
@@ -190,11 +190,11 @@ jobs:
             -I sqlite-amalgamation-3490100 \
             -target x86_64-windows-gnu -O ReleaseSafe -fstrip -lc \
             -femit-bin=agy-desktop-backend.exe
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agy-desktop-backend-windows-x64
           path: agy-desktop-backend.exe
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agy-statusline-windows-x64
           path: agy-statusline-windows-x64.zip
@@ -245,7 +245,7 @@ jobs:
           chmod +x staging/agy-desktop-status/sidecars/status/agy-notch staging/agy-desktop-status/install.sh staging/agy-desktop-status/bin/macos-arm64/agy-desktop-backend staging/agy-desktop-status/bin/linux-x64/agy-desktop-backend staging/agy-desktop-status/bin/linux-arm64/agy-desktop-backend
           tar -C staging -czf agy-desktop-status-plugin.tar.gz agy-desktop-status
           (cd staging && zip -qr ../agy-desktop-status-plugin.zip agy-desktop-status)
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agy-desktop-status-plugin
           path: |
