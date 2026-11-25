@@ -259,6 +259,46 @@ MainActor.assumeIsolated {
     assert(selStore.displayedTask?.id == "done-1")
     selStore.applyFetchedSnapshot(selSnap)
     assert(selStore.displayedTask?.id == "done-1")
+
+    // Starting a brand-new active task must override a stale manual idle selection.
+    let secondRunningTask = ActiveTaskItem(id: "run-2", title: "running-2", commandText: "", modelName: "m", workspaceName: "w3", state: .running, stateLabel: "生成中", tokPerSec: 70, contextPct: 25, isRunning: true, code: "streaming")
+    var newActiveSnap = NotchSnapshot()
+    newActiveSnap.conversationId = secondRunningTask.id
+    newActiveSnap.activeTasks = [secondRunningTask, runningTask]
+    newActiveSnap.recentTasks = [secondRunningTask, runningTask, doneTask]
+    newActiveSnap.activeCount = 2
+    newActiveSnap.isActive = true
+    selStore.applyFetchedSnapshot(newActiveSnap)
+    assert(selStore.displayedTask?.id == "run-2")
+
+    // When the currently selected running task finishes while another task is still running,
+    // selection must auto-switch to the remaining running task.
+    var finishedSecondTask = secondRunningTask
+    finishedSecondTask.state = .idle
+    finishedSecondTask.stateLabel = "已完成"
+    finishedSecondTask.isRunning = false
+    finishedSecondTask.code = "idle"
+    var switchToRemainingSnap = NotchSnapshot()
+    switchToRemainingSnap.conversationId = runningTask.id
+    switchToRemainingSnap.activeTasks = [runningTask]
+    switchToRemainingSnap.recentTasks = [runningTask, finishedSecondTask, doneTask]
+    switchToRemainingSnap.activeCount = 1
+    switchToRemainingSnap.isActive = true
+    selStore.applyFetchedSnapshot(switchToRemainingSnap)
+    assert(selStore.displayedTask?.id == "run-1")
+
+    // When all tasks are idle (auto-selected) and a task later starts running, it must auto-switch to the running task.
+    let idleStore = NotchStore(backendPath: "/nonexistent", dataDir: tmp.path, demoMode: true)
+    var allIdleSnap = NotchSnapshot()
+    allIdleSnap.conversationId = doneTask.id
+    allIdleSnap.activeTasks = []
+    allIdleSnap.recentTasks = [doneTask]
+    allIdleSnap.isActive = false
+    idleStore.applyFetchedSnapshot(allIdleSnap)
+    assert(idleStore.displayedTask?.id == "done-1")
+    idleStore.applyFetchedSnapshot(selSnap)
+    assert(idleStore.displayedTask?.id == "run-1")
+    idleStore.shutdown()
     // Temporary hide must not persist isHiddenByUser.
     selStore.isTemporarilyHidden = true
     assert(selStore.isHidden && !selStore.isHiddenByUser)
