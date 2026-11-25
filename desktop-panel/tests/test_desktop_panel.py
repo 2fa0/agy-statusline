@@ -63,15 +63,21 @@ class DesktopPanelTests(unittest.TestCase):
         self.assertAlmostEqual(rec.speed_tok_s or 0.0, 50.0, places=3)
         self.assertEqual(rec.served_model, "gemini-4-hydrogen")
 
-    def test_gen_metadata_falls_back_to_field_11_when_field_12_is_subsecond_ttfb(self) -> None:
-        # When field 12 is ~0.05s (TTFB) and field 11 is 5.0s total duration
+    def test_gen_metadata_ignores_sub_100ms_field_12_without_mixing_field_11(self) -> None:
+        # Sub-100ms field 12 must not fall back to field 11 (TTFT/exec) to keep speed semantics consistent.
         usage = field_varint(3, 200)
         dur11 = field_varint(1, 5)
         dur12 = field_varint(2, 50_000_000)  # 0.05s
         chat = field_bytes(4, usage) + field_bytes(11, dur11) + field_bytes(12, dur12)
         rec = parse_gen_metadata_blob(8, field_bytes(1, chat))
         assert rec is not None
-        self.assertAlmostEqual(rec.speed_tok_s or 0.0, 40.0, places=2)
+        self.assertIsNone(rec.speed_tok_s)
+
+        # Unrealistic burst (>= 1000 tok/s) is filtered out instead of inflating speed.
+        burst_chat = field_bytes(4, field_varint(3, 1000)) + field_bytes(12, field_varint(2, 500_000_000))
+        burst = parse_gen_metadata_blob(9, field_bytes(1, burst_chat))
+        assert burst is not None
+        self.assertIsNone(burst.speed_tok_s)
 
     def test_decode_proto_fields_ignores_truncated_tail(self) -> None:
         fields = decode_proto_fields(b"\x08\x2a\x12\xff")
@@ -299,11 +305,57 @@ class DesktopPanelTests(unittest.TestCase):
             self.assertIsNone(other["avgSpeedTokS"])
             self.assertEqual(other["speedSamples"], 0)
             self.assertEqual(snap["compactionCount"], 0)
+            self.assertAlmostEqual(snap["lastAvgSpeed"], round(1700 / 25, 1))
             # Missing transcripts do not look like zero usage or zero compressions.
             path.unlink()
             missing = build_status_snapshot(cid, desktop_root=root)
             self.assertIsNone(missing["sessionUsage"])
             self.assertIsNone(missing["compactionCount"])
+
+    def test_last_avg_speed_prefers_steady_samples_and_falls_back_to_short(self) -> None:
+        cid = "22345678-1234-1234-1234-123456789abc"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "conversations").mkdir()
+            db_path = root / "conversations" / f"{cid}.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+            # idx 0..1: older than recent 12 (should be excluded from lastAvgSpeed)
+            # idx 2..11: steady 200 tok / 1.0s = 200 tok/s
+            # idx 12: short burst 160 tok / 0.2s = 800 tok/s (ignored because steady samples exist)
+            # idx 13: corrupt burst 1000 tok / 0.5s = 2000 tok/s (>= 1000, filtered out)
+            rows = [
+                (0, 50, 1, 0),
+                (1, 50, 1, 0),
+                *[(i, 200, 1, 0) for i in range(2, 12)],
+                (12, 160, 0, 200_000_000),
+                (13, 1000, 0, 500_000_000),
+            ]
+            for idx, out_tok, sec, ns in rows:
+                dur = (field_varint(1, sec) if sec else b"") + (field_varint(2, ns) if ns else b"")
+                blob = field_bytes(1, field_bytes(4, field_varint(3, out_tok)) + field_bytes(12, dur) + field_bytes(19, b"gemini-demo"))
+                conn.execute("INSERT INTO gen_metadata VALUES (?, ?)", (idx, blob))
+            conn.commit()
+            conn.close()
+
+            snap = build_status_snapshot(cid, desktop_root=root)
+            self.assertAlmostEqual(snap["lastAvgSpeed"], 200.0)
+
+            # When only short (0.1s..0.3s, < 1000 tok/s) samples exist, fall back instead of returning None.
+            cid2 = "32345678-1234-1234-1234-123456789abc"
+            conn2 = sqlite3.connect(root / "conversations" / f"{cid2}.db")
+            conn2.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+            short_blob = field_bytes(
+                1,
+                field_bytes(4, field_varint(3, 100))
+                + field_bytes(12, field_varint(2, 200_000_000))
+                + field_bytes(19, b"gemini-demo"),
+            )
+            conn2.execute("INSERT INTO gen_metadata VALUES (?, ?)", (0, short_blob))
+            conn2.commit()
+            conn2.close()
+            snap2 = build_status_snapshot(cid2, desktop_root=root)
+            self.assertAlmostEqual(snap2["lastAvgSpeed"], 500.0)
 
     def test_dist_html_bundle_is_valid_single_document(self) -> None:
         html_path = PANEL_DIR / "dist" / "index.html"
