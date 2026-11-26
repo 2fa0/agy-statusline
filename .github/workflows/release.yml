@@ -288,3 +288,106 @@ jobs:
             dist/agy-desktop-status-plugin.tar.gz
             dist/agy-desktop-status-plugin.zip
             dist/SHA256SUMS.txt
+
+  update-homebrew-tap:
+    needs: [release]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Check HOMEBREW_TAP_TOKEN secret
+        id: check-token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN secret is not configured; skipping 2fa0/homebrew-tap update."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.check-token.outputs.enabled == 'true'
+        with:
+          pattern: agy-statusline-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.check-token.outputs.enabled == 'true'
+        with:
+          repository: 2fa0/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+      - name: Update Formula/agy-vitals.rb
+        if: steps.check-token.outputs.enabled == 'true'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA_MACOS_ARM64=$(sha256sum dist/agy-statusline-macos-arm64.tar.gz | awk '{print $1}')
+          SHA_LINUX_X64=$(sha256sum dist/agy-statusline-linux-x64.tar.gz | awk '{print $1}')
+          SHA_LINUX_ARM64=$(sha256sum dist/agy-statusline-linux-arm64.tar.gz | awk '{print $1}')
+
+          cat > homebrew-tap/Formula/agy-vitals.rb <<EOF
+          class AgyVitals < Formula
+            desc "Real-time macOS Notch, Desktop Panel & CLI Statusline for Google Antigravity"
+            homepage "https://github.com/2fa0/agy-vitals"
+            version "${VERSION}"
+
+            on_macos do
+              depends_on arch: :arm64
+
+              url "https://github.com/2fa0/agy-vitals/releases/download/v${VERSION}/agy-statusline-macos-arm64.tar.gz"
+              sha256 "${SHA_MACOS_ARM64}"
+            end
+
+            on_linux do
+              on_intel do
+                url "https://github.com/2fa0/agy-vitals/releases/download/v${VERSION}/agy-statusline-linux-x64.tar.gz"
+                sha256 "${SHA_LINUX_X64}"
+              end
+              on_arm do
+                url "https://github.com/2fa0/agy-vitals/releases/download/v${VERSION}/agy-statusline-linux-arm64.tar.gz"
+                sha256 "${SHA_LINUX_ARM64}"
+              end
+            end
+
+            def install
+              libexec.install "agy-statusline"
+              libexec.install "sidecars" if (buildpath/"sidecars").exist?
+              bin.write_exec_script libexec/"agy-statusline"
+            end
+
+            def caveats
+              <<~EOS
+                To enable the CLI status line (and macOS Notch on macOS 13+), add to ~/.gemini/antigravity-cli/settings.json:
+                  {
+                    "statusLine": {
+                      "type": "command",
+                      "command": "#{opt_bin}/agy-statusline",
+                      "stack_with_default": true
+                    }
+                  }
+
+                To also install the Antigravity 2.0 Desktop right-pane plugin:
+                  curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash -s -- --panel-only
+              EOS
+            end
+
+            test do
+              assert_match "agy-statusline #{version}", shell_output("#{bin}/agy-statusline --version")
+            end
+          end
+          EOF
+      - name: Commit and push formula update
+        if: steps.check-token.outputs.enabled == 'true'
+        working-directory: homebrew-tap
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if git diff --quiet Formula/agy-vitals.rb; then
+            echo "Formula/agy-vitals.rb is already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/agy-vitals.rb
+          git commit -m "chore(agy-vitals): bump to v${VERSION}"
+          git push origin HEAD:main
+
