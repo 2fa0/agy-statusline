@@ -2,17 +2,17 @@
   "version": "0.5.4",
   "bundle": {
     "path": "dist/index.html",
-    "sha256": "01785c7c35b444fb1920615aa8d41266f4c452a308556b6f990936d8353ce12e",
-    "bytes": 57352
+    "sha256": "f459d2a3c0c53ec3420e24e758f4271ebbc93856553308c627f7733637ba8d95",
+    "bytes": 71590
   },
   "sources": {
     "ui/src/app.ts": {
-      "sha256": "67565d4b7aeef586b912f05be2bf20317f5e1de92fa3d6f5d88163fefa1ba5cc",
-      "bytes": 53633
+      "sha256": "8fc0d1b8cc4e9969cdd2bde7e6c4c65210e8f49ac369558cdf42f0df7998077f",
+      "bytes": 73699
     },
     "ui/src/template.html": {
-      "sha256": "5795db6095cf7467fde1eaf0816ca434b7826143eea0f773afe5a3cdb93a1982",
-      "bytes": 28190
+      "sha256": "c174e3c921dfee3821cdce40d83ecbcbe200452e60c2d2689ac5576fcef09d71",
+      "bytes": 32405
     },
     "ui/src/preload.js": {
       "sha256": "2f686f40eb1107d2e6b0e42104e1b1ed368dedb8a2133a50965807d4e319c233",

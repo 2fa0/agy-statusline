@@ -7,7 +7,7 @@
 - **额度重置时间（`周限` / `5小时`）**：直接换算成**具体本地重置时间**（如 `今天 11:29`、`周一 11/23 11:29`，悬浮可看 `重置于 ... · 距重置 ...`），不用再自己把 “还剩 2 天 4 小时” 换算成时间点。数据来自 CLI 状态栏写下的本地快照 `~/.gemini/agy-statusline/quota.json`（可用 `AGY_STATUSLINE_QUOTA_FILE` 覆盖）；快照过期时按 5h / 7 天周期推算并标注「推算」。
 - **轮次 / 会话耗时**：基于本地 `transcript.jsonl` 时间戳计算当前轮次耗时与整个会话总耗时。
 - **上下文占用 (`Ctx`)** & **Cache 命中率 (`Cache hit`)**：只读解析本地会话库中的输入、缓存读取与缓存写入字段（若本地未落盘对应字段则显示 `--`，不伪造数据）。
-- **数据来源可见性**：`/api/status` 的 `sources` 块分别报告 `db` / `transcript` / `hooks` / `quota` 的状态（`ok` / `empty` / `missing` / `locked` / `unreadable` / `stale` / `disabled`），`notes` 给出原因码与说明。数据库被其他窗口独占或日志读不动时，面板顶部提示「数据不完整 · 数据库被占用」，不让“缺数据”冒充“这轮没有数据”；新会话只是还没有行，不会触发告警。
+- **数据来源可见性**：`/api/status` 的 `sources` 块分别报告 `db` / `transcript` / `hooks` / `quota` 的状态（`ok` / `empty` / `missing` / `locked` / `unreadable` / `corrupt` / `stale` / `disabled`），`notes` 给出原因码与说明。数据库被其他窗口独占或日志读不动时，面板顶部提示「数据不完整 · 数据库被占用」，不让“缺数据”冒充“这轮没有数据”；生成记录全部无法解析时报告 `corrupt`，而不是伪装成健康的新会话；新会话只是还没有行，不会触发告警。
 - **会话状态四态指示**：页头胶囊区分 `就绪 / 执行中 / 等待 / 异常`，并把原因写成人话（“已等待模型首字 34s：长上下文预填充或服务端排队时常见，连接仍然有效。”）。判定在原生后台完成（Hook 事件 + 活跃 step + 流式字数增长），前端只负责渲染，阈值只有一处实现；主动取消不算错误，切换模型会直接说明需要重算缓存。
 
 ![AGY Desktop Status 面板实景预览](./assets/desktop-preview.png)
@@ -77,7 +77,7 @@ curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/desktop-panel/
 ### 面板白屏或装不上时
 
 ```sh
-./install.sh --doctor        # 源码目录下
+./install.sh --doctor        # 仓库根目录或 desktop-panel/ 目录下均可
 # 或
 curl -fsSL https://raw.githubusercontent.com/2fa0/agy-vitals/main/install.sh | bash -s -- --doctor
 ```
@@ -178,13 +178,21 @@ npm run build
 python3 -m unittest discover -s tests
 ```
 
-其中 `test_session.py` 覆盖四态判定（取消不算错误、模型切换解释等待、流式停滞与恢复、Stop 后超时衰减）与配置热加载；`test_assets.py` 覆盖前端产物漂移。安装 UI 开发依赖后，运行前端刷新间隔与统计展示回归测试：
+其中 `test_session.py` 覆盖四态判定（取消不算错误、模型切换解释等待、流式停滞与恢复、Stop 的判定独立于徽章有效期）与配置热加载；`test_assets.py` 覆盖前端产物漂移。安装 UI 开发依赖后，运行前端刷新间隔与统计展示回归测试：
 
 ```sh
 node --test tests/test_sidecar.mjs
 # macOS 刘海状态、额度与错误处理回归
 ./macos-notch/test.sh
 ```
+
+日志分块校验（滚动窗口、1 GiB 上限）另有 Zig 单元测试，用小窗口代替 1 GiB 文件：
+
+```sh
+zig test native/telemetry.zig -target aarch64-macos.13.0 -lc
+```
+
+`-target` 后要带上最低部署版本（这里 `13.0`）。不写时 Zig 0.14.1 会用自身默认目标；本机 Xcode SDK 较新（macOS 26/27）时会链不上 libSystem 而报 `undefined symbol: _malloc_size` 之类的错，与本仓库代码无关。
 
 可通过 `AGY_DESKTOP_BACKEND` 指定测试二进制。
 
@@ -207,5 +215,7 @@ node --test tests/test_sidecar.mjs
 ```sh
 ../install.sh --doctor --json
 ```
+
+发布包里的 `desktop-panel/install.sh` 没有上级脚本时也能单独响应 `--doctor --json`：它只诊断插件本身，输出里 `scope: "plugin"`、`complete: false` 并附一句提示，退出码按实际检查结果给出，不冒充完整诊断。包内原生后台用与安装相同的只读路径解析（发布包 `bin/<platform>/agy-desktop-backend`，源码目录 `sidecars/status/`），诊断不会改动包；安装目录缺 `plugin.json` 报 `manifest_missing`，清单不可读或没有版本号报 `manifest_invalid`，两种情况都仍输出 JSON 并以非零码退出。
 
 源码软链接安装（`install.sh --link`）在重新编译 `./build.sh` 后即时生效。前端桥接只处理主题、会话绑定、鉴权请求与宿主快捷键，不调用 Agent 或凭据 API。

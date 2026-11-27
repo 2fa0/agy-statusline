@@ -216,6 +216,92 @@ class DoctorJsonTests(unittest.TestCase):
             self.assertIn('version_mismatch', data['codes'])
             self.assertIn('version_mismatch', data['remediation'])
 
+    def test_panel_installer_supports_doctor_flag(self):
+        with tempfile.TemporaryDirectory(prefix='agy-panel-doctor-') as tmp:
+            env = dict(os.environ, HOME=str(Path(tmp) / 'home'))
+            proc = subprocess.run(
+                ['bash', str(ROOT / 'desktop-panel' / 'install.sh'), '--doctor', '--json'],
+                env=env, text=True, capture_output=True, timeout=60,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn('codes', data)
+            self.assertIn('panel_missing', data['codes'])
+
+    def test_release_package_diagnoses_itself_with_valid_json(self):
+        """An extracted CI archive has no ../install.sh and no sidecars backend."""
+        import platform as _platform
+
+        system, machine = _platform.system(), _platform.machine().lower()
+        target = {
+            ('Darwin', 'arm64'): 'macos-arm64',
+            ('Linux', 'x86_64'): 'linux-x64',
+            ('Linux', 'amd64'): 'linux-x64',
+            ('Linux', 'aarch64'): 'linux-arm64',
+            ('Linux', 'arm64'): 'linux-arm64',
+        }.get((system, machine))
+        if not target:
+            self.skipTest(f'no release platform for {system} {machine}')
+
+        with tempfile.TemporaryDirectory(prefix='agy-panel-release-') as tmp:
+            base = Path(tmp)
+            pkg = base / 'agy-desktop-status'
+            shutil.copytree(ROOT / 'desktop-panel', pkg,
+                            ignore=shutil.ignore_patterns('node_modules', '__pycache__'))
+            self.assertFalse((base / 'install.sh').exists())
+            # CI packages the native binaries under bin/<platform>/ only.
+            (pkg / 'sidecars/status/agy-desktop-backend').unlink()
+            packaged = pkg / 'bin' / target / 'agy-desktop-backend'
+            packaged.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / 'desktop-panel/sidecars/status/agy-desktop-backend', packaged)
+            packaged.chmod(0o755)
+            home = base / 'home'
+            home.mkdir()
+            env = dict(os.environ, HOME=str(home))
+
+            def doctor():
+                proc = subprocess.run(['bash', str(pkg / 'install.sh'), '--doctor', '--json'],
+                                      env=env, text=True, capture_output=True, timeout=60)
+                return proc, json.loads(proc.stdout)
+
+            proc, data = doctor()
+            self.assertFalse(data['ok'])
+            self.assertFalse(data['installed'])
+            self.assertEqual(data['scope'], 'plugin')
+            self.assertFalse(data['complete'], 'a plugin-only diagnosis must not claim to be complete')
+            self.assertIn('panel_missing', data['codes'])
+            self.assertIn('panel_missing', data['remediation'])
+            self.assertNotEqual(proc.returncode, 0)
+            # The CI layout is resolved from bin/<platform>/, not sidecars/.
+            self.assertEqual([c['code'] for c in data['checks'] if c['key'] == 'package.backend'], ['ok'])
+
+            plugin = home / '.gemini' / 'config' / 'plugins' / 'agy-desktop-status'
+            (plugin / 'sidecars' / 'status').mkdir(parents=True)
+            installed_backend = plugin / 'sidecars' / 'status' / 'agy-desktop-backend'
+            shutil.copyfile(packaged, installed_backend)
+            installed_backend.chmod(0o755)
+            shutil.copyfile(pkg / 'plugin.json', plugin / 'plugin.json')
+            proc, data = doctor()
+            self.assertTrue(data['ok'], data['codes'])
+            self.assertEqual(data['codes'], [])
+            self.assertEqual(proc.returncode, 0)
+
+            # A missing manifest must still produce JSON plus a non-zero exit.
+            (plugin / 'plugin.json').unlink()
+            proc, data = doctor()
+            self.assertIn('manifest_missing', data['codes'])
+            self.assertNotEqual(proc.returncode, 0)
+
+            # ... and an unreadable one must not abort the script before output.
+            manifest = plugin / 'plugin.json'
+            manifest.write_text('{"version": "%s"}' % (ROOT / 'VERSION').read_text().strip())
+            manifest.chmod(0o000)
+            try:
+                proc, data = doctor()
+            finally:
+                manifest.chmod(0o644)
+            self.assertIn('manifest_invalid', data['codes'])
+            self.assertNotEqual(proc.returncode, 0)
+
 
 if __name__ == '__main__':
     unittest.main()

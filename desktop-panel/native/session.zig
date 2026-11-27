@@ -46,7 +46,12 @@ pub const Input = struct {
     hook_event: []const u8 = "",
     hook_age_sec: ?f64 = null,
     hook_connected: bool = false,
+    /// Whether the last Stop event still describes the current round. A Stop
+    /// that was followed by a newer step (even without a PreInvocation) is
+    /// yesterday's news and must not paint a finished turn over a live one.
+    stop_current: bool = true,
     live: bool = false,
+    live_chars: ?i64 = null,
     live_status: ?i64 = null,
     /// Seconds since the streamed character count last increased.
     chars_idle_sec: ?f64 = null,
@@ -110,13 +115,17 @@ pub fn evaluate(input: Input, limits: Limits) Outcome {
     // Allow tiny negative clock skew / sub-millisecond write races without
     // treating corrupted far-future timestamps as "just happened".
     const age = if (input.hook_age_sec) |value| (if (std.math.isFinite(value) and value >= -5) @max(0, value) else null) else null;
-    const recent_stop = c.eq(input.hook_event, "Stop") and age != null and age.? <= limits.stop_ttl_sec;
-    if (recent_stop and input.termination.len > 0) {
-        if (isUserCancel(input.termination)) return .{ .state = .idle, .code = .user_cancelled, .wait_sec = age };
-        if (isNormalTermination(input.termination)) return .{ .state = .idle, .code = .idle };
-        return .{ .state = .failed, .code = .terminated_error, .wait_sec = age };
+    const recent_stop = input.stop_current and c.eq(input.hook_event, "Stop") and age != null and age.? <= limits.stop_ttl_sec;
+    if (recent_stop) {
+        if (input.termination.len > 0) {
+            if (isUserCancel(input.termination)) return .{ .state = .idle, .code = .user_cancelled, .wait_sec = age };
+            if (isNormalTermination(input.termination)) return .{ .state = .idle, .code = .idle };
+            return .{ .state = .failed, .code = .terminated_error, .wait_sec = age };
+        }
+        return .{ .state = .idle, .code = .idle };
     }
-    if (input.live) {
+    const streaming_live = input.live and (input.live_chars orelse 0) > 0;
+    if (streaming_live) {
         if (input.chars_idle_sec) |idle| {
             if (idle >= limits.stall_sec) return .{ .state = .waiting, .code = .stalled, .wait_sec = idle };
         }
@@ -141,6 +150,9 @@ pub fn evaluate(input: Input, limits: Limits) Outcome {
     }
     if (c.eq(input.hook_event, "PostInvocation") and age != null and age.? <= limits.tool_grace_sec) {
         return .{ .state = .running, .code = .tool_step, .wait_sec = age };
+    }
+    if (input.live) {
+        return .{ .state = .running, .code = .preparing };
     }
     if (!input.hook_connected) return .{ .state = .idle, .code = .hook_missing };
     return .{ .state = .idle, .code = .idle };

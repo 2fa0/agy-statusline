@@ -20,6 +20,7 @@
       --agy-warn-border: var(--color-border-warning, rgba(202, 138, 4, 0.4));
       --agy-warn-fg: var(--color-text-warning, #a16207);
       --agy-ok-fg: var(--color-text-success, #16a34a);
+      --agy-ok-soft: rgba(22, 163, 74, 0.12);
       --agy-font: var(--font-sans, var(--font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif));
     }
     :root[data-theme="dark"] {
@@ -37,6 +38,7 @@
       --agy-warn-border: var(--color-border-warning, rgba(234, 179, 8, 0.45));
       --agy-warn-fg: var(--color-text-warning, #facc15);
       --agy-ok-fg: var(--color-text-success, #22c55e);
+      --agy-ok-soft: rgba(34, 197, 94, 0.16);
     }
     * {
       box-sizing: border-box;
@@ -303,6 +305,14 @@
       background: #dc2626;
       animation: agy-pulse 1s ease-in-out infinite;
     }
+    .state-chip.is-switching {
+      color: var(--agy-fg-muted);
+      border-style: dashed;
+    }
+    .state-chip.is-switching .state-dot {
+      background: var(--agy-accent);
+      animation: agy-pulse 1.1s ease-in-out infinite;
+    }
     :root[data-theme="dark"] .state-chip.is-error {
       color: #f87171;
       border-color: rgba(248, 113, 113, 0.5);
@@ -331,7 +341,9 @@
     }
     .sources-note[hidden] { display: none; }
     /* Module switches from config.json: hidden sections stay out of layout. */
-    .hide-session .state-chip:not(.is-offline),
+    /* Switching/failure chips are about the chosen conversation, not the
+       session capsule, so they stay visible when that module is off. */
+    .hide-session .state-chip:not(.is-offline):not(.is-switching),
     .hide-session #state-note { display: none !important; }
     .hide-quota #quota-section,
     .hide-quota #quota-empty,
@@ -632,39 +644,195 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .usage-grid {
+    .stats-note { color: var(--agy-fg-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+    .usage-hero {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .usage-hero-total {
+      font-size: 22px;
+      font-weight: 600;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+    .usage-hero-total small { font-size: 11px; font-weight: 400; color: var(--agy-fg-muted); }
+    .usage-hit-pill {
+      font-size: 11px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--agy-subtle);
+      color: var(--agy-fg-muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+    .usage-hit-pill.good {
+      background: var(--agy-ok-soft);
+      color: var(--agy-ok-fg);
+    }
+    .usage-bar {
+      display: flex;
+      gap: 1.5px;
+      height: 6px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: var(--agy-subtle);
+    }
+    .usage-seg {
+      height: 100%;
+      min-width: 2px;
+      border-radius: 999px;
+    }
+    .seg-cache { background: var(--agy-accent); }
+    .seg-input { background: var(--agy-fg-faint); }
+    .seg-out { background: var(--agy-ok-fg); }
+    .usage-cells {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .usage-cell {
+      background: var(--agy-subtle);
+      border-radius: 6px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .usage-cell-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--agy-fg-muted);
+      white-space: nowrap;
+    }
+    .usage-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      flex: 0 0 auto;
+    }
+    .usage-cell-val {
+      font-size: 13px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .usage-latest {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      padding-top: 7px;
+      border-top: 1px solid var(--agy-border);
       font-size: 11px;
       font-variant-numeric: tabular-nums;
     }
-    .usage-total { font-size: 18px; font-weight: 600; margin: 2px 0 4px; }
-    .usage-total small { font-size: 11px; font-weight: 400; color: var(--agy-fg-muted); }
-    .stats-label { color: var(--agy-fg-muted); font-size: 11px; }
-    .stats-note { color: var(--agy-fg-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-    .model-stat {
-      font-size: 11px;
-      border-top: 1px solid var(--agy-border);
-      padding-top: 8px;
+    .usage-latest-val {
+      text-align: right;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .model-list {
       display: flex;
       flex-direction: column;
-      gap: 3px;
-      overflow-wrap: anywhere;
+      gap: 8px;
     }
-    .model-stat-head {
+    .model-card {
+      background: var(--agy-subtle);
+      border: 1px solid var(--agy-border);
+      border-radius: 7px;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+    }
+    .model-head {
       display: flex;
       align-items: baseline;
       justify-content: space-between;
       gap: 8px;
     }
-    .model-stat-metrics {
+    .model-name {
+      font-size: 12px;
+      font-weight: 600;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .model-meta {
+      font-size: 11px;
+      color: var(--agy-fg-muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+    .model-metrics {
       display: flex;
       align-items: baseline;
       justify-content: space-between;
       gap: 8px;
+      font-variant-numeric: tabular-nums;
     }
-    .model-stat .usage-total { font-size: 15px; margin: 0; }
+    .model-total {
+      font-size: 16px;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .model-total small { font-size: 11px; font-weight: 400; color: var(--agy-fg-muted); }
+    .model-tags {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      flex: 0 0 auto;
+    }
+    .model-speed { font-weight: 600; color: var(--agy-fg); }
+    .model-speed.warn { color: var(--agy-warn-fg); }
+    .model-hit { color: var(--agy-fg-muted); }
+    .model-share-track {
+      height: 3px;
+      border-radius: 999px;
+      background: var(--agy-card);
+      overflow: hidden;
+    }
+    .model-share-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--agy-accent);
+      opacity: 0.75;
+    }
+    .model-kv {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      padding-top: 5px;
+      border-top: 1px solid var(--agy-border);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+    .model-kv-item {
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .model-kv-item strong { font-weight: 600; }
     .context-chart { width: 100%; height: auto; display: block; color: var(--agy-accent); overflow: visible; }
     .context-chart text { font-size: 10px; fill: var(--agy-fg-muted); font-variant-numeric: tabular-nums; }
     .context-chart .ctx-grid { stroke: var(--agy-border); stroke-width: 1; vector-effect: non-scaling-stroke; }
@@ -680,7 +848,7 @@
     .section details summary:hover { color: var(--agy-fg); }
     .section details summary:focus-visible { outline: 2px solid var(--agy-accent); outline-offset: 2px; }
     .section details[open] .history-list { margin-top: 6px; }
-    @media (max-width: 360px) { .usage-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 260px) { .usage-cells, .model-kv { grid-template-columns: 1fr; } }
     .empty {
       padding: 18px 12px;
       text-align: center;

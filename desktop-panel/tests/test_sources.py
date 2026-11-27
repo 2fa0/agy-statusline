@@ -4,6 +4,7 @@ Every number in the panel comes from the conversation database, the transcript
 log, the hook state file or the quota snapshot. When one of them is unavailable
 the panel still renders — which is exactly why it has to say so.
 """
+import os
 import sqlite3
 import sys
 import unittest
@@ -105,6 +106,72 @@ class SourceTests(PanelFixture):
         self.database()
         self.transcript()
         self.assertEqual(self.sources()['hooks'], 'missing')
+
+    def test_schema_drift_corrupt_transcript_line_and_corrupt_quota_are_degraded(self):
+        import sqlite3
+        db = sqlite3.connect(self.db_path)
+        db.execute('CREATE TABLE steps(id INTEGER PRIMARY KEY, unexpected_col TEXT)')
+        db.execute("INSERT INTO steps VALUES(1, 'x')")
+        db.commit(); db.close()
+        self.hooks()
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        self.log.write_text('{"type":"USER_INPUT"}\n{broken json\n')
+        (self.root / 'quota.json').write_text('{bad json')
+        sources = self.sources()
+        self.assertEqual(sources['db'], 'unreadable')
+        self.assertEqual(sources['transcript'], 'error')
+        self.assertEqual(sources['quota'], 'unreadable')
+        self.assertTrue(sources['degraded'])
+        codes = [n['code'] for n in sources['notes']]
+        self.assertIn('db_unreadable', codes)
+        self.assertIn('transcript_error', codes)
+        self.assertIn('quota_unreadable', codes)
+
+
+    def test_corrupt_generation_rows_are_damage_not_a_healthy_empty_db(self):
+        db = sqlite3.connect(self.db_path)
+        db.execute('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB)')
+        db.execute('INSERT INTO gen_metadata VALUES(1,?)', (b'\xff\xff\xff\xff',))
+        db.commit(); db.close()
+        self.hooks()
+        snap = self.snapshot()
+        self.assertEqual(snap['sources']['db'], 'corrupt')
+        self.assertNotEqual(snap['sources']['db'], 'empty')
+        self.assertTrue(snap['sources']['degraded'])
+        self.assertEqual([n['code'] for n in snap['sources']['notes']], ['db_corrupt'])
+        self.assertIn('无法解析', snap['sources']['notes'][0]['text'])
+
+        # One readable record keeps the history usable; partial data is not
+        # thrown away because a neighbour is damaged.
+        from test_native import blob
+        db = sqlite3.connect(self.db_path)
+        db.execute('INSERT INTO gen_metadata VALUES(2,?)', (blob(120, 2),))
+        db.commit(); db.close()
+        snap = self.snapshot()
+        self.assertEqual(snap['sources']['db'], 'ok')
+        self.assertTrue(snap['found'])
+        self.assertEqual(snap['outputTokens'], 120)
+
+    def test_locked_database_is_not_cached_once_the_lock_is_gone(self):
+        self.database()
+        self.transcript()
+        self.hooks()
+        proc = self.worker()
+        self.assertEqual(self.query(proc)['sources']['db'], 'ok')
+        blocker = sqlite3.connect(self.db_path)
+        blocker.execute('BEGIN EXCLUSIVE')
+        try:
+            blocker.execute('CREATE TABLE IF NOT EXISTS _probe(x)')
+            blocker.rollback()
+            blocker.execute('BEGIN EXCLUSIVE')
+            os.utime(self.db_path)
+            self.assertEqual(self.query(proc)['sources']['db'], 'locked')
+        finally:
+            blocker.rollback()
+            blocker.close()
+        os.utime(self.db_path)
+        # The file did not change; a transient error must not stick until it does.
+        self.assertEqual(self.query(proc)['sources']['db'], 'ok')
 
 
 if __name__ == '__main__':

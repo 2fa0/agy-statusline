@@ -197,6 +197,23 @@ class SessionTests(PanelFixture):
         self.hooks('Stop', age=5, termination='CANCELLED')
         self.assertIn('不是错误', self.snapshot()['session']['detail'])
 
+    def test_stop_suppresses_stale_live_step_and_zero_chars_is_preparing(self):
+        self.database()
+        self.live_step('你好')
+        self.transcript()
+        for reason in ('CANCELLED', 'MODEL_ERROR', ''):
+            self.hooks('Stop', age=2, termination=reason)
+            snap = self.snapshot()
+            self.assertFalse(snap['live']['active'], reason)
+            self.assertNotEqual(snap['session']['code'], 'streaming', reason)
+
+        # An active step before the first streamed character is preparing/waiting, not streaming.
+        self.live_step('')
+        self.hooks('PreInvocation', age=3)
+        snap = self.snapshot()
+        self.assertFalse(snap['live']['active'])
+        self.assertEqual((snap['session']['state'], snap['session']['code']), ('running', 'preparing'))
+
     def test_normal_termination_is_idle_not_error(self):
         self.database()
         self.transcript()
@@ -341,6 +358,210 @@ class SessionTests(PanelFixture):
         self.assertIsNotNone(self.snapshot()['quota'])
         self.config(modules={'quota': False})
         self.assertIsNone(self.snapshot()['quota'])
+
+
+    def test_locked_database_does_not_claim_a_confirmed_first_token_wait(self):
+        self.config(thresholds={'waitSec': 5})
+        self.database()
+        self.transcript()
+        self.hooks('PreInvocation', age=30)
+        blocker = sqlite3.connect(self.db_path)
+        blocker.execute('BEGIN EXCLUSIVE')
+        try:
+            snap = self.snapshot()['session']
+        finally:
+            blocker.rollback()
+            blocker.close()
+        self.assertEqual((snap['state'], snap['code']), ('running', 'preparing'))
+        self.assertNotIn('首字', snap['detail'])
+
+    def test_older_stop_does_not_suppress_a_newer_step_without_preinvocation(self):
+        self.config(thresholds={'stallSec': 30})
+        self.database()
+        self.transcript()
+        self.hooks('PreInvocation', age=2)
+        self.live_step('第一轮残留文本', idx=1)
+        proc = self.worker()
+        self.assertEqual(self.query(proc)['live']['stepIdx'], 1)
+        # A Stop for that same step keeps suppressing the leftover row.
+        self.hooks('Stop', age=30, termination='MODEL_ERROR')
+        same_round = self.query(proc)
+        self.assertFalse(same_round['live']['active'])
+        self.assertEqual(same_round['session']['code'], 'terminated_error')
+        # A new step starts without any PreInvocation event: the older Stop must
+        # not paint a finished turn over a live one.
+        self.live_step('新一轮正在输出', idx=2)
+        newer = self.query(proc)
+        self.assertTrue(newer['live']['active'])
+        self.assertEqual(newer['live']['stepIdx'], 2)
+        self.assertEqual(newer['session']['code'], 'streaming')
+        self.assertNotEqual(newer['session']['code'], 'terminated_error')
+
+    def test_finished_step_does_not_mask_a_still_growing_older_step(self):
+        self.config(thresholds={'stallSec': 1})
+        self.database()
+        self.transcript()
+        self.hooks('PreInvocation', age=2)
+        self.db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,status INTEGER,step_type INTEGER,step_payload BLOB,metadata BLOB)')
+        self.db.execute('INSERT INTO steps VALUES(1,2,2,?,?)', (payload('你好'), blob(120, 2)))
+        self.db.execute('INSERT INTO steps VALUES(2,3,1,?,?)', (payload('已完成'), blob(120, 2)))
+        self.db.commit()
+        proc = self.worker()
+        growing = self.query(proc)
+        self.assertTrue(growing['live']['active'])
+        self.assertEqual(growing['live']['stepIdx'], 1)
+        self.assertEqual(growing['session']['code'], 'streaming')
+        # The same row stops growing: it is a leftover from an older round and
+        # must not keep pretending to be a new stream.
+        time.sleep(1.2)
+        residue = self.query(proc)
+        self.assertFalse(residue['live']['active'])
+        self.assertNotEqual(residue['session']['code'], 'streaming')
+        # Real growth brings it back.
+        self.db.execute('UPDATE steps SET step_payload=? WHERE idx=1', (payload('你好，世界，继续'),))
+        self.db.commit()
+        revived = self.query(proc)
+        self.assertTrue(revived['live']['active'])
+        self.assertEqual(revived['session']['code'], 'streaming')
+
+
+    def test_behind_step_recovers_when_its_text_grows_again(self):
+        self.config(thresholds={'stallSec': 1})
+        self.database()
+        self.transcript()
+        self.hooks('PreInvocation', age=2)
+        self.db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,status INTEGER,step_type INTEGER,step_payload BLOB,metadata BLOB)')
+        self.db.execute('INSERT INTO steps VALUES(3,8,1,?,NULL)', (payload('活跃的中段'),))
+        self.db.execute('INSERT INTO steps VALUES(4,3,2,NULL,NULL)', ())
+        self.db.commit()
+        proc = self.worker()
+        self.assertTrue(self.query(proc)['live']['active'])
+        # Long enough to look like leftovers; the row is behind a finished step.
+        time.sleep(1.2)
+        self.assertFalse(self.query(proc)['live']['active'])
+        # New text proves it is a live stream again, not residue.
+        self.db.execute('UPDATE steps SET step_payload=? WHERE idx=3', (payload('活跃的中段，继续输出'),))
+        self.db.commit()
+        revived = self.query(proc)
+        self.assertTrue(revived['live']['active'])
+        self.assertEqual(revived['live']['stepIdx'], 3)
+        self.assertEqual(revived['session']['code'], 'streaming')
+
+    def test_stop_verdict_outlives_the_badge_ttl(self):
+        # The chip may expire after stop_ttl_sec, but an unchanged active row
+        # must not reappear as a live stream just because the badge timed out.
+        self.database()
+        self.transcript()
+        self.live_step('残留的最终文本', idx=1, status=8)
+        old = time.time() - 300
+        os.utime(self.db_path, (old, old))
+        self.hooks('Stop', age=250)
+        snap = self.snapshot()
+        self.assertFalse(snap['live']['active'])
+        self.assertNotEqual(snap['session']['code'], 'streaming')
+        self.assertNotEqual(snap['session']['code'], 'terminated_error')
+
+
+    def test_stop_still_applies_when_a_completed_step_is_newer(self):
+        # The finished step above the stream ended before the Stop; it must not
+        # be mistaken for a new round and resurrect the stream.
+        self.config(thresholds={'stallSec': 30})
+        self.database()
+        self.transcript()
+        self.hooks('PreInvocation', age=2)
+        self.db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,status INTEGER,step_type INTEGER,step_payload BLOB,metadata BLOB)')
+        self.db.execute('INSERT INTO steps VALUES(3,8,1,?,NULL)', (payload('活跃的中段'),))
+        self.db.execute('INSERT INTO steps VALUES(4,3,2,NULL,NULL)', ())
+        self.db.commit()
+        proc = self.worker()
+        self.assertTrue(self.query(proc)['live']['active'])
+        self.hooks('Stop', age=1, termination='USER_CANCELLED')
+        stopped = self.query(proc)
+        self.assertFalse(stopped['live']['active'])
+        self.assertEqual(stopped['session']['code'], 'user_cancelled')
+
+
+    def test_residual_write_after_stop_does_not_resume_the_stream(self):
+        # A finished step sits above the streaming one; the final flush after the
+        # Stop must be read as that same step ending, not as a new round.
+        self.config(thresholds={'stallSec': 30})
+        self.database()
+        self.transcript()
+        self.hooks('PreInvocation', age=2)
+        self.db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,status INTEGER,step_type INTEGER,step_payload BLOB,metadata BLOB)')
+        self.db.execute('INSERT INTO steps VALUES(3,8,1,?,NULL)', (payload('流式中段'),))
+        self.db.execute('INSERT INTO steps VALUES(4,3,2,NULL,NULL)', ())
+        self.db.commit()
+        proc = self.worker()
+        self.assertTrue(self.query(proc)['live']['active'])
+        self.db.execute('UPDATE steps SET step_payload=? WHERE idx=3', (payload('流式中段，继续'),))
+        self.db.commit()
+        self.assertTrue(self.query(proc)['live']['active'])
+        self.hooks('Stop', age=0, termination='USER_CANCELLED')
+        self.db.execute('UPDATE steps SET step_payload=? WHERE idx=3', (payload('流式中段，继续，收尾写入'),))
+        self.db.commit()
+        stopped = self.query(proc)
+        self.assertFalse(stopped['live']['active'])
+        self.assertEqual(stopped['session']['code'], 'user_cancelled')
+
+    def test_fresh_panel_reads_a_stop_with_a_finished_step_above_as_current(self):
+        self.database()
+        self.transcript()
+        self.db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,status INTEGER,step_type INTEGER,step_payload BLOB,metadata BLOB)')
+        self.db.execute('INSERT INTO steps VALUES(3,8,1,?,NULL)', (payload('已停止前的流式文本'),))
+        self.db.execute('INSERT INTO steps VALUES(4,3,2,NULL,NULL)', ())
+        self.db.commit()
+        self.hooks('Stop', age=1, termination='USER_CANCELLED')
+        snap = self.snapshot()
+        self.assertFalse(snap['live']['active'])
+        self.assertEqual(snap['session']['code'], 'user_cancelled')
+
+
+    def test_stop_explanation_survives_a_database_write_with_no_live_step(self):
+        # A generation row written after the Stop (same round) must not erase the
+        # reason while nothing is live: the mtime fallback is only for deciding
+        # whether a *live* row is a new round.
+        self.database()
+        self.transcript()
+        for termination, code in (('CANCELLED', 'user_cancelled'), ('MODEL_ERROR', 'terminated_error')):
+            self.hooks('Stop', age=5, termination=termination)
+            os.utime(self.db_path, None)
+            snap = self.snapshot()
+            self.assertEqual(snap['session']['code'], code, termination)
+            self.assertFalse(snap['live']['active'])
+
+
+    def test_cold_start_residue_survives_a_database_write_after_the_stop(self):
+        # A WAL checkpoint or final flush can bump the file mtime long after the
+        # Stop; a cold start must still read the leftover row as finished.
+        self.database()
+        self.transcript()
+        self.hooks('Stop', age=5, termination='USER_CANCELLED')
+        self.live_step('残留文本', idx=1, status=8)
+        os.utime(self.db_path, None)
+        snap = self.snapshot()
+        self.assertFalse(snap['live']['active'])
+        self.assertEqual(snap['session']['code'], 'user_cancelled')
+
+        self.hooks('Stop', age=250, termination='USER_CANCELLED')
+        os.utime(self.db_path, None)
+        self.assertFalse(self.snapshot()['live']['active'])
+
+    def test_cold_start_stop_yields_to_observed_growth(self):
+        # Without step history a live row is only believed once its text grows
+        # after the panel starts watching; residue never does.
+        self.config(thresholds={'stallSec': 30})
+        self.database()
+        self.transcript()
+        self.live_step('第一段文本', idx=1, status=8)
+        self.hooks('Stop', age=5, termination='USER_CANCELLED')
+        proc = self.worker()
+        self.assertFalse(self.query(proc)['live']['active'])
+        self.db.execute('UPDATE steps SET step_payload=? WHERE idx=1', (payload('第一段文本，后来继续输出了一大段'),))
+        self.db.commit()
+        resumed = self.query(proc)
+        self.assertTrue(resumed['live']['active'])
+        self.assertEqual(resumed['session']['code'], 'streaming')
 
 
 if __name__ == '__main__':

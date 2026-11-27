@@ -196,7 +196,13 @@ class NativeTests(unittest.TestCase):
 
     def install_release_backend(self):
         source = (PANEL / 'install.sh').read_text()
-        prepare = source[source.index('prepare_backend() {'):source.index('\nSCRIPT_SOURCE=')]
+
+        def function_block(name):
+            start = source.index(f'{name}() {{')
+            return source[start:source.index('\n}\n', start) + 3]
+
+        prepare = '\n'.join(function_block(name) for name in
+                            ('detect_platform', 'resolve_native_source', 'prepare_backend'))
         import platform
         target = {
             ('Darwin', 'arm64'): 'macos-arm64',
@@ -234,7 +240,13 @@ class NativeTests(unittest.TestCase):
         self.processes.append(p)
         self.assertFalse(self.query(p)['found'])
         source = (PANEL / 'install.sh').read_text()
-        prepare = source[source.index('prepare_backend() {'):source.index('\nSCRIPT_SOURCE=')]
+
+        def function_block(name):
+            start = source.index(f'{name}() {{')
+            return source[start:source.index('\n}\n', start) + 3]
+
+        prepare = '\n'.join(function_block(name) for name in
+                            ('detect_platform', 'resolve_native_source', 'prepare_backend'))
         subprocess.run(['bash', '-c', prepare + '\nprepare_backend "$1"', '_', str(self.root)], check=True)
         self.assertNotEqual(installed.stat().st_ino, before)
         self.assertFalse(self.query(p)['found'])
@@ -254,7 +266,9 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(snap['outputTokens'], 600)
         self.assertEqual(snap['inputTokens'], 20)
         self.assertEqual(snap['cacheReadTokens'], 80)
-        self.assertEqual(snap['lastAvgSpeed'], 140.0)
+        self.assertEqual(snap['lastGenSpeed'], 200.0)
+        self.assertEqual(snap['lastAvgSpeed'], 200.0)
+        self.assertEqual(snap['lastGenDurationSec'], 3.0)
         self.assertEqual(snap['stepCount'], 5)
         self.assertEqual(snap['compactionCount'], 1)
         self.assertEqual(snap['turnDurationSec'], 7.88)
@@ -280,6 +294,30 @@ class NativeTests(unittest.TestCase):
         snap = self.snapshot()
         self.assertIsNone(snap['lastAvgSpeed'])
         self.assertEqual([h['speedTokS'] for h in snap['history']], [None, None])
+
+    def test_duration_uses_field12_not_ttft_and_speed_scopes_to_current_model(self):
+        db = self.database([
+            blob(10000, seconds=100, model=b'gemini-4-neon', duration11=5),
+            blob(2455, seconds=8, nanos=880_000_000, model=b'gemini-4-hydrogen', duration11=4),
+        ]); db.close()
+        snap = self.snapshot()
+        self.assertEqual(snap['lastGenDurationSec'], 8.88)
+        self.assertEqual(snap['lastGenTtftSec'], 4.0)
+        self.assertEqual(snap['lastGenSpeed'], 276.5)
+        self.assertEqual(snap['lastAvgSpeed'], 276.5)
+        self.assertEqual(snap['history'][0]['durationSec'], 8.88)
+        self.assertEqual(snap['history'][0]['ttftSec'], 4.0)
+        self.assertEqual(snap['history'][1]['durationSec'], 100.0)
+        self.assertEqual(snap['history'][1]['ttftSec'], 5.0)
+
+        # Missing field 12 must leave durationSec/lastGenDurationSec as None instead of falling back to field 11.
+        self.path.unlink()
+        db2 = self.database([blob(200, seconds=None, duration11=5)]); db2.close()
+        snap2 = self.snapshot()
+        self.assertIsNone(snap2['lastGenDurationSec'])
+        self.assertEqual(snap2['lastGenTtftSec'], 5.0)
+        self.assertIsNone(snap2['history'][0]['durationSec'])
+        self.assertEqual(snap2['history'][0]['ttftSec'], 5.0)
 
     def test_last_avg_speed_prefers_steady_samples_and_falls_back_to_short(self):
         # idx 0..1: older than recent 12 (excluded from lastAvgSpeed)
@@ -757,6 +795,206 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(snap['outputTokens'], 300)
         recent_ids = [item['conversationId'] for item in snap['recentConversations']]
         self.assertIn(cid_c, recent_ids)
+
+    def test_concurrent_hooks_and_turn_scoped_termination_reason(self):
+        def run_hook(data):
+            return subprocess.run([str(BINARY), 'hook', *self.args()], env=self.env,
+                                  input=json.dumps(data), text=True, capture_output=True, check=True)
+        run_hook({'conversationId': CID, 'hookEventName': 'Stop', 'terminationReason': 'MODEL_ERROR'})
+        state = json.loads((self.data / 'active_session.json').read_text())
+        self.assertEqual(state['sessions'][CID]['terminationReason'], 'MODEL_ERROR')
+        # Next turn PreInvocation and Stop without terminationReason must not inherit MODEL_ERROR.
+        run_hook({'conversationId': CID, 'hookEventName': 'PreInvocation'})
+        state = json.loads((self.data / 'active_session.json').read_text())
+        self.assertEqual(state['sessions'][CID]['terminationReason'], '')
+        run_hook({'conversationId': CID, 'hookEventName': 'Stop'})
+        state = json.loads((self.data / 'active_session.json').read_text())
+        self.assertEqual(state['sessions'][CID]['lastEvent'], 'Stop')
+        self.assertEqual(state['sessions'][CID]['terminationReason'], '')
+        # Concurrent PreInvocation + Stop must not drop Stop due to lock contention.
+        p1 = subprocess.Popen([str(BINARY), 'hook', *self.args()], env=self.env,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        p2 = subprocess.Popen([str(BINARY), 'hook', *self.args()], env=self.env,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        p1.stdin.write(json.dumps({'conversationId': CID, 'hookEventName': 'PreInvocation'})); p1.stdin.close()
+        time.sleep(0.005)
+        p2.stdin.write(json.dumps({'conversationId': CID, 'hookEventName': 'Stop'})); p2.stdin.close()
+        self.assertEqual(p1.wait(timeout=5), 0)
+        self.assertEqual(p2.wait(timeout=5), 0)
+        for p in (p1, p2):
+            p.stdout.close(); p.stderr.close()
+        state = json.loads((self.data / 'active_session.json').read_text())
+        self.assertEqual(state['sessions'][CID]['lastEvent'], 'Stop')
+
+    def test_speed_history_and_usage_do_not_mix_models_splice_or_fake_zero(self):
+        # Issue #5: Gemini 200 tok/s + modelless 10 tok/s must not leak into Claude's lastAvgSpeed,
+        # and modelless history items must keep model == ''.
+        db = self.database([blob(400, 2, b'gemini-demo'), blob(20, 2, b'')])
+        db.close()
+        (self.data / 'active_session.json').write_text(json.dumps({
+            'activeConversationId': CID,
+            'sessions': {CID: {'conversationId': CID, 'modelName': 'claude-demo', 'lastEvent': 'Stop'}},
+        }))
+        snap = self.snapshot()
+        self.assertIsNone(snap['lastAvgSpeed'])
+        self.assertEqual(snap['history'][0]['model'], '')
+
+        # Issue #6 & #7: gen_metadata missing output with duration=2.0 must not splice steps output=888,
+        # steps with only input=300 must not fake cacheHitPct=0.0, and readable empty DB falls back to transcript.
+        self.path.unlink()
+        no_output_meta = field_bytes(
+            1,
+            field_bytes(4, field_varint(2, 20))
+            + field_bytes(12, field_varint(1, 2))
+            + field_bytes(19, b'claude-demo'),
+        )
+        db = self.database([no_output_meta])
+        db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,metadata BLOB)')
+        db.execute('INSERT INTO steps VALUES(1,?)', (field_bytes(9, field_varint(2, 300) + field_varint(3, 888)),))
+        db.commit(); db.close()
+        snap2 = self.snapshot()
+        self.assertIsNone(snap2['outputTokens'])
+        self.assertEqual(snap2['lastGenDurationSec'], 2.0)
+        self.assertIsNone(snap2['cacheReadTokens'])
+        self.assertIsNone(snap2['cacheHitPct'])
+
+        self.path.unlink()
+        db = self.database([]); db.close()
+        self.transcript([{'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'model': 'claude-demo',
+                          'input_tokens': 100, 'cache_read_tokens': 900, 'output_tokens': 50}])
+        snap3 = self.snapshot()
+        self.assertEqual(snap3['usageSource'], 'transcript')
+        self.assertEqual(snap3['cacheHitPct'], 90.0)
+
+    def test_large_transcript_append_and_middle_rewrite_detection(self):
+        row = json.dumps({'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'input_tokens': 10,
+                          'cache_read_tokens': 90, 'output_tokens': 5, 'content': 'x' * 512}) + '\n'
+        count = 2000  # > 1 MiB (exceeds full_verify_limit 512 KiB)
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        self.log.write_bytes((row * count).encode())
+        p = self.worker()
+        self.assertEqual(self.query(p)['sessionUsage']['requestCount'], count)
+        with self.log.open('a') as f:
+            f.write(row)
+        self.assertEqual(self.query(p)['sessionUsage']['requestCount'], count + 1)
+        # Rewriting the middle (while keeping length larger) must be detected by chunked verification.
+        data = bytearray(self.log.read_bytes())
+        mid_start = len(data) // 2
+        idx = data.find(b'"input_tokens": 10', mid_start)
+        self.assertGreater(idx, 0)
+        data[idx:idx + len(b'"input_tokens": 10')] = b'"input_tokens": 99'
+        data.extend(row.encode())
+        self.log.write_bytes(bytes(data))
+        self.assertEqual(self.query(p)['sessionUsage']['inputTokens'], (count + 1) * 10 + 99)
+
+
+    def test_step_usage_is_completed_from_the_same_logged_step_only(self):
+        # SQLite often knows the input of a step but not its cache reads; the
+        # transcript row for the same step index has both. Mixing them is only
+        # allowed within one request.
+        db = self.database([blob(50, 2, b'gemini-demo')])
+        db.execute('CREATE TABLE steps(idx INTEGER PRIMARY KEY,status INTEGER,metadata BLOB)')
+        db.execute('INSERT INTO steps VALUES(4,3,?)',
+                   (field_bytes(9, field_varint(2, 100) + field_varint(3, 50)),))
+        db.commit(); db.close()
+        self.transcript([
+            {'type': 'USER_INPUT', 'created_at': '2026-11-24T05:00:00Z'},
+            {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'step_index': 4, 'model': 'gemini-demo',
+             'input_tokens': 100, 'cache_read_tokens': 900, 'output_tokens': 50,
+             'created_at': '2026-11-24T05:00:10Z'},
+        ])
+        snap = self.snapshot()
+        self.assertEqual(snap['usageSource'], 'steps')
+        self.assertEqual(snap['inputTokens'], 100)
+        self.assertEqual(snap['cacheReadTokens'], 900)
+        self.assertEqual(snap['contextUsed'], 1000)
+        self.assertAlmostEqual(snap['cacheHitPct'], 90.0, places=3)
+        # The speed card keeps reading the one completed generation row.
+        self.assertEqual(snap['outputTokens'], 50)
+        self.assertEqual(snap['lastGenDurationSec'], 2.0)
+        self.assertEqual(snap['lastGenSpeed'], 25.0)
+
+        # A log row for a different step must not be spliced onto this request.
+        self.transcript([
+            {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'step_index': 7, 'model': 'gemini-demo',
+             'input_tokens': 100, 'cache_read_tokens': 900, 'output_tokens': 50},
+        ])
+        snap = self.snapshot()
+        self.assertEqual(snap['inputTokens'], 100)
+        self.assertIsNone(snap['cacheReadTokens'])
+        self.assertIsNone(snap['cacheHitPct'])
+        self.assertEqual(snap['contextUsed'], 100)
+
+        # A real zero stays a zero; "unknown" and "nothing cached" differ.
+        self.transcript([
+            {'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'step_index': 4, 'model': 'gemini-demo',
+             'input_tokens': 100, 'cache_read_tokens': 0, 'output_tokens': 50},
+        ])
+        snap = self.snapshot()
+        self.assertEqual(snap['cacheReadTokens'], 0)
+        self.assertEqual(snap['cacheHitPct'], 0.0)
+        self.assertEqual(snap['contextUsed'], 100)
+
+    def test_idle_transcript_still_corrects_a_block_edited_before_the_last_append(self):
+        # ~1.2 MiB in 64 KiB chunks: past the exhaustive 512 KiB window, so the
+        # edited block is only reached by the rotating scrub.
+        def row(tokens):
+            return json.dumps({'type': 'PLANNER_RESPONSE', 'status': 'DONE', 'input_tokens': tokens,
+                               'cache_read_tokens': 90, 'output_tokens': 5, 'content': 'x' * 800}) + '\n'
+        data = ''.join(row(10) for _ in range(1300))
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        self.log.write_text(data)
+        proc = self.worker()
+        base = self.query(proc)['sessionUsage']
+        needle = '"input_tokens": 10'
+        start = data.index(needle, 64 * 1024)
+        self.assertLess(start, 128 * 1024, 'the edited row must live in the second 64 KiB block')
+        patched = data[:start] + '"input_tokens": 99' + data[start + len(needle):] + row(10)
+        self.log.write_bytes(patched.encode())
+        # The append is picked up, but the in-place edit has not been re-read yet.
+        stale = self.query(proc)['sessionUsage']
+        self.assertEqual(stale['inputTokens'], base['inputTokens'] + 10)
+        self.assertEqual(stale['requestCount'], base['requestCount'] + 1)
+        # Nothing changes on disk any more; the scrub alone must find it.
+        recovered = None
+        for _ in range(12):
+            recovered = self.query(proc)['sessionUsage']
+            if recovered['inputTokens'] == base['inputTokens'] + 10 + 89:
+                break
+        self.assertEqual(recovered['inputTokens'], base['inputTokens'] + 10 + 89)
+        self.assertEqual(recovered['requestCount'], base['requestCount'] + 1)
+
+
+    def test_average_speed_is_labelled_with_the_model_that_produced_it(self):
+        # Previous reply: Gemini. The hook already reports the newly chosen
+        # Claude for this turn, so the average must not be sold as Claude's.
+        from datetime import datetime, timezone
+        db = self.database([blob(200, 2, b'gemini-4-hydrogen'), blob(400, 1, b'gemini-4-hydrogen')])
+        db.close()
+        hook_at = datetime.fromtimestamp(time.time() - 2, timezone.utc).isoformat()
+        (self.data / 'active_session.json').write_text(json.dumps({
+            'activeConversationId': CID,
+            'sessions': {CID: {'conversationId': CID, 'updatedAt': hook_at,
+                               'modelName': 'claude-sonnet-4', 'lastEvent': 'PreInvocation'}},
+        }))
+        snap = self.snapshot()
+        self.assertEqual(snap['modelName'], 'gemini-4-hydrogen')
+        self.assertEqual(snap['turnModel'], 'claude-sonnet-4')
+        self.assertEqual(snap['lastAvgSpeedModel'], 'gemini-4-hydrogen')
+        self.assertEqual(snap['lastAvgSpeed'], 200.0)
+
+        # Unknown-model samples keep an empty name instead of borrowing a known one.
+        self.path.unlink()
+        db = self.database([blob(100, 2, b'')])
+        db.close()
+        (self.data / 'active_session.json').write_text(json.dumps({
+            'activeConversationId': CID,
+            'sessions': {CID: {'conversationId': CID, 'updatedAt': hook_at,
+                               'modelName': '', 'lastEvent': 'PreInvocation'}},
+        }))
+        snap = self.snapshot()
+        self.assertEqual(snap['lastAvgSpeed'], 50.0)
+        self.assertEqual(snap['lastAvgSpeedModel'], '')
 
 
 if __name__ == '__main__':

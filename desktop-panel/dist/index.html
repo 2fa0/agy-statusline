@@ -20,6 +20,7 @@
       --agy-warn-border: var(--color-border-warning, rgba(202, 138, 4, 0.4));
       --agy-warn-fg: var(--color-text-warning, #a16207);
       --agy-ok-fg: var(--color-text-success, #16a34a);
+      --agy-ok-soft: rgba(22, 163, 74, 0.12);
       --agy-font: var(--font-sans, var(--font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif));
     }
     :root[data-theme="dark"] {
@@ -37,6 +38,7 @@
       --agy-warn-border: var(--color-border-warning, rgba(234, 179, 8, 0.45));
       --agy-warn-fg: var(--color-text-warning, #facc15);
       --agy-ok-fg: var(--color-text-success, #22c55e);
+      --agy-ok-soft: rgba(34, 197, 94, 0.16);
     }
     * {
       box-sizing: border-box;
@@ -303,6 +305,14 @@
       background: #dc2626;
       animation: agy-pulse 1s ease-in-out infinite;
     }
+    .state-chip.is-switching {
+      color: var(--agy-fg-muted);
+      border-style: dashed;
+    }
+    .state-chip.is-switching .state-dot {
+      background: var(--agy-accent);
+      animation: agy-pulse 1.1s ease-in-out infinite;
+    }
     :root[data-theme="dark"] .state-chip.is-error {
       color: #f87171;
       border-color: rgba(248, 113, 113, 0.5);
@@ -331,7 +341,9 @@
     }
     .sources-note[hidden] { display: none; }
     /* Module switches from config.json: hidden sections stay out of layout. */
-    .hide-session .state-chip:not(.is-offline),
+    /* Switching/failure chips are about the chosen conversation, not the
+       session capsule, so they stay visible when that module is off. */
+    .hide-session .state-chip:not(.is-offline):not(.is-switching),
     .hide-session #state-note { display: none !important; }
     .hide-quota #quota-section,
     .hide-quota #quota-empty,
@@ -632,39 +644,195 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .usage-grid {
+    .stats-note { color: var(--agy-fg-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+    .usage-hero {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .usage-hero-total {
+      font-size: 22px;
+      font-weight: 600;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+    .usage-hero-total small { font-size: 11px; font-weight: 400; color: var(--agy-fg-muted); }
+    .usage-hit-pill {
+      font-size: 11px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--agy-subtle);
+      color: var(--agy-fg-muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+    .usage-hit-pill.good {
+      background: var(--agy-ok-soft);
+      color: var(--agy-ok-fg);
+    }
+    .usage-bar {
+      display: flex;
+      gap: 1.5px;
+      height: 6px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: var(--agy-subtle);
+    }
+    .usage-seg {
+      height: 100%;
+      min-width: 2px;
+      border-radius: 999px;
+    }
+    .seg-cache { background: var(--agy-accent); }
+    .seg-input { background: var(--agy-fg-faint); }
+    .seg-out { background: var(--agy-ok-fg); }
+    .usage-cells {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .usage-cell {
+      background: var(--agy-subtle);
+      border-radius: 6px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .usage-cell-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--agy-fg-muted);
+      white-space: nowrap;
+    }
+    .usage-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      flex: 0 0 auto;
+    }
+    .usage-cell-val {
+      font-size: 13px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .usage-latest {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      padding-top: 7px;
+      border-top: 1px solid var(--agy-border);
       font-size: 11px;
       font-variant-numeric: tabular-nums;
     }
-    .usage-total { font-size: 18px; font-weight: 600; margin: 2px 0 4px; }
-    .usage-total small { font-size: 11px; font-weight: 400; color: var(--agy-fg-muted); }
-    .stats-label { color: var(--agy-fg-muted); font-size: 11px; }
-    .stats-note { color: var(--agy-fg-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-    .model-stat {
-      font-size: 11px;
-      border-top: 1px solid var(--agy-border);
-      padding-top: 8px;
+    .usage-latest-val {
+      text-align: right;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .model-list {
       display: flex;
       flex-direction: column;
-      gap: 3px;
-      overflow-wrap: anywhere;
+      gap: 8px;
     }
-    .model-stat-head {
+    .model-card {
+      background: var(--agy-subtle);
+      border: 1px solid var(--agy-border);
+      border-radius: 7px;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+    }
+    .model-head {
       display: flex;
       align-items: baseline;
       justify-content: space-between;
       gap: 8px;
     }
-    .model-stat-metrics {
+    .model-name {
+      font-size: 12px;
+      font-weight: 600;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .model-meta {
+      font-size: 11px;
+      color: var(--agy-fg-muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+    .model-metrics {
       display: flex;
       align-items: baseline;
       justify-content: space-between;
       gap: 8px;
+      font-variant-numeric: tabular-nums;
     }
-    .model-stat .usage-total { font-size: 15px; margin: 0; }
+    .model-total {
+      font-size: 16px;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .model-total small { font-size: 11px; font-weight: 400; color: var(--agy-fg-muted); }
+    .model-tags {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      flex: 0 0 auto;
+    }
+    .model-speed { font-weight: 600; color: var(--agy-fg); }
+    .model-speed.warn { color: var(--agy-warn-fg); }
+    .model-hit { color: var(--agy-fg-muted); }
+    .model-share-track {
+      height: 3px;
+      border-radius: 999px;
+      background: var(--agy-card);
+      overflow: hidden;
+    }
+    .model-share-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--agy-accent);
+      opacity: 0.75;
+    }
+    .model-kv {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      padding-top: 5px;
+      border-top: 1px solid var(--agy-border);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+    .model-kv-item {
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .model-kv-item strong { font-weight: 600; }
     .context-chart { width: 100%; height: auto; display: block; color: var(--agy-accent); overflow: visible; }
     .context-chart text { font-size: 10px; fill: var(--agy-fg-muted); font-variant-numeric: tabular-nums; }
     .context-chart .ctx-grid { stroke: var(--agy-border); stroke-width: 1; vector-effect: non-scaling-stroke; }
@@ -680,7 +848,7 @@
     .section details summary:hover { color: var(--agy-fg); }
     .section details summary:focus-visible { outline: 2px solid var(--agy-accent); outline-offset: 2px; }
     .section details[open] .history-list { margin-top: 6px; }
-    @media (max-width: 360px) { .usage-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 260px) { .usage-cells, .model-kv { grid-template-columns: 1fr; } }
     .empty {
       padding: 18px 12px;
       text-align: center;
@@ -858,113 +1026,137 @@
 
     <div id="empty-box" class="section empty" style="display:none"></div>
   </div>
-  <script>"use strict";(()=>{var Be="agy_status_refresh_sec",Xe="agy_status_active_tab",qe=new Set([0,3,5,10]),Ze=new Set(["trends","usage","quota","settings"]),pt=15e3,ht=45,vt=1e3,U=document.getElementById("session-select"),$=document.getElementById("refresh-select"),Fe=document.getElementById("live-dot"),Ce=document.getElementById("meta-strip"),We=document.getElementById("cards"),se=document.getElementById("tab-bar"),Ae=Array.from(document.querySelectorAll(".tab-panel")),Re=document.getElementById("quota-section"),_e=document.getElementById("quota-empty"),je=document.getElementById("quota-note"),Ge=document.getElementById("quota-list"),Ee=document.getElementById("history-section"),St=document.getElementById("history-count"),$t=document.getElementById("spark-detail"),pe=document.getElementById("spark"),he=document.getElementById("history-list"),ke=document.getElementById("empty-box"),Oe=document.getElementById("usage-section"),E=document.getElementById("context-section"),Qe=document.getElementById("models-section"),ae=document.getElementById("cfg-layout"),F=document.getElementById("cfg-poll-sec"),le=document.getElementById("cfg-mod-session"),ie=document.getElementById("cfg-mod-history"),ce=document.getElementById("cfg-mod-context"),re=document.getElementById("cfg-mod-models"),de=document.getElementById("cfg-mod-quota"),j=document.getElementById("cfg-low-speed"),G=document.getElementById("cfg-wait-sec"),O=document.getElementById("cfg-stall-sec"),Q=document.getElementById("cfg-tool-grace"),ue=document.getElementById("notch-enabled"),me=document.getElementById("notch-hide-idle"),ge=document.getElementById("notch-screen-mode"),fe=document.getElementById("notch-avoidance-mode"),q=document.getElementById("settings-save-status"),ne=!1,we=0,Me=Promise.resolve(),W="auto",x=yt(),N=bt(),Le=!1,I=null,oe=[],et=[],tt="",V=null,ve=null,Ie=null,De=0,Pe=0;function bt(){try{let e=localStorage.getItem(Xe);if(e&&Ze.has(e))return e}catch{}return"trends"}function Se(e){N=Ze.has(e)?e:"trends";try{localStorage.setItem(Xe,N)}catch{}se.querySelectorAll(".tab-btn").forEach(t=>{let n=t.dataset.tab===N;t.classList.toggle("active",n),t.setAttribute("aria-selected",n?"true":"false")}),Ae.forEach(t=>{t.classList.toggle("active",t.dataset.panel===N)})}function yt(){try{let e=window.localStorage?.getItem(Be);if(e!==null){let t=Number.parseInt(e,10);if(qe.has(t))return t}}catch{}return 3}function xt(e){try{window.localStorage?.setItem(Be,String(e))}catch{}}$.value=String(x);$.classList.toggle("active",x>0);$.title="\u81EA\u9002\u5E94\u5237\u65B0\uFF1A\u6D3B\u8DC3\u65F6\u6309\u6240\u9009\u95F4\u9694\u5237\u65B0\uFF0C\u7A7A\u95F2\u65F6\u964D\u5230 15s\uFF0C\u9762\u677F\u9690\u85CF\u65F6\u6682\u505C";function v(e){return e==null||e<0?"--":e>=1e3?`${Math.trunc(e/1e3).toLocaleString("en-US")}K`:e.toLocaleString("en-US")}function T(e){return e==null||e<0?"--":`${e.toLocaleString("en-US")} tok`}function P(e){if(e==null||e<0)return"--";if(e<60)return`${e.toFixed(1)}s`;let t=Math.floor(e/60),n=Math.round(e%60);return t<60?`${t}m ${n}s`:`${Math.floor(t/60)}h ${t%60}m`}function i(e){return e.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}var Tt=["\u5468\u65E5","\u5468\u4E00","\u5468\u4E8C","\u5468\u4E09","\u5468\u56DB","\u5468\u4E94","\u5468\u516D"],Et={gemini:"Gemini",argon:"Argon",claude:"Claude"},kt={"5h":"5\u5C0F\u65F6",weekly:"\u5468\u9650",other:"\u989D\u5EA6"},Ve={"5h":0,weekly:1,other:2};function Ne(e){return`${String(e.getHours()).padStart(2,"0")}:${String(e.getMinutes()).padStart(2,"0")}`}function wt(e=0){let t=new Date;return new Date(t.getFullYear(),t.getMonth(),t.getDate()+e).getTime()}function Mt(e){if(e==null)return"--";let t=new Date(e*1e3);if(Number.isNaN(t.getTime()))return"--";let n=Ne(t),s=new Date(t.getFullYear(),t.getMonth(),t.getDate()).getTime(),o=Math.round((s-wt())/864e5);return o===0?`\u4ECA\u5929 ${n}`:o===1?`\u660E\u5929 ${n}`:`${Tt[t.getDay()]} ${t.getMonth()+1}/${t.getDate()} ${n}`}function Lt(e){if(e==null)return"";if(e<=0)return"\u5373\u5C06\u91CD\u7F6E";let t=Math.floor(e/86400),n=Math.floor(e%86400/3600),s=Math.floor(e%3600/60);return t>0?`${t}\u5929 ${n}\u5C0F\u65F6`:n>0?`${n}\u5C0F\u65F6 ${s}\u5206\u949F`:`${s}\u5206\u949F`}function It(e){return e===void 0?"":e<60?"\u521A\u521A":e<3600?`${Math.floor(e/60)} \u5206\u949F\u524D`:e<86400?`${Math.floor(e/3600)} \u5C0F\u65F6\u524D`:`${Math.floor(e/86400)} \u5929\u524D`}function Ht(e){if(!e)return"";let t=new Date(e);return Number.isNaN(t.getTime())?"":t.toDateString()===new Date().toDateString()?Ne(t):`${t.getMonth()+1}/${t.getDate()} ${Ne(t)}`}function Ye(e){let t=(e?.windows||[]).filter(a=>a&&typeof a=="object");if(!e||t.length===0){Re.style.display="none",_e.style.display="block",Ge.innerHTML="";return}Re.style.display="flex",_e.style.display="none";let n=It(e.observedAgeSec),s=Ht(e.observedAt);je.textContent=e.stale?`${s||n} \xB7 \u63A8\u7B97`:`${s||n} \u66F4\u65B0`,je.title=e.stale?`\u4E0A\u6B21\u91C7\u5230\u989D\u5EA6\u662F ${s}\uFF08${n}\uFF09\uFF1B\u91CD\u7F6E\u65F6\u95F4\u5DF2\u6309 5h / 7 \u5929\u5468\u671F\u63A8\u7B97\u5230\u4E0B\u4E00\u6B21`:"\u989D\u5EA6\u6765\u81EA\u4E0A\u4E00\u6B21 agy CLI \u6E32\u67D3\u65F6\u7684\u72B6\u6001\u680F\u6570\u636E";let o=new Map;for(let a of t){let g=o.get(a.pool)||[];g.push(a),o.set(a.pool,g)}Ge.innerHTML=Array.from(o.entries()).map(([a,g])=>{let r=Et[a]||a,m=[...g].sort((d,p)=>(Ve[d.window]??99)-(Ve[p.window]??99)).map(d=>{let p=kt[d.window]||d.window,f=d.resetAtEpoch!==null&&d.resetAtEpoch!==void 0,k=f&&d.approx?"\u2248 ":"",H=f?Lt(d.resetInSec):"",C=f?Mt(d.resetAtEpoch):"\u672A\u77E5",w=f?new Date(d.resetAtEpoch*1e3).toLocaleString():"--",B=[`${r} ${p}`,f?`\u91CD\u7F6E\u4E8E ${w}`:"\u91CD\u7F6E\u65F6\u95F4\u672A\u77E5",f&&H?`\u8DDD\u91CD\u7F6E ${H}`:"",d.approx?"\u6309 5h / 7 \u5929\u5468\u671F\u63A8\u7B97":"",n?`\u91C7\u96C6\u4E8E ${n}`:""].filter(Boolean).join(" \xB7 ");return`
-            <div class="quota-cell" title="${i(B)}">
-              <span class="quota-label">${i(p)}</span>
-              <span class="quota-time">${i(k+C)}</span>
+  <script>"use strict";(()=>{var lt="agy_status_refresh_sec",bt="agy_status_active_tab",rt=new Set([0,3,5,10]),yt=new Set(["trends","usage","quota","settings"]),Gt=15e3,_t=45,jt=1e3,He=8e3,O=document.getElementById("session-select"),$=document.getElementById("refresh-select"),ut=document.getElementById("live-dot"),se=document.getElementById("meta-strip"),tt=document.getElementById("cards"),ce=document.getElementById("tab-bar"),Le=Array.from(document.querySelectorAll(".tab-panel")),mt=document.getElementById("quota-section"),ft=document.getElementById("quota-empty"),W=document.getElementById("quota-note"),pt=document.getElementById("quota-list"),Ie=document.getElementById("history-section"),Tt=document.getElementById("history-count"),xt=document.getElementById("spark-detail"),$e=document.getElementById("spark"),Se=document.getElementById("history-list"),C=document.getElementById("empty-box"),nt=document.getElementById("usage-section"),H=document.getElementById("context-section"),ot=document.getElementById("models-section"),Ae=document.getElementById("cfg-layout"),ee=document.getElementById("cfg-poll-sec"),Pe=document.getElementById("cfg-mod-session"),qe=document.getElementById("cfg-mod-history"),De=document.getElementById("cfg-mod-context"),Be=document.getElementById("cfg-mod-models"),Ne=document.getElementById("cfg-mod-quota"),de=document.getElementById("cfg-low-speed"),ue=document.getElementById("cfg-wait-sec"),me=document.getElementById("cfg-stall-sec"),fe=document.getElementById("cfg-tool-grace"),Fe=document.getElementById("notch-enabled"),Ue=document.getElementById("notch-hide-idle"),Re=document.getElementById("notch-screen-mode"),We=document.getElementById("notch-avoidance-mode"),Z=document.getElementById("settings-save-status"),pe=!1,Je=0,ze=Promise.resolve(),L="auto",Ge="",Ce=!1,b=Vt(),N=Qt(),Xe=0,ke=null,Me=null,j=null,ge=[],ct=[],Ot="",ne=null,E=null,Ze=null,_e=0,G=0,he=0,Q=0,te=null;function Qt(){try{let e=localStorage.getItem(bt);if(e&&yt.has(e))return e}catch{}return"trends"}function oe(e){N=yt.has(e)?e:"trends";try{localStorage.setItem(bt,N)}catch{}ce.querySelectorAll(".tab-btn").forEach(t=>{let n=t.dataset.tab===N;t.classList.toggle("active",n),t.setAttribute("aria-selected",n?"true":"false")}),Le.forEach(t=>{t.classList.toggle("active",t.dataset.panel===N)})}function Vt(){try{let e=window.localStorage?.getItem(lt);if(e!==null&&/^\d+$/.test(e.trim())){let t=Number.parseInt(e.trim(),10);if(t===0||t>=1&&t<=60)return rt.add(t),t}}catch{}return 3}function Yt(e){try{window.localStorage?.setItem(lt,String(e))}catch{}}if(b>0&&!Array.from($.options).some(e=>Number(e.value)===b)){let e=document.createElement("option");e.value=String(b),e.textContent=`${b}s`,$.insertBefore(e,$.lastElementChild)}$.value=String(b);$.classList.toggle("active",b>0);$.title="\u81EA\u9002\u5E94\u5237\u65B0\uFF1A\u6D3B\u8DC3\u65F6\u6309\u6240\u9009\u95F4\u9694\u5237\u65B0\uFF0C\u7A7A\u95F2\u65F6\u964D\u5230 15s\uFF0C\u9762\u677F\u9690\u85CF\u65F6\u6682\u505C";function x(e){if(e==null||e<0)return"--";if(e>=1e4)return`${Math.round(e/1e3).toLocaleString("en-US")}K`;if(e>=1e3){let t=Math.round(e/1e3*10)/10;return t>=10?`${Math.round(t).toLocaleString("en-US")}K`:`${t.toFixed(1)}K`}return e.toLocaleString("en-US")}function S(e){return e==null||e<0?"--":`${e.toLocaleString("en-US")} tok`}function _(e){if(e==null||!Number.isFinite(e)||e<0)return"--";if(e<59.95)return`${e.toFixed(1)}s`;let t=Math.round(e),n=Math.floor(t/60),i=t%60;return n<60?`${n}m ${i}s`:`${Math.floor(n/60)}h ${n%60}m`}function c(e){return e.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}var Kt=["\u5468\u65E5","\u5468\u4E00","\u5468\u4E8C","\u5468\u4E09","\u5468\u56DB","\u5468\u4E94","\u5468\u516D"],Jt={gemini:"Gemini",argon:"Argon",claude:"Claude"},zt={"5h":"5\u5C0F\u65F6",weekly:"\u5468\u9650",other:"\u989D\u5EA6"},gt={"5h":0,weekly:1,other:2};function st(e){return`${String(e.getHours()).padStart(2,"0")}:${String(e.getMinutes()).padStart(2,"0")}`}function Xt(e=0){let t=new Date;return new Date(t.getFullYear(),t.getMonth(),t.getDate()+e).getTime()}function Zt(e){if(e==null)return"--";let t=new Date(e*1e3);if(Number.isNaN(t.getTime()))return"--";let n=st(t),i=new Date(t.getFullYear(),t.getMonth(),t.getDate()).getTime(),s=Math.round((i-Xt())/864e5);return s===0?`\u4ECA\u5929 ${n}`:s===1?`\u660E\u5929 ${n}`:`${Kt[t.getDay()]} ${t.getMonth()+1}/${t.getDate()} ${n}`}function en(e){if(e==null||e<0)return"";if(e<60)return"\u5373\u5C06\u91CD\u7F6E";let t=Math.floor(e/86400),n=Math.floor(e%86400/3600),i=Math.floor(e%3600/60);return t>0?`${t}\u5929 ${n}\u5C0F\u65F6`:n>0?`${n}\u5C0F\u65F6 ${i}\u5206\u949F`:`${i}\u5206\u949F`}function tn(e){return e===void 0?"":e<60?"\u521A\u521A":e<3600?`${Math.floor(e/60)} \u5206\u949F\u524D`:e<86400?`${Math.floor(e/3600)} \u5C0F\u65F6\u524D`:`${Math.floor(e/86400)} \u5929\u524D`}function nn(e){if(!e)return"";let t=new Date(e);return Number.isNaN(t.getTime())?"":t.toDateString()===new Date().toDateString()?st(t):`${t.getMonth()+1}/${t.getDate()} ${st(t)}`}function ht(e){let t=(e?.windows||[]).filter(o=>o&&typeof o=="object");if(!e||t.length===0){mt.style.display="none",ft.style.display="block",pt.innerHTML="";return}mt.style.display="flex",ft.style.display="none";let n=tn(e.observedAgeSec),i=nn(e.observedAt),s=t.filter(o=>o.resetAtEpoch!==null&&o.resetAtEpoch!==void 0),l=s.filter(o=>!!o.approx).length,u=s.filter(o=>!o.approx&&typeof o.resetInSec=="number"&&o.resetInSec<0).length;l>0?(W.textContent=`${i||n} \xB7 ${l===s.length?"\u5DF2\u63A8\u7B97":"\u90E8\u5206\u63A8\u7B97"}`,W.title=`\u4E0A\u6B21\u91C7\u5230\u989D\u5EA6\u662F ${i||n}\uFF08${n}\uFF09\uFF1B\u5E26 \u2248 \u7684\u7A97\u53E3\u5DF2\u6309\u5BF9\u5E94\u5468\u671F\u63A8\u7B97\u5230\u4E0B\u4E00\u6B21\uFF0C\u5176\u4F59\u4E3A\u539F\u8BB0\u5F55\u65F6\u95F4`):u>0?(W.textContent=`${i||n} \xB7 \u90E8\u5206\u5DF2\u8FC7`,W.title=`\u4E0A\u6B21\u91C7\u5230\u989D\u5EA6\u662F ${i||n}\uFF08${n}\uFF09\uFF1B\u90E8\u5206\u7A97\u53E3\u7684\u91CD\u7F6E\u65F6\u95F4\u5DF2\u8FC7\u4E14\u5468\u671F\u672A\u77E5\uFF0C\u7B49\u5F85 agy CLI \u5237\u65B0`):e.stale?(W.textContent=`${i||n} \xB7 \u5FEB\u7167\u8F83\u65E7`,W.title=`\u4E0A\u6B21\u91C7\u5230\u989D\u5EA6\u662F ${i||n}\uFF08${n}\uFF09\uFF0C\u5FEB\u7167\u5DF2\u8D85\u8FC7 6 \u5C0F\u65F6\uFF1B\u5F53\u524D\u91CD\u7F6E\u65F6\u95F4\u5C1A\u672A\u5230\u671F\uFF0C\u4ECD\u4E3A\u539F\u8BB0\u5F55\u503C`):(W.textContent=`${i||n} \u66F4\u65B0`,W.title="\u989D\u5EA6\u6765\u81EA\u4E0A\u4E00\u6B21 agy CLI \u6E32\u67D3\u65F6\u7684\u72B6\u6001\u680F\u6570\u636E");let r=new Map;for(let o of t){let d=r.get(o.pool)||[];d.push(o),r.set(o.pool,d)}pt.innerHTML=Array.from(r.entries()).map(([o,d])=>{let m=Jt[o]||o,k=[...d].sort((f,M)=>(gt[f.window]??99)-(gt[M.window]??99)).map(f=>{let M=zt[f.window]||f.window,v=f.resetAtEpoch!==null&&f.resetAtEpoch!==void 0,A=v&&f.approx?"\u2248 ":"",P=v&&!f.approx&&typeof f.resetInSec=="number"&&f.resetInSec<0,q=v&&!P?en(f.resetInSec):"",T=v?Zt(f.resetAtEpoch):"\u672A\u77E5",Y=P?`${T}\uFF08\u5DF2\u8FC7\uFF09`:A+T,F=v?new Date(f.resetAtEpoch*1e3).toLocaleString():"--",D=f.approx?f.window==="5h"?"\u6309 5h \u5468\u671F\u63A8\u7B97":f.window==="weekly"?"\u6309 7 \u5929\u5468\u671F\u63A8\u7B97":"\u6309\u5468\u671F\u63A8\u7B97":"",U=[`${m} ${M}`,v?`\u91CD\u7F6E\u4E8E ${F}`:"\u91CD\u7F6E\u65F6\u95F4\u672A\u77E5",P?"\u91CD\u7F6E\u65F6\u95F4\u5DF2\u8FC7\uFF08\u5468\u671F\u672A\u77E5\uFF0C\u65E0\u6CD5\u63A8\u7B97\uFF09":v&&q?`\u8DDD\u91CD\u7F6E ${q}`:"",D,n?`\u91C7\u96C6\u4E8E ${n}`:""].filter(Boolean).join(" \xB7 ");return`
+            <div class="quota-cell" title="${c(U)}">
+              <span class="quota-label">${c(M)}</span>
+              <span class="quota-time">${c(Y)}</span>
             </div>
           `}).join("");return`
         <div class="quota-group">
-          <div class="quota-group-title">${i(r)}</div>
-          <div class="quota-windows">${m}</div>
+          <div class="quota-group-title">${c(m)}</div>
+          <div class="quota-windows">${k}</div>
         </div>
-      `}).join("")}function Ct(e=[]){let t=W,n=['<option value="auto">\u81EA\u52A8\u8DDF\u968F\u5F53\u524D\u6D3B\u8DC3\u4F1A\u8BDD</option>'];for(let o of e){let a=[o.shortId];o.workspace&&a.push(o.workspace),o.modelName&&a.push(o.modelName),o.isActive&&a.push("\u6D3B\u8DC3"),n.push(`<option value="${i(o.conversationId)}">${i(a.join(" \xB7 "))}</option>`)}U.innerHTML=n.join("");let s=Array.from(U.options).some(o=>o.value===t);U.value=s?t:"auto",W=U.value}function K(e){if(oe.length===0)return;let t=oe[0],n=(e!==null?oe.find(c=>c.idx===e):void 0)||t;V=n.idx;let s=n.speedTokS!==null&&n.speedTokS<(ve?.config?.lowSpeedWarnTokS??50),o=n.speedTokS!==null?`${n.speedTokS.toFixed(1)} tok/s`:"--",a=n.model||tt||"\u672A\u77E5\u6A21\u578B",g=n.outputTokens!==null&&n.outputTokens!==void 0?`${n.outputTokens.toLocaleString("en-US")} tok`:"--",r=n.durationSec!==null&&n.durationSec!==void 0?`${n.durationSec.toFixed(2)}s`:"--";$t.innerHTML=`
+      `}).join("")}function on(e=[]){let t=L,n=['<option value="auto">\u81EA\u52A8\u8DDF\u968F\u5F53\u524D\u6D3B\u8DC3\u4F1A\u8BDD</option>'],i=!1;for(let l of e){let u=[l.shortId];l.workspace&&u.push(l.workspace),l.modelName&&u.push(l.modelName),l.isActive&&u.push("\u6D3B\u8DC3");let r=u.join(" \xB7 ");l.conversationId===t&&(i=!0,Ge=r),n.push(`<option value="${c(l.conversationId)}">${c(r)}</option>`)}if(t!=="auto"&&!i){let l=Ge||Et(t)||t.slice(0,8);n.push(`<option value="${c(t)}">${c(l)}\uFF08\u4E0D\u5728\u6700\u8FD1\u5217\u8868\uFF09</option>`)}O.innerHTML=n.join("");let s=Array.from(O.options).some(l=>l.value===t);O.value=s?t:"auto",L=O.value}function Et(e){return e&&e!=="auto"?e.slice(0,8):""}function je(){return L==="auto"?"\u81EA\u52A8\u8DDF\u968F\u5F53\u524D\u4F1A\u8BDD":Ge||Et(L)||L}function sn(){E=null,_e=0,G=0,he=0,Ce=L!=="auto",ge=[],ct=[],ne=null,an()}function kt(){tt.innerHTML="",$e.innerHTML="",xt.innerHTML="",Se.innerHTML="",Tt.textContent="",Ie.style.display="none";for(let e of[nt,H,ot])e.innerHTML="",e.style.display="none";if(typeof document<"u"){delete H.dataset.activeReq;let e=document.getElementById("state-note");e&&(e.hidden=!0,e.textContent="");let t=document.getElementById("sources-note");t&&(t.hidden=!0,t.textContent="",t.removeAttribute("title"))}}function an(){let e=je();se.innerHTML=`<div class="meta-main"><span class="state-chip is-switching" title="\u6B63\u5728\u8BFB\u53D6\u4F1A\u8BDD ${c(e)}"><i class="state-dot"></i>\u52A0\u8F7D\u4E2D \xB7 ${c(e)}</span></div>`,kt(),C.style.display="block",C.textContent=`\u6B63\u5728\u8BFB\u53D6\u4F1A\u8BDD ${e}\u2026`}function vt(){let e=je();se.innerHTML=`<div class="meta-main"><span class="state-chip is-error is-switching" title="\u8BFB\u53D6\u4F1A\u8BDD ${c(e)} \u5931\u8D25\uFF0C\u9762\u677F\u4F1A\u7EE7\u7EED\u91CD\u8BD5"><i class="state-dot"></i>\u4F1A\u8BDD\u8BFB\u53D6\u5931\u8D25 \xB7 ${c(e)}</span></div>`,kt(),C.style.display="block",C.textContent=`\u65E0\u6CD5\u8BFB\u53D6\u4F1A\u8BDD ${e} \u7684\u6570\u636E\uFF0C\u6B63\u5728\u91CD\u8BD5\u2026`}function be(e){if(ge.length===0)return;let t=ge[0],n=(e!==null?ge.find(o=>o.idx===e):void 0)||t;ne=n.idx;let i=n.speedTokS!==null&&n.speedTokS<(E?.config?.lowSpeedWarnTokS??50),s=n.speedTokS!==null?`${n.speedTokS.toFixed(1)} tok/s`:"--",l=n.model||"\u672A\u77E5\u6A21\u578B",u=n.outputTokens!==null&&n.outputTokens!==void 0?`${n.outputTokens.toLocaleString("en-US")} tok`:"--",r=n.durationSec!==null&&n.durationSec!==void 0?`${n.durationSec.toFixed(2)}s`:"--";xt.innerHTML=`
     <span>
       <strong>#${n.idx}</strong>
-      <span class="muted"> \xB7 ${i(a)}</span>
+      <span class="muted"> \xB7 ${c(l)}</span>
     </span>
     <span>
-      <span class="tag ${s?"warn":""}">${i(o)}</span>
-      <span class="muted"> \xB7 \u8F93\u51FA ${i(g)} \xB7 \u8017\u65F6 ${i(r)}</span>
+      <span class="tag ${i?"warn":""}">${c(s)}</span>
+      <span class="muted"> \xB7 \u8F93\u51FA ${c(u)} \xB7 \u8017\u65F6 ${c(r)}</span>
     </span>
-  `,pe.querySelectorAll(".spark-col").forEach(c=>{let m=Number(c.dataset.idx);c.classList.toggle("active",m===n.idx)}),he.querySelectorAll(".history-row").forEach(c=>{let m=Number(c.dataset.idx);c.classList.toggle("active",m===n.idx)})}var At=new URLSearchParams(window.location.search);function nt(){return(window.sidecar?.conversationId||At.get("conversationId")||"").trim()}function Ke(e){let t=e?.cacheHitPct;return`<div class="usage-total">${v(e?.totalTokens)} <small>tok</small></div>
-    <div class="stats-note">\u5165 ${v(e?.inputTokens)} \xB7 \u8BFB ${v(e?.cacheReadTokens)} \xB7 \u51FA ${v(e?.outputTokens)}</div>
-    <div class="stats-note">\u7F13\u5B58\u547D\u4E2D ${typeof t=="number"?`${t.toFixed(1)}%`:"--"}</div>`}function He(e){let t=e.at?new Date(e.at).toLocaleString():"\u65F6\u95F4\u672A\u77E5";return`#${e.request} \xB7 ${t} \xB7 ${e.compaction?"\u5DF2\u538B\u7F29":`${e.model} \xB7 ${T(e.contextUsed)}`}`}function Dt(e){for(let l of[Oe,E,Qe])l.style.display=e.found?"flex":"none";if(!e.found)return;let t=e.sessionUsage,n=t?`${t.recordedCount}/${t.requestCount} \u6B21\u8BF7\u6C42`:"\u65E5\u5FD7\u672A\u91C7\u96C6",s="\u7D2F\u8BA1\u5305\u542B\u5DF2\u5B8C\u6210\u7684\u56DE\u590D\u4E0E\u538B\u7F29\u8BF7\u6C42\uFF1B\u6309\u65E5\u5FD7\u4E2D\u7684\u8F93\u5165\u3001\u7F13\u5B58\u8BFB\u53D6\u3001\u8F93\u51FA\u76F8\u52A0\uFF0C\u4E0D\u542B\u672A\u8BB0\u5F55\u7684\u7F13\u5B58\u5199\u5165\u3002\u7F13\u5B58\u547D\u4E2D\u7387\u6309\u603B\u91CF\u52A0\u6743\u3002";Oe.innerHTML=`<div class="section-title" title="${s}"><span>Token \u4E0E\u7F13\u5B58</span><span class="muted">${i(n)}</span></div>
-    <div class="usage-grid">
-      <div><div class="stats-label">\u6700\u8FD1\u56DE\u590D</div>${Ke(e.latestUsage)}</div>
-      <div><div class="stats-label">\u4F1A\u8BDD\u7D2F\u8BA1</div>${Ke(t)}</div>
-    </div>`;let o=e.contextHistory||[],a=e.compactionCount,g=o.filter(l=>typeof l.contextUsed=="number"),r=Math.max(1,...g.map(l=>l.contextUsed)),c=10,m=350,d=16,p=92,f=m-c,k=l=>o.length<=1?(c+m)/2:c+l*f/(o.length-1),H=l=>p-l/r*(p-d),C=[],w=[],B=()=>{w.length&&C.push(`<polyline class="ctx-line" points="${w.join(" ")}"/>`),w=[]};o.forEach((l,h)=>{if(l.contextUsed===null||l.compaction){B();return}w.push(`${k(h).toFixed(1)},${H(l.contextUsed).toFixed(1)}`)}),B();let J=Number(E.dataset?.activeReq),y=(Number.isFinite(J)?o.find(l=>l.request===J):void 0)||o[o.length-1],z=y?.request??null,$e=o.map((l,h)=>{let S=k(h).toFixed(1);return`<line class="ctx-guide${l.request===z?" active":""}" data-req="${l.request}" x1="${S}" x2="${S}" y1="${d}" y2="${p}"/>`}).join(""),X=o.map((l,h)=>{let S=k(h).toFixed(1),A=l.request===z;if(l.compaction)return`<line class="ctx-compaction" x1="${S}" x2="${S}" y1="${d}" y2="${p}" stroke-dasharray="3 3"><title>${i(He(l))}</title></line>`;if(l.contextUsed!==null){let D=H(l.contextUsed).toFixed(1);return`<circle class="ctx-dot${A?" active":""}" data-req="${l.request}" cx="${S}" cy="${D}" r="${A?3.5:2}"><title>${i(He(l))}</title></circle>`}return""}).join(""),M=o.length>0?f/o.length:f,be=o.map((l,h)=>{let S=k(h),A=Math.max(0,S-M/2).toFixed(1),D=Math.max(6,M).toFixed(1);return`<rect class="ctx-hit" data-req="${l.request}" x="${A}" y="${d-4}" width="${D}" height="${p-d+8}"/>`}).join(""),ye=y?(()=>{let l=y.at?new Date(y.at).toLocaleTimeString():"",h=y.model||"",S=y.compaction?"\u5DF2\u538B\u7F29":y.contextUsed!==null?T(y.contextUsed):"--";return`<span><strong>#${y.request}</strong>${h?`<span class="muted"> \xB7 ${i(h)}</span>`:""}</span>
-          <span><span class="tag ${y.compaction?"warn":""}">${i(S)}</span>${l?`<span class="muted"> \xB7 ${i(l)}</span>`:""}</span>`})():"",xe=E.querySelector("details")?.open,Te="\u6700\u8FD1\u6700\u591A 120 \u6B21\u8BF7\u6C42\uFF1B\u7EB5\u8F74\u81EA\u52A8\u7F29\u653E\uFF0C\u4E0D\u4EE3\u8868\u6A21\u578B\u5BB9\u91CF\u3002\u865A\u7EBF\u4E3A\u65E5\u5FD7\u660E\u786E\u8BB0\u5F55\u7684\u538B\u7F29\u3002";E.innerHTML=`<div class="section-title" title="${Te}"><span>\u4E0A\u4E0B\u6587\u8D8B\u52BF</span><span>\u538B\u7F29 ${a??"--"} \u6B21</span></div>
-    ${o.length?`<div id="context-detail" class="spark-detail">${ye}</div>
-    <svg class="context-chart" viewBox="0 0 360 112" role="img" aria-label="\u6700\u8FD1 ${o.length} \u6B21\u8BF7\u6C42\u7684\u4E0A\u4E0B\u6587\u4F7F\u7528\u8D8B\u52BF\uFF1B\u865A\u7EBF\u8868\u793A\u5DF2\u53D1\u751F\u7684\u538B\u7F29\uFF0C\u7EB5\u8F74\u6309\u8BB0\u5F55\u81EA\u52A8\u7F29\u653E">
-      <line class="ctx-grid" x1="${c}" x2="${m}" y1="${d}" y2="${d}"/>
-      <line class="ctx-grid" x1="${c}" x2="${m}" y1="${((d+p)/2).toFixed(1)}" y2="${((d+p)/2).toFixed(1)}"/>
-      <line class="ctx-grid" x1="${c}" x2="${m}" y1="${p}" y2="${p}"/>
-      <text x="${c}" y="11">${g.length?v(r):"--"} tok</text>
-      <text x="${m}" y="11" text-anchor="end">\u6700\u8FD1 ${o.length} \u6B21</text>
-      ${$e}${C.join("")}${X}${be}
-      <text x="${c}" y="106">#${o[0].request}</text>
-      <text x="${m}" y="106" text-anchor="end">#${o[o.length-1].request}</text>
+  `,$e.querySelectorAll(".spark-col").forEach(o=>{let d=Number(o.dataset.idx);o.classList.toggle("active",d===n.idx)}),Se.querySelectorAll(".history-row").forEach(o=>{let d=Number(o.dataset.idx);o.classList.toggle("active",d===n.idx)})}var ln=new URLSearchParams(window.location.search);function Mt(){return(window.sidecar?.conversationId||ln.get("conversationId")||"").trim()}function rn(e,t){let n=e?.cacheHitPct,i=typeof n=="number"?`${n.toFixed(1)}%`:"--",s=typeof n=="number"&&n>=70?" good":"",l=Math.max(0,e?.cacheReadTokens??0),u=Math.max(0,e?.inputTokens??0),r=Math.max(0,e?.outputTokens??0),o=l+u+r,d=f=>o>0?(f/o*100).toFixed(1):"0.0",m=o>0?`<div class="usage-bar" title="\u7F13\u5B58\u8BFB\u53D6 ${d(l)}% \xB7 \u65B0\u589E\u8F93\u5165 ${d(u)}% \xB7 \u6A21\u578B\u8F93\u51FA ${d(r)}%">
+        ${l>0?`<div class="usage-seg seg-cache" style="width:${l/o*100}%"></div>`:""}
+        ${u>0?`<div class="usage-seg seg-input" style="width:${u/o*100}%"></div>`:""}
+        ${r>0?`<div class="usage-seg seg-out" style="width:${r/o*100}%"></div>`:""}
+      </div>`:"",h=(f,M,v)=>{let A=o>0&&typeof v=="number"?` (${d(Math.max(0,v))}%)`:"",P=`${M}\uFF1A${S(v)}${A}`;return`<div class="usage-cell" title="${c(P)}">
+      <span class="usage-cell-label"><i class="usage-dot ${f}"></i>${M}</span>
+      <span class="usage-cell-val">${x(v)}</span>
+    </div>`},k=t?(()=>{let f=typeof t.cacheHitPct=="number"?` \xB7 \u547D\u4E2D ${t.cacheHitPct.toFixed(1)}%`:"",M=`\u6700\u8FD1\u4E00\u6B21\u56DE\u590D\uFF1A\u603B\u8BA1 ${S(t.totalTokens)}\uFF08\u8BFB ${S(t.cacheReadTokens)} \xB7 \u5165 ${S(t.inputTokens)} \xB7 \u51FA ${S(t.outputTokens)}${f}\uFF09`;return`<div class="usage-latest" title="${c(M)}">
+          <span class="muted">\u6700\u8FD1\u56DE\u590D</span>
+          <span class="usage-latest-val"><strong>${x(t.totalTokens)}</strong> <span class="muted">tok \xB7 \u8BFB ${x(t.cacheReadTokens)} \xB7 \u5165 ${x(t.inputTokens)} \xB7 \u51FA ${x(t.outputTokens)}</span></span>
+        </div>`})():"";return`<div class="usage-hero">
+      <div class="usage-hero-total">${x(e?.totalTokens)} <small>tok</small></div>
+      <span class="usage-hit-pill${s}" title="\u4F1A\u8BDD\u7D2F\u8BA1\u7F13\u5B58\u547D\u4E2D\u7387">\u7F13\u5B58\u547D\u4E2D ${i}</span>
+    </div>
+    ${m}
+    <div class="usage-cells">
+      ${h("seg-cache","\u7F13\u5B58\u8BFB\u53D6",e?.cacheReadTokens)}
+      ${h("seg-input","\u65B0\u589E\u8F93\u5165",e?.inputTokens)}
+      ${h("seg-out","\u6A21\u578B\u8F93\u51FA",e?.outputTokens)}
+    </div>
+    ${k}`}function cn(e,t){return typeof t!="number"?"\u65E5\u5FD7\u672A\u91C7\u96C6":typeof e=="number"&&e<t?`${e}/${t} \u6B21\u8BF7\u6C42`:`${t} \u6B21\u8BF7\u6C42`}function et(e){let t=e.at?new Date(e.at).toLocaleString():"\u65F6\u95F4\u672A\u77E5";return`#${e.request} \xB7 ${t} \xB7 ${e.compaction?"\u5DF2\u538B\u7F29":`${e.model} \xB7 ${S(e.contextUsed)}`}`}function dn(e){for(let a of[nt,H,ot])a.style.display=e.found?"flex":"none";if(!e.found)return;let t=e.sessionUsage,n=t?cn(t.recordedCount,t.requestCount):"\u65E5\u5FD7\u672A\u91C7\u96C6",i="\u7D2F\u8BA1\u5305\u542B\u5DF2\u5B8C\u6210\u7684\u56DE\u590D\u4E0E\u538B\u7F29\u8BF7\u6C42\uFF1B\u6309\u65E5\u5FD7\u4E2D\u7684\u8F93\u5165\u3001\u7F13\u5B58\u8BFB\u53D6\u3001\u8F93\u51FA\u76F8\u52A0\uFF0C\u4E0D\u542B\u672A\u8BB0\u5F55\u7684\u7F13\u5B58\u5199\u5165\u3002\u7F13\u5B58\u547D\u4E2D\u7387\u6309\u603B\u91CF\u52A0\u6743\u3002";nt.innerHTML=`<div class="section-title" title="${i}"><span>Token \u4E0E\u7F13\u5B58</span><span class="muted">${c(n)}</span></div>
+    ${rn(t,e.latestUsage)}`;let s=e.contextHistory||[],l=e.compactionCount,u=s.filter(a=>typeof a.contextUsed=="number"),r=Math.max(1,...u.map(a=>a.contextUsed)),o=10,d=350,m=16,h=92,k=d-o,f=a=>s.length<=1?(o+d)/2:o+a*k/(s.length-1),M=a=>h-a/r*(h-m),v=[],A=[],P=()=>{A.length&&v.push(`<polyline class="ctx-line" points="${A.join(" ")}"/>`),A=[]};s.forEach((a,g)=>{if(a.contextUsed===null||a.compaction){P();return}A.push(`${f(g).toFixed(1)},${M(a.contextUsed).toFixed(1)}`)}),P();let q=Number(H.dataset?.activeReq),T=(Number.isFinite(q)?s.find(a=>a.request===q):void 0)||s[s.length-1],Y=T?.request??null,F=s.map((a,g)=>{let y=f(g).toFixed(1);return`<line class="ctx-guide${a.request===Y?" active":""}" data-req="${a.request}" x1="${y}" x2="${y}" y1="${m}" y2="${h}"/>`}).join(""),D=s.map((a,g)=>{let y=f(g).toFixed(1),w=a.request===Y;if(a.compaction)return`<line class="ctx-compaction" x1="${y}" x2="${y}" y1="${m}" y2="${h}" stroke-dasharray="3 3"><title>${c(et(a))}</title></line>`;if(a.contextUsed!==null){let V=M(a.contextUsed).toFixed(1);return`<circle class="ctx-dot${w?" active":""}" data-req="${a.request}" cx="${y}" cy="${V}" r="${w?3.5:2}"><title>${c(et(a))}</title></circle>`}return""}).join(""),U=s.map((a,g)=>{let y=g===0?0:(f(g-1)+f(g))/2,w=g===s.length-1?360:(f(g)+f(g+1))/2,V=y.toFixed(1),J=Math.max(.1,w-y).toFixed(1);return`<rect class="ctx-hit" data-req="${a.request}" x="${V}" y="${m-4}" width="${J}" height="${h-m+8}"/>`}).join(""),K=T?(()=>{let a=T.at?new Date(T.at).toLocaleTimeString():"",g=T.model||"",y=T.compaction?"\u5DF2\u538B\u7F29":T.contextUsed!==null?S(T.contextUsed):"--";return`<span><strong>#${T.request}</strong>${g?`<span class="muted"> \xB7 ${c(g)}</span>`:""}</span>
+          <span><span class="tag ${T.compaction?"warn":""}">${c(y)}</span>${a?`<span class="muted"> \xB7 ${c(a)}</span>`:""}</span>`})():"",Oe=H.querySelector("details")?.open,ye="\u6700\u8FD1\u6700\u591A 120 \u6B21\u8BF7\u6C42\uFF1B\u7EB5\u8F74\u81EA\u52A8\u7F29\u653E\uFF0C\u4E0D\u4EE3\u8868\u6A21\u578B\u5BB9\u91CF\u3002\u865A\u7EBF\u4E3A\u65E5\u5FD7\u660E\u786E\u8BB0\u5F55\u7684\u538B\u7F29\u3002";H.innerHTML=`<div class="section-title" title="${ye}"><span>\u4E0A\u4E0B\u6587\u8D8B\u52BF</span><span>\u538B\u7F29 ${l??"--"} \u6B21</span></div>
+    ${s.length?`<div id="context-detail" class="spark-detail">${K}</div>
+    <svg class="context-chart" viewBox="0 0 360 112" role="img" aria-label="\u6700\u8FD1 ${s.length} \u6B21\u8BF7\u6C42\u7684\u4E0A\u4E0B\u6587\u4F7F\u7528\u8D8B\u52BF\uFF1B\u865A\u7EBF\u8868\u793A\u5DF2\u53D1\u751F\u7684\u538B\u7F29\uFF0C\u7EB5\u8F74\u6309\u8BB0\u5F55\u81EA\u52A8\u7F29\u653E">
+      <line class="ctx-grid" x1="${o}" x2="${d}" y1="${m}" y2="${m}"/>
+      <line class="ctx-grid" x1="${o}" x2="${d}" y1="${((m+h)/2).toFixed(1)}" y2="${((m+h)/2).toFixed(1)}"/>
+      <line class="ctx-grid" x1="${o}" x2="${d}" y1="${h}" y2="${h}"/>
+      <text x="${o}" y="11">${u.length?x(r):"--"} tok</text>
+      <text x="${d}" y="11" text-anchor="end">\u6700\u8FD1 ${s.length} \u6B21</text>
+      ${F}${v.join("")}${D}${U}
+      <text x="${o}" y="106">#${s[0].request}</text>
+      <text x="${d}" y="106" text-anchor="end">#${s[s.length-1].request}</text>
     </svg>`:'<div class="stats-note">\u6682\u65E0\u4E0A\u4E0B\u6587\u8BB0\u5F55</div>'}
-    <details ${xe?"open":""}><summary>\u8FD1\u671F\u8BB0\u5F55</summary><div class="context-records">${o.slice(-12).reverse().map(l=>`<div>${i(He(l))}</div>`).join("")||"\u6682\u65E0\u8BB0\u5F55"}</div></details>`;let Z=e.modelUsage||[],ee="\u540C\u4E00\u6A21\u578B\u7684\u601D\u8003\u6863\u4F4D\u5408\u5E76\uFF1B\u901F\u5EA6\u6309\u6709\u6548\u6837\u672C\u7684\u8F93\u51FA\u603B\u91CF / \u8017\u65F6\u603B\u91CF\u8BA1\u7B97\u3002";Qe.innerHTML=`<div class="section-title" title="${ee}"><span>\u6309\u6A21\u578B\u7EDF\u8BA1</span></div>
-    ${Z.map(l=>{let h=l.cacheHitPct,S=typeof l.avgSpeedTokS=="number"?`${l.avgSpeedTokS.toFixed(1)} tok/s`:"--";return`<div class="model-stat">
-        <div class="model-stat-head">
-          <strong>${i(l.model)}</strong>
-          <span class="muted">${l.recordedCount}/${l.requestCount} \u6B21\u8BF7\u6C42</span>
-        </div>
-        <div class="model-stat-metrics">
-          <div class="usage-total">${v(l.totalTokens)} <small>tok</small></div>
-          <span class="muted" title="${l.speedSamples??0} \u4E2A\u6709\u6548\u901F\u5EA6\u6837\u672C">${S}</span>
-        </div>
-        <div class="stats-note">\u5165 ${v(l.inputTokens)} \xB7 \u8BFB ${v(l.cacheReadTokens)} \xB7 \u51FA ${v(l.outputTokens)} \xB7 \u547D\u4E2D ${typeof h=="number"?`${h.toFixed(1)}%`:"--"}</div>
-      </div>`}).join("")||'<div class="stats-note">\u6682\u65E0\u6A21\u578B\u7528\u91CF\u8BB0\u5F55</div>'}`}function Pt(e){Ct(e.recentConversations),et=e.contextHistory||[],Dt(e);let t=nt(),n=!!(e.hookConnected||t);Fe.classList.toggle("live",n),Fe.title=t?`\u5DF2\u7ED1\u5B9A\u5F53\u524D\u9762\u677F\u4F1A\u8BDD ${t.slice(0,8)}`:e.hookConnected?"Hook \u5DF2\u5173\u8054\u5B9E\u65F6\u6D3B\u8DC3\u4F1A\u8BDD":"\u7B49\u5F85 Hook \u4E8B\u4EF6\uFF0C\u5F53\u524D\u6309\u6700\u8FD1\u4F1A\u8BDD\u5C55\u793A";let s="";if(e.generatedAt){let b=new Date(e.generatedAt);s=Number.isNaN(b.getTime())?"":b.toLocaleTimeString()}if(!e.found){Ce.innerHTML="",We.innerHTML="",Ee.style.display="none",e.disabled&&(se.style.display="none",Ae.forEach(b=>{b.style.display="none"})),ke.style.display="block",ke.textContent=e.message||"\u6682\u672A\u53D1\u73B0\u672C\u5730 Antigravity \u684C\u9762\u7AEF\u4F1A\u8BDD\u8BB0\u5F55\u3002",Ye(e.quota);return}ke.style.display="none",se.style.display="grid",Ae.forEach(b=>{b.style.display=""}),Se(N);let o=[];e.workspaceName&&o.push(e.workspaceName),e.modelName&&o.push(e.modelName),typeof e.turnCount=="number"&&e.turnCount>0&&o.push(`${e.turnCount} \u8F6E`);let a=e.live,g=!!a?.active,r=e.session||null,c=r&&["idle","running","waiting","error"].includes(r.state)?r.state:"idle",m=r&&typeof r.waitSec=="number"&&r.waitSec>=1?P(r.waitSec):"",d=e.config?.layout==="detailed"&&m!==""&&(c==="waiting"||c==="running"),p=!!r&&!(c==="idle"&&r?.code==="idle"),f=r?`<span class="state-chip is-${c}" title="${i(r.detail)}"><i class="state-dot"></i>${p?i(r.label):""}${d?` ${i(m)}`:""}</span>`:"",k=g?`<span class="pill live" title="\u6B63\u5728\u751F\u6210\uFF1A\u7B2C ${a?.stepIdx??"?"} \u6B65\uFF0C\u5DF2\u6D41\u5F0F\u8F93\u51FA ${a?.outputChars??"?"} \u5B57"><i class="live-pulse"></i>\u751F\u6210\u4E2D${typeof a?.elapsedSec=="number"?` \xB7 ${a.elapsedSec.toFixed(0)}s`:""}</span>`:"",H=f||k,C=typeof e.config?.lowSpeedWarnTokS=="number"?e.config.lowSpeedWarnTokS:50,w=s?`<span class="updated-tag" title="\u4E0A\u6B21\u5237\u65B0\u65F6\u95F4">${i(s)}</span>`:"",B=[e.shortId?`\u4F1A\u8BDD ${e.shortId}`:"",e.stepCount?`${e.stepCount} \u6B65`:""].filter(Boolean).join(" \xB7 ");Ce.innerHTML=`<div class="meta-main" title="${i(B)}">${H}<span class="meta-text">${i(o.join(" \xB7 ")||"\u6D3B\u8DC3\u4F1A\u8BDD")}</span></div>${w}`;let J=e.lastAvgSpeed!==null&&e.lastAvgSpeed!==void 0?`${e.lastAvgSpeed.toFixed(1)} tok/s`:"--",y=P(e.lastGenDurationSec),z=v(e.outputTokens),$e=`\u6700\u8FD1\u4E00\u6B21\u751F\u6210\uFF1A\u8F93\u51FA ${T(e.outputTokens)}\uFF0C\u751F\u6210\u8017\u65F6 ${e.lastGenDurationSec!==null&&e.lastGenDurationSec!==void 0?`${e.lastGenDurationSec.toFixed(2)}s`:"--"}`,X=a?.estTokPerSec,M=a?.outputChars,be=typeof X=="number"?`\u2248 ${X.toFixed(1)} tok/s`:typeof M=="number"?`${M} \u5B57`:"\u751F\u6210\u4E2D\u2026",ye=[typeof M=="number"?`${M} \u5B57`:"",typeof a?.charsPerSec=="number"?`${a.charsPerSec.toFixed(0)} \u5B57/s`:"",typeof a?.elapsedSec=="number"?`${a.elapsedSec.toFixed(1)}s`:""].filter(Boolean),xe=`\u751F\u6210\u4E2D\u5B9E\u65F6\u4F30\u7B97\uFF1A\u6D41\u5F0F\u6587\u672C ${M??"?"} \u5B57 \xB7 ${a?.charsPerSec!==null&&a?.charsPerSec!==void 0?`${a.charsPerSec.toFixed(1)} \u5B57/s`:"\u901F\u7387\u5F85\u6D4B"}
-\u6309 ${a?.charsPerToken??"--"} \u5B57/token \u6362\u7B97\u4E3A tok/s\uFF1B\u7CBE\u786E token \u6570\u5728\u6574\u6B65\u5B8C\u6210\u540E\u843D\u5E93`,Te=g?`<div class="card live" title="${i(xe)}">
+    <details ${Oe?"open":""}><summary>\u8FD1\u671F\u8BB0\u5F55</summary><div class="context-records">${s.slice(-12).reverse().map(a=>`<div>${c(et(a))}</div>`).join("")||"\u6682\u65E0\u8BB0\u5F55"}</div></details>`;let B=[...e.modelUsage||[]].sort((a,g)=>(g.totalTokens??-1)-(a.totalTokens??-1)),Te=typeof e.config?.lowSpeedWarnTokS=="number"?e.config.lowSpeedWarnTokS:50,Qe=B.reduce((a,g)=>a+Math.max(0,g.totalTokens??0),0),xe=typeof t?.totalTokens=="number"&&t.totalTokens>0?t.totalTokens:Qe,Ve="\u6309\u6A21\u578B\u7D2F\u8BA1\u603B\u91CF\u964D\u5E8F\uFF1B\u540C\u4E00\u6A21\u578B\u7684\u601D\u8003\u6863\u4F4D\u5408\u5E76\uFF0C\u901F\u5EA6\u6309\u6709\u6548\u6837\u672C\u7684\u8F93\u51FA\u603B\u91CF / \u8017\u65F6\u603B\u91CF\u8BA1\u7B97\u3002";ot.innerHTML=`<div class="section-title" title="${Ve}"><span>\u6309\u6A21\u578B\u7EDF\u8BA1</span>${B.length>0?`<span class="muted">${B.length} \u4E2A\u6A21\u578B</span>`:""}</div>
+    ${B.length>0?`<div class="model-list">${B.map(a=>{let g=a.cacheHitPct,y=typeof g=="number"?`${g.toFixed(1)}%`:"--",w=typeof a.avgSpeedTokS=="number"?`${a.avgSpeedTokS.toFixed(1)} tok/s`:"--",V=typeof a.avgSpeedTokS=="number"&&a.avgSpeedTokS<Te,J=typeof a.recordedCount=="number"&&typeof a.requestCount=="number"&&a.recordedCount<a.requestCount?`${a.recordedCount}/${a.requestCount} \u6B21`:`${a.requestCount??0} \u6B21`,z=B.length>1&&xe>0&&typeof a.totalTokens=="number"&&a.totalTokens>=0?Math.min(100,Math.max(0,a.totalTokens/xe*100)):null,Ye=z!==null?`${J} \xB7 ${Math.round(z)}%`:J,X=(ae,Ee)=>`<span class="model-kv-item" title="${c(`${ae} ${S(Ee)}`)}"><span class="muted">${ae}</span><strong>${x(Ee)}</strong></span>`;return`<div class="model-card">
+              <div class="model-head">
+                <strong class="model-name" title="${c(a.model)}">${c(a.model)}</strong>
+                <span class="model-meta">${c(Ye)}</span>
+              </div>
+              <div class="model-metrics">
+                <div class="model-total" title="\u603B\u8BA1 ${c(S(a.totalTokens))}">${x(a.totalTokens)} <small>tok</small></div>
+                <div class="model-tags">
+                  <span class="model-speed${V?" warn":""}" title="${a.speedSamples??0} \u4E2A\u6709\u6548\u901F\u5EA6\u6837\u672C">${w}</span>
+                  <span class="model-hit" title="\u8BE5\u6A21\u578B\u7F13\u5B58\u547D\u4E2D\u7387">\u547D\u4E2D ${y}</span>
+                </div>
+              </div>
+              ${z!==null?`<div class="model-share-track"><div class="model-share-fill" style="width:${z.toFixed(1)}%"></div></div>`:""}
+              <div class="model-kv">
+                ${X("\u8BFB",a.cacheReadTokens)}
+                ${X("\u5165",a.inputTokens)}
+                ${X("\u51FA",a.outputTokens)}
+              </div>
+            </div>`}).join("")}</div>`:'<div class="stats-note">\u6682\u65E0\u6A21\u578B\u7528\u91CF\u8BB0\u5F55</div>'}`}function un(e){on(e.recentConversations),ct=e.contextHistory||[],dn(e);let t=Mt(),n=!!(e.hookConnected||t);ut.classList.toggle("live",n),ut.title=t?`\u5DF2\u7ED1\u5B9A\u5F53\u524D\u9762\u677F\u4F1A\u8BDD ${t.slice(0,8)}`:e.hookConnected?"Hook \u5DF2\u5173\u8054\u5B9E\u65F6\u6D3B\u8DC3\u4F1A\u8BDD":"\u7B49\u5F85 Hook \u4E8B\u4EF6\uFF0C\u5F53\u524D\u6309\u6700\u8FD1\u4F1A\u8BDD\u5C55\u793A";let i="";if(e.generatedAt){let I=new Date(e.generatedAt);i=Number.isNaN(I.getTime())?"":I.toLocaleTimeString()}if(!e.found){se.innerHTML="",tt.innerHTML="",Ie.style.display="none",!!e.disabled||e.config?.enabled===!1?(ce.style.display="none",Le.forEach(le=>{le.style.display="none"})):(ce.style.display="grid",Le.forEach(le=>{le.style.display=""}),typeof oe=="function"&&typeof N=="string"&&oe(N)),C.style.display="block",C.textContent=e.message||"\u6682\u672A\u53D1\u73B0\u672C\u5730 Antigravity \u684C\u9762\u7AEF\u4F1A\u8BDD\u8BB0\u5F55\u3002",ht(e.quota);return}C.style.display="none",ce.style.display="grid",Le.forEach(I=>{I.style.display=""}),oe(N);let s=[];e.workspaceName&&s.push(e.workspaceName);let l=e.modelName||"",u=typeof e.turnModel=="string"?e.turnModel.trim():"";l&&u&&u!==l?s.push(`${l} \u2192 ${u}`):l?s.push(l):u&&s.push(u),typeof e.turnCount=="number"&&e.turnCount>0&&s.push(`${e.turnCount} \u8F6E`);let r=e.live,o=e.session||null,d=!!o&&["idle","running","waiting","error"].includes(o.state),m=d?o.state:"idle",h=!!r?.active&&(!d||m!=="idle"&&m!=="error"),k=o&&typeof o.waitSec=="number"&&o.waitSec>=1?_(o.waitSec):"",f=e.config?.layout==="detailed"&&k!==""&&(m==="waiting"||m==="running"),M=!!o&&!(m==="idle"&&o?.code==="idle"),v=o?`<span class="state-chip is-${m}" title="${c(o.detail)}"><i class="state-dot"></i>${M?c(o.label):""}${f?` ${c(k)}`:""}</span>`:"",A=h?`<span class="pill live" title="\u6B63\u5728\u751F\u6210\uFF1A\u7B2C ${r?.stepIdx??"?"} \u6B65\uFF0C\u5DF2\u6D41\u5F0F\u8F93\u51FA ${r?.outputChars??"?"} \u5B57"><i class="live-pulse"></i>\u751F\u6210\u4E2D${typeof r?.elapsedSec=="number"?` \xB7 ${r.elapsedSec.toFixed(0)}s`:""}</span>`:"",P=v||A,q=typeof e.config?.lowSpeedWarnTokS=="number"?e.config.lowSpeedWarnTokS:50,T=i?`<span class="updated-tag" title="\u4E0A\u6B21\u5237\u65B0\u65F6\u95F4">${c(i)}</span>`:"",Y=[e.shortId?`\u4F1A\u8BDD ${e.shortId}`:"",e.stepCount?`${e.stepCount} \u6B65`:""].filter(Boolean).join(" \xB7 ");se.innerHTML=`<div class="meta-main" title="${c(Y)}">${P}<span class="meta-text">${c(s.join(" \xB7 ")||"\u6D3B\u8DC3\u4F1A\u8BDD")}</span></div>${T}`;let F=typeof e.lastGenSpeed=="number",D=typeof e.lastAvgSpeed=="number",U=typeof e.lastAvgSpeedModel=="string"?e.lastAvgSpeedModel.trim():"",K=F?e.lastGenSpeed:D?e.lastAvgSpeed:null,Oe=K!==null?`${K.toFixed(1)} tok/s`:"--",ye=K!==null?K<q:!!e.lowSpeedWarning,B=_(e.lastGenDurationSec),Te=x(e.outputTokens),Qe=ye?"<span>\u504F\u6162</span>":F&&D?`<span>\u5747 ${e.lastAvgSpeed.toFixed(1)}</span>`:!F&&D?"<span>\u8FD1\u671F\u5747\u901F</span>":"",xe=F?`${Te} \xB7 ${B}`:D?U?`${U} \u5747\u901F`:"\u8FD1\u671F\u5747\u901F":`${Te} \xB7 ${B}`,Ve=typeof e.lastGenTtftSec=="number"?`\uFF0C\u9996\u5B57 ${e.lastGenTtftSec.toFixed(2)}s`:"",a=D?`
+${U?`${U} `:"\u6700\u8FD1\u751F\u6210\u6A21\u578B "}\u8FD1\u671F\u5747\u901F\uFF1A${e.lastAvgSpeed.toFixed(1)} tok/s`:"",g=`\u6700\u8FD1\u4E00\u6B21\u751F\u6210\uFF1A\u8F93\u51FA ${S(e.outputTokens)}\uFF0C\u751F\u6210\u8017\u65F6 ${e.lastGenDurationSec!==null&&e.lastGenDurationSec!==void 0?`${e.lastGenDurationSec.toFixed(2)}s`:"--"}${Ve}${a}`,y=r?.estTokPerSec,w=r?.outputChars,V=typeof y=="number"?`\u2248 ${y.toFixed(1)} tok/s`:typeof w=="number"?`${w} \u5B57`:"\u751F\u6210\u4E2D\u2026",J=[typeof w=="number"?`${w} \u5B57`:"",typeof r?.charsPerSec=="number"?`${r.charsPerSec.toFixed(0)} \u5B57/s`:"",typeof r?.elapsedSec=="number"?`${r.elapsedSec.toFixed(1)}s`:""].filter(Boolean),z=`\u751F\u6210\u4E2D\u5B9E\u65F6\u4F30\u7B97\uFF1A\u6D41\u5F0F\u6587\u672C ${w??"?"} \u5B57 \xB7 ${r?.charsPerSec!==null&&r?.charsPerSec!==void 0?`${r.charsPerSec.toFixed(1)} \u5B57/s`:"\u901F\u7387\u5F85\u6D4B"}
+\u6309 ${r?.charsPerToken??"--"} \u5B57/token \u6362\u7B97\u4E3A tok/s\uFF1B\u7CBE\u786E token \u6570\u5728\u6574\u6B65\u5B8C\u6210\u540E\u843D\u5E93`,Ye=h?`<div class="card live" title="${c(z)}">
       <div class="card-label">
         <span><i class="live-pulse"></i>\u5B9E\u65F6\u901F\u5EA6</span>
       </div>
-      <div class="card-value">${i(be)}</div>
-      <div class="card-sub">${i(ye.join(" \xB7 ")||"\u6B63\u5728\u63A5\u6536\u8F93\u51FA\u2026")}</div>
-    </div>`:`<div class="card ${e.lowSpeedWarning?"warn":""}" title="${i($e)}">
+      <div class="card-value">${c(V)}</div>
+      <div class="card-sub">${c(J.join(" \xB7 ")||"\u6B63\u5728\u63A5\u6536\u8F93\u51FA\u2026")}</div>
+    </div>`:`<div class="card ${ye?"warn":""}" title="${c(g)}">
       <div class="card-label">
         <span>\u8F93\u51FA\u901F\u5EA6</span>
-        ${e.lowSpeedWarning?"<span>\u504F\u6162</span>":""}
+        ${Qe}
       </div>
-      <div class="card-value">${i(J)}</div>
-      <div class="card-sub">${i(z)} \xB7 ${i(y)}</div>
-    </div>`,Z=P(e.turnDurationSec),ee=P(e.sessionDurationSec),l=`\u5F53\u524D\u8F6E\u6B21\u8017\u65F6 ${Z} \xB7 \u4F1A\u8BDD\u7D2F\u8BA1\u8017\u65F6 ${ee}\uFF08\u5171 ${e.turnCount??0} \u8F6E / ${e.stepCount??0} \u6B65\uFF09`,h=v(e.contextUsed),S=v(e.contextTotal),A=e.contextUsed!==null&&e.contextUsed!==void 0?`${h}/${S}`:"--",D=e.contextPct??0,at=`\u5DF2\u7528\u4E0A\u4E0B\u6587: ${T(e.contextUsed)} / \u5BB9\u91CF: ${T(e.contextTotal)} (${D.toFixed(2)}%)${g?`
-\u751F\u6210\u4E2D\uFF1A\u4E0A\u4E0B\u6587\u5360\u7528\u662F prompt \u4FA7\u5B9E\u6D4B\u503C\uFF0C\u6BCF\u6B65\u5B8C\u6210\u540E\u5237\u65B0`:""}`,lt=e.cacheHitPct!==null&&e.cacheHitPct!==void 0?`${e.cacheHitPct.toFixed(1)}%`:"--",it=e.cacheReadTokens!==null&&e.cacheReadTokens!==void 0?`\u8BFB ${v(e.cacheReadTokens)} \xB7 \u5165 ${v(e.inputTokens)}`:"--",ct=`\u7F13\u5B58\u8BFB\u53D6: ${T(e.cacheReadTokens)} \xB7 \u672A\u7F13\u5B58\u8F93\u5165: ${T(e.inputTokens)} \xB7 \u7F13\u5B58\u5199\u5165: ${T(e.cacheWriteTokens)}`;We.innerHTML=`
-    ${Te}
+      <div class="card-value">${c(Oe)}</div>
+      <div class="card-sub">${c(xe)}</div>
+    </div>`,X=_(e.turnDurationSec),ae=_(e.sessionDurationSec),Ee=`\u5F53\u524D\u8F6E\u6B21\u8017\u65F6 ${X} \xB7 \u4F1A\u8BDD\u7D2F\u8BA1\u8017\u65F6 ${ae}\uFF08\u5171 ${e.turnCount??0} \u8F6E / ${e.stepCount??0} \u6B65\uFF09`,It=x(e.contextUsed),Ct=x(e.contextTotal),Ht=e.contextUsed!==null&&e.contextUsed!==void 0?`${It}/${Ct}`:"--",Ke=e.contextPct??0,At=`\u5DF2\u7528\u4E0A\u4E0B\u6587: ${S(e.contextUsed)} / \u5BB9\u91CF: ${S(e.contextTotal)} (${Ke.toFixed(2)}%)${h?`
+\u751F\u6210\u4E2D\uFF1A\u4E0A\u4E0B\u6587\u5360\u7528\u662F prompt \u4FA7\u5B9E\u6D4B\u503C\uFF0C\u6BCF\u6B65\u5B8C\u6210\u540E\u5237\u65B0`:""}`,Pt=e.cacheHitPct!==null&&e.cacheHitPct!==void 0?`${e.cacheHitPct.toFixed(1)}%`:"--",qt=e.cacheReadTokens!==null&&e.cacheReadTokens!==void 0?`\u8BFB ${x(e.cacheReadTokens)} \xB7 \u5165 ${x(e.inputTokens)}`:"--",Dt=`\u7F13\u5B58\u8BFB\u53D6: ${S(e.cacheReadTokens)} \xB7 \u672A\u7F13\u5B58\u8F93\u5165: ${S(e.inputTokens)} \xB7 \u7F13\u5B58\u5199\u5165: ${S(e.cacheWriteTokens)}`;tt.innerHTML=`
+    ${Ye}
 
-    <div class="card" title="${i(at)}">
+    <div class="card" title="${c(At)}">
       <div class="card-label">
         <span>\u4E0A\u4E0B\u6587</span>
         <span>${e.contextPct!==null&&e.contextPct!==void 0?`${e.contextPct.toFixed(1)}%`:""}</span>
       </div>
-      <div class="card-value">${i(A)}</div>
+      <div class="card-value">${c(Ht)}</div>
       <div class="bar-track">
-        <div class="bar-fill ${D>=80?"high":""}" style="width: ${Math.min(100,Math.max(0,D))}%"></div>
+        <div class="bar-fill ${Ke>=80?"high":""}" style="width: ${Math.min(100,Math.max(0,Ke))}%"></div>
       </div>
     </div>
 
-    <div class="card" title="${i(ct)}">
+    <div class="card" title="${c(Dt)}">
       <div class="card-label">
         <span>\u7F13\u5B58\u547D\u4E2D</span>
       </div>
-      <div class="card-value">${i(lt)}</div>
-      <div class="card-sub">${i(it)}</div>
+      <div class="card-value">${c(Pt)}</div>
+      <div class="card-sub">${c(qt)}</div>
     </div>
 
-    <div class="card" title="${i(l)}">
+    <div class="card" title="${c(Ee)}">
       <div class="card-label">
         <span>\u8F6E\u6B21\u8017\u65F6</span>
       </div>
-      <div class="card-value">${i(Z)}</div>
-      <div class="card-sub">\u7D2F\u8BA1 ${i(ee)}</div>
+      <div class="card-value">${c(X)}</div>
+      <div class="card-sub">\u7D2F\u8BA1 ${c(ae)}</div>
     </div>
-  `;let L=(e.history||[]).filter(b=>b.speedTokS!==null||b.outputTokens!==null);if(oe=L,tt=e.modelName||"",Ye(e.quota),L.length>0){Ee.style.display="flex";let b=L.map(u=>u.speedTokS).filter(u=>u!=null),rt=b.length>0?`${(b.reduce((u,_)=>u+_,0)/b.length).toFixed(1)} tok/s`:"--";St.textContent=`\u6700\u8FD1 ${L.length} \u6B21 \xB7 \u5747\u503C ${rt}`;let Ue=[...L].reverse(),dt=Math.max(80,...Ue.map(u=>u.speedTokS??0));pe.innerHTML=Ue.map(u=>{let _=u.speedTokS??0,mt=Math.max(12,Math.round(_/dt*100)),gt=u.speedTokS!==null&&u.speedTokS<C?"warn":"",ft=`#${u.idx} \xB7 ${u.speedTokS!==null?`${u.speedTokS.toFixed(1)} tok/s`:"--"} \xB7 \u8F93\u51FA ${T(u.outputTokens)} \xB7 \u8017\u65F6 ${P(u.durationSec)}`;return`
-          <div class="spark-col" data-idx="${u.idx}" title="${i(ft)}">
-            <div class="spark-bar ${gt}" style="height:${mt}%"></div>
+  `;let R=(e.history||[]).filter(I=>I.speedTokS!==null||I.outputTokens!==null);if(ge=R,Ot=e.modelName||"",ht(e.quota),R.length>0){Ie.style.display="flex";let I=R.map(p=>p.speedTokS).filter(p=>p!=null),le=I.length>0?`${(I.reduce((p,re)=>p+re,0)/I.length).toFixed(1)} tok/s`:"--";Tt.textContent=`\u6700\u8FD1 ${R.length} \u6B21 \xB7 \u5747\u503C ${le}`;let dt=[...R].reverse(),Bt=Math.max(80,...dt.map(p=>p.speedTokS??0));$e.innerHTML=dt.map(p=>{let re=p.speedTokS??0,Ft=Math.max(12,Math.round(re/Bt*100)),Ut=p.speedTokS!==null&&p.speedTokS<q?"warn":"",Rt=typeof p.ttftSec=="number"?` \xB7 \u9996\u5B57 ${p.ttftSec.toFixed(2)}s`:"",Wt=`#${p.idx} \xB7 ${p.speedTokS!==null?`${p.speedTokS.toFixed(1)} tok/s`:"--"} \xB7 \u8F93\u51FA ${S(p.outputTokens)} \xB7 \u8017\u65F6 ${_(p.durationSec)}${Rt}`;return`
+          <div class="spark-col" data-idx="${p.idx}" title="${c(Wt)}">
+            <div class="spark-bar ${Ut}" style="height:${Ft}%"></div>
           </div>
-        `}).join(""),he.innerHTML=L.slice(0,6).map(u=>{let _=u.speedTokS!==null&&u.speedTokS<C;return`
-          <div class="history-row" data-idx="${u.idx}">
-            <span class="muted">#${u.idx}</span>
-            <span class="muted">${i(u.model||e.modelName||"")}</span>
-            <span class="speed-badge ${_?"warn":""}">${u.speedTokS!==null?`${u.speedTokS.toFixed(1)} tok/s`:"--"}</span>
-            <span class="muted">${v(u.outputTokens)} / ${P(u.durationSec)}</span>
+        `}).join(""),Se.innerHTML=R.slice(0,6).map(p=>{let re=p.speedTokS!==null&&p.speedTokS<q;return`
+          <div class="history-row" data-idx="${p.idx}">
+            <span class="muted">#${p.idx}</span>
+            <span class="muted">${c(p.model||"\u672A\u77E5\u6A21\u578B")}</span>
+            <span class="speed-badge ${re?"warn":""}">${p.speedTokS!==null?`${p.speedTokS.toFixed(1)} tok/s`:"--"}</span>
+            <span class="muted">${x(p.outputTokens)} / ${_(p.durationSec)}</span>
           </div>
-        `}).join("");let ut=V!==null&&L.some(u=>u.idx===V)?V:L[0].idx;K(ut)}else Ee.style.display="none"}pe.addEventListener("mouseover",e=>{let t=e.target.closest(".spark-col");t&&t.dataset.idx&&K(Number(t.dataset.idx))});pe.addEventListener("click",e=>{let t=e.target.closest(".spark-col");t&&t.dataset.idx&&K(Number(t.dataset.idx))});he.addEventListener("mouseover",e=>{let t=e.target.closest(".history-row");t&&t.dataset.idx&&K(Number(t.dataset.idx))});he.addEventListener("click",e=>{let t=e.target.closest(".history-row");t&&t.dataset.idx&&K(Number(t.dataset.idx))});function ot(e){let t=et.find(s=>s.request===e);if(!t)return;E.dataset.activeReq=String(e);let n=document.getElementById("context-detail");if(n){let s=t.at?new Date(t.at).toLocaleTimeString():"",o=t.model||"",a=t.compaction?"\u5DF2\u538B\u7F29":t.contextUsed!==null?T(t.contextUsed):"--";n.innerHTML=`<span><strong>#${t.request}</strong>${o?`<span class="muted"> \xB7 ${i(o)}</span>`:""}</span>
-      <span><span class="tag ${t.compaction?"warn":""}">${i(a)}</span>${s?`<span class="muted"> \xB7 ${i(s)}</span>`:""}</span>`}E.querySelectorAll(".ctx-guide").forEach(s=>{s.classList.toggle("active",Number(s.dataset.req)===e)}),E.querySelectorAll(".ctx-dot").forEach(s=>{let o=Number(s.dataset.req)===e;s.classList.toggle("active",o),s.setAttribute("r",o?"3.5":"2")})}E.addEventListener("mouseover",e=>{let t=e.target.closest(".ctx-hit");t&&t.dataset.req&&ot(Number(t.dataset.req))});E.addEventListener("click",e=>{let t=e.target.closest(".ctx-hit");t&&t.dataset.req&&ot(Number(t.dataset.req))});function Je(){let e=document.createElement("span");e.style.cssText="position:absolute;visibility:hidden;color:var(--background, #f7f7f8)",document.documentElement.appendChild(e);let t=getComputedStyle(e).color;e.remove();let n=(t.match(/[\d.]+/g)||[]).map(Number);if(n.length<3)return;let s=t.startsWith("color(")?1:255,[o,a,g]=n.slice(0,3).map(m=>m/s),c=.2126*o+.7152*a+.0722*g<.5?"dark":"light";document.documentElement.dataset.theme!==c&&(document.documentElement.dataset.theme=c)}function st(e){let t=document.documentElement,n=e||{},s=n.layout==="detailed"?"detailed":"compact";t.dataset.layout!==s&&(t.dataset.layout=s);let o=n.modules||{};for(let c of["session","quota","history","models","context"])t.classList.toggle(`hide-${c}`,o[c]===!1);o.quota===!1&&N==="quota"&&Se("trends");let a=n.notch,g=a?.supported===!0;if(t.classList.toggle("hide-notch",!g),!ne){if(ae&&(ae.value=s),F){let c=String(typeof n.pollSec=="number"?Math.round(n.pollSec):0);if(!Array.from(F.options).some(m=>m.value===c)){let m=document.createElement("option");m.value=c,m.textContent=`${c}s`,F.appendChild(m)}F.value=c}le&&(le.checked=o.session!==!1),ie&&(ie.checked=o.history!==!1),ce&&(ce.checked=o.context!==!1),re&&(re.checked=o.models!==!1),de&&(de.checked=o.quota!==!1),j&&document.activeElement!==j&&typeof n.lowSpeedWarnTokS=="number"&&(j.value=String(Math.round(n.lowSpeedWarnTokS))),G&&document.activeElement!==G&&typeof n.waitSec=="number"&&(G.value=String(Math.round(n.waitSec))),O&&document.activeElement!==O&&typeof n.stallSec=="number"&&(O.value=String(Math.round(n.stallSec))),Q&&document.activeElement!==Q&&typeof n.toolGraceSec=="number"&&(Q.value=String(Math.round(n.toolGraceSec))),a&&(ue&&typeof a.enabled=="boolean"&&(ue.checked=a.enabled),me&&typeof a.hideWhenIdle=="boolean"&&(me.checked=a.hideWhenIdle),ge&&typeof a.screenMode=="string"&&(ge.value=a.screenMode),fe&&typeof a.avoidanceMode=="string"&&(fe.value=a.avoidanceMode))}let r=typeof n.pollSec=="number"?Math.round(n.pollSec):0;if(r!==Ie){let c=Ie;Ie=r;let m=null;try{m=window.localStorage?.getItem(Be)??null}catch{m=null}if(m===null)if(r>0){let d=Math.min(60,Math.max(1,r));if(qe.add(d),!Array.from($.options).some(f=>Number(f.value)===d)){let f=document.createElement("option");f.value=String(d),f.textContent=`${d}s`,$.insertBefore(f,$.lastElementChild)}x=d,$.value=String(d),$.classList.add("active"),R()}else c!==null&&c>0&&(x=3,$.value="3",$.classList.add("active"),R())}}function Nt(e){let t=document.getElementById("state-note");if(!t)return;let n=e.session;if(!(e.config?.layout==="detailed")||!n||n.state==="idle"){t.hidden=!0,t.textContent="";return}t.hidden=!1,t.className=`state-note is-${n.state}`,t.textContent=n.detail}function Bt(e){let t=document.getElementById("sources-note");if(!t)return;let n=e.sources,s=(n?.notes||[]).filter(r=>r&&typeof r.text=="string");if(!n?.degraded||s.length===0){t.hidden=!0,t.textContent="",t.removeAttribute("title");return}let a=`\u6570\u636E\u4E0D\u5B8C\u6574 \xB7 ${s.map(r=>r.label||"\u6570\u636E\u4E0D\u53EF\u7528").join(" / ")}`,g=e.config?.layout==="detailed";t.hidden=!1,t.textContent=g?`${a}\uFF1A${s[0].text}`:a,t.title=s.map(r=>r.text).join(`
-`)}async function qt(e){let t=window.sidecar?.fetch?window.sidecar.fetch.bind(window.sidecar):fetch,n=e?`?conversationId=${encodeURIComponent(e)}`:"",s=await t(`/api/status${n}`,{method:"GET"});return s.ok?await s.json():null}function ze(){if(Pe+=1,De===0||Pe<2)return;let e=Date.now()-De,t=Math.max(6e3,3*Math.max(1,x)*1e3);e<t||(Ce.innerHTML=`<div class="meta-main"><span class="state-chip is-error is-offline" title="\u4FA7\u8F66\u540E\u53F0\u5DF2\u7ECF ${Math.round(e/1e3)}s \u6CA1\u6709\u54CD\u5E94\uFF0C\u5C4F\u5E55\u4E0A\u7684\u6570\u5B57\u662F\u6700\u540E\u4E00\u6B21\u6210\u529F\u8BFB\u53D6\u7684\u503C"><i class="state-dot"></i>\u540E\u53F0\u65E0\u54CD\u5E94 \xB7 ${i(P(e/1e3))}</span></div>`)}async function Y(){if(!Le){Le=!0;try{let e=W&&W!=="auto"?W:nt()||"auto",t=await qt(e);t?(ve=t,De=Date.now(),Pe=0,Pt(t),st(t.config),Nt(t),Bt(t)):ze()}catch{ze()}finally{Le=!1}}}function Ut(){let e=ve?.lastActivityAt;if(!e)return Number.POSITIVE_INFINITY;let t=Date.parse(e);return Number.isNaN(t)?Number.POSITIVE_INFINITY:Math.max(0,Date.now()-t)}function Ft(){if(x<=0||document.hidden)return 0;let e=x*1e3;return ve?.live?.active?Math.min(e,vt):Ut()/1e3<ht?e:Math.max(e,pt)}function R(){I!==null&&(window.clearTimeout(I),I=null);let e=Ft();e<=0||(I=window.setTimeout(()=>{I=null,Y().then(()=>{R()})},e))}U.addEventListener("change",()=>{W=U.value,V=null,Y()});$.addEventListener("change",()=>{let e=Number.parseInt($.value,10);x=qe.has(e)?e:3,$.value=String(x),$.classList.toggle("active",x>0),xt(x),x>0&&Y(),R()});se.addEventListener("click",e=>{let t=e.target.closest(".tab-btn");t&&t.dataset.tab&&Se(t.dataset.tab)});function te(e,t,n,s){let o=e?Number(e.value):s;return Number.isFinite(o)?Math.min(n,Math.max(t,Math.round(o))):s}function Wt(e){return we+=1,ne=!0,Me=Me.then(async()=>{let t;q&&(q.textContent="\u4FDD\u5B58\u4E2D\u2026");try{let s=await(window.sidecar?.fetch?window.sidecar.fetch.bind(window.sidecar):fetch)("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e)});if(!s.ok)throw new Error("save failed");t=await s.json(),q&&(q.textContent="\u5DF2\u4FDD\u5B58")}catch{q&&(q.textContent="\u4FDD\u5B58\u5931\u8D25")}finally{we-=1,ne=we>0,!ne&&t&&st(t)}}),Me}var Rt=[[ae,()=>({layout:ae?.value})],[F,()=>({pollSec:Number(F?.value)})],[j,()=>({lowSpeedWarnTokS:te(j,1,1e4,50)})],[G,()=>({thresholds:{waitSec:te(G,1,3600,20)}})],[O,()=>({thresholds:{stallSec:te(O,1,3600,25)}})],[Q,()=>({thresholds:{toolGraceSec:te(Q,1,3600,120)}})],[le,()=>({modules:{session:le?.checked}})],[ie,()=>({modules:{history:ie?.checked}})],[ce,()=>({modules:{context:ce?.checked}})],[re,()=>({modules:{models:re?.checked}})],[de,()=>({modules:{quota:de?.checked}})],[ue,()=>({notch:{enabled:ue?.checked}})],[me,()=>({notch:{hideWhenIdle:me?.checked}})],[ge,()=>({notch:{screenMode:ge?.value}})],[fe,()=>({notch:{avoidanceMode:fe?.value}})]];for(let[e,t]of Rt)e?.addEventListener("change",()=>{Wt(t())});async function _t(){Se(N),Je(),new MutationObserver(()=>{Je()}).observe(document.documentElement,{attributes:!0,attributeFilter:["style"]}),document.addEventListener("visibilitychange",()=>{if(document.hidden){I!==null&&(window.clearTimeout(I),I=null);return}Y().then(()=>{R()})}),await Y(),R()}_t();})();
+        `}).join("");let Nt=ne!==null&&R.some(p=>p.idx===ne)?ne:R[0].idx;be(Nt)}else Ie.style.display="none"}$e.addEventListener("mouseover",e=>{let t=e.target.closest(".spark-col");t&&t.dataset.idx&&be(Number(t.dataset.idx))});$e.addEventListener("click",e=>{let t=e.target.closest(".spark-col");t&&t.dataset.idx&&be(Number(t.dataset.idx))});Se.addEventListener("mouseover",e=>{let t=e.target.closest(".history-row");t&&t.dataset.idx&&be(Number(t.dataset.idx))});Se.addEventListener("click",e=>{let t=e.target.closest(".history-row");t&&t.dataset.idx&&be(Number(t.dataset.idx))});function wt(e){let t=ct.find(i=>i.request===e);if(!t)return;H.dataset.activeReq=String(e);let n=document.getElementById("context-detail");if(n){let i=t.at?new Date(t.at).toLocaleTimeString():"",s=t.model||"",l=t.compaction?"\u5DF2\u538B\u7F29":t.contextUsed!==null?S(t.contextUsed):"--";n.innerHTML=`<span><strong>#${t.request}</strong>${s?`<span class="muted"> \xB7 ${c(s)}</span>`:""}</span>
+      <span><span class="tag ${t.compaction?"warn":""}">${c(l)}</span>${i?`<span class="muted"> \xB7 ${c(i)}</span>`:""}</span>`}H.querySelectorAll(".ctx-guide").forEach(i=>{i.classList.toggle("active",Number(i.dataset.req)===e)}),H.querySelectorAll(".ctx-dot").forEach(i=>{let s=Number(i.dataset.req)===e;i.classList.toggle("active",s),i.setAttribute("r",s?"3.5":"2")})}H.addEventListener("mouseover",e=>{let t=e.target.closest(".ctx-hit");t&&t.dataset.req&&wt(Number(t.dataset.req))});H.addEventListener("click",e=>{let t=e.target.closest(".ctx-hit");t&&t.dataset.req&&wt(Number(t.dataset.req))});function $t(){let e=document.createElement("span");e.style.cssText="position:absolute;visibility:hidden;color:var(--background, #f7f7f8)",document.documentElement.appendChild(e);let t=getComputedStyle(e).color;e.remove();let n=(t.match(/[\d.]+/g)||[]).map(Number);if(n.length<3)return;let i=t.startsWith("color(")?1:255,[s,l,u]=n.slice(0,3).map(d=>d/i),o=.2126*s+.7152*l+.0722*u<.5?"dark":"light";document.documentElement.dataset.theme!==o&&(document.documentElement.dataset.theme=o)}function Lt(e){let t=document.documentElement,n=e||{},i=n.layout==="detailed"?"detailed":"compact";t.dataset.layout!==i&&(t.dataset.layout=i);let s=n.modules||{};for(let o of["session","quota","history","models","context"])t.classList.toggle(`hide-${o}`,s[o]===!1);s.quota===!1&&N==="quota"&&oe("trends");let l=n.notch,u=l?.supported===!0;if(t.classList.toggle("hide-notch",!u),!pe){if(Ae&&(Ae.value=i),ee){let o=String(typeof n.pollSec=="number"?Math.round(n.pollSec):0);if(!Array.from(ee.options).some(d=>d.value===o)){let d=document.createElement("option");d.value=o,d.textContent=`${o}s`,ee.appendChild(d)}ee.value=o}Pe&&(Pe.checked=s.session!==!1),qe&&(qe.checked=s.history!==!1),De&&(De.checked=s.context!==!1),Be&&(Be.checked=s.models!==!1),Ne&&(Ne.checked=s.quota!==!1),de&&document.activeElement!==de&&typeof n.lowSpeedWarnTokS=="number"&&(de.value=String(Math.round(n.lowSpeedWarnTokS))),ue&&document.activeElement!==ue&&typeof n.waitSec=="number"&&(ue.value=String(Math.round(n.waitSec))),me&&document.activeElement!==me&&typeof n.stallSec=="number"&&(me.value=String(Math.round(n.stallSec))),fe&&document.activeElement!==fe&&typeof n.toolGraceSec=="number"&&(fe.value=String(Math.round(n.toolGraceSec))),l&&(Fe&&typeof l.enabled=="boolean"&&(Fe.checked=l.enabled),Ue&&typeof l.hideWhenIdle=="boolean"&&(Ue.checked=l.hideWhenIdle),Re&&typeof l.screenMode=="string"&&(Re.value=l.screenMode),We&&typeof l.avoidanceMode=="string"&&(We.value=l.avoidanceMode))}let r=typeof n.pollSec=="number"?Math.round(n.pollSec):0;if(r!==Ze){let o=Ze;Ze=r;let d=null;try{d=window.localStorage?.getItem(lt)??null}catch{d=null}if(d===null)if(r>0){let m=Math.min(60,Math.max(1,r));if(rt.add(m),!Array.from($.options).some(k=>Number(k.value)===m)){let k=document.createElement("option");k.value=String(m),k.textContent=`${m}s`,$.insertBefore(k,$.lastElementChild)}b=m,$.value=String(m),$.classList.add("active"),ie()}else o!==null&&o>0&&(b=3,$.value="3",$.classList.add("active"),ie())}}function it(e){let t=document.getElementById("state-note");if(!t)return;let n=e.session;if(!(e.config?.layout==="detailed")||!n||n.state==="idle"){t.hidden=!0,t.textContent="";return}t.hidden=!1,t.className=`state-note is-${n.state}`,t.textContent=n.detail}function at(e){let t=document.getElementById("sources-note");if(!t)return;let n=e.sources,i=(n?.notes||[]).filter(r=>r&&typeof r.text=="string");if(!n?.degraded||i.length===0){t.hidden=!0,t.textContent="",t.removeAttribute("title");return}let l=`\u6570\u636E\u4E0D\u5B8C\u6574 \xB7 ${i.map(r=>r.label||"\u6570\u636E\u4E0D\u53EF\u7528").join(" / ")}`,u=e.config?.layout==="detailed";t.hidden=!1,t.textContent=u?`${l}\uFF1A${i[0].text}`:l,t.title=i.map(r=>r.text).join(`
+`)}async function mn(e,t){let n=window.sidecar?.fetch?window.sidecar.fetch.bind(window.sidecar):fetch,i=e?`?conversationId=${encodeURIComponent(e)}`:"",s=typeof He=="number"?He:8e3,l=typeof AbortController=="function"?new AbortController:null,u=()=>l?.abort();t&&l&&(t.aborted?l.abort():t.addEventListener("abort",u,{once:!0}));let r,o=new Promise((d,m)=>{typeof setTimeout=="function"&&(r=setTimeout(()=>{l?.abort(),m(new Error("request timeout"))},s))});try{let d=l?{method:"GET",signal:l.signal}:{method:"GET"},m=(async()=>{let h=await n(`/api/status${i}`,d);return h.ok?await h.json():null})();return m.catch(()=>{}),await(typeof setTimeout=="function"?Promise.race([m,o]):m)}finally{r!==void 0&&typeof clearTimeout=="function"&&clearTimeout(r),t&&l&&t.removeEventListener("abort",u)}}function St(e=""){let t=e?` \xB7 ${c(e)}`:"";if(he+=1,_e===0){let s=Date.now();if(typeof G=="number"&&G===0&&(G=s),he<2)return;let l=typeof G=="number"&&G>0?G:s,u=Math.max(0,s-l),r=u>=1e3?` \xB7 ${c(_(u/1e3))}`:"";se.innerHTML=`<div class="meta-main"><span class="state-chip is-error is-offline" title="\u4FA7\u8F66\u540E\u53F0\u542F\u52A8\u540E\u6301\u7EED\u65E0\u54CD\u5E94\uFF0C\u6682\u65E0\u6CD5\u52A0\u8F7D\u6570\u636E${e?`\uFF08\u4F1A\u8BDD ${c(e)}\uFF09`:""}"><i class="state-dot"></i>\u540E\u53F0\u65E0\u54CD\u5E94${t}${r}</span></div>`,typeof C<"u"&&C&&(typeof E>"u"||!E)&&(C.style.display="block",C.textContent=e?`\u65E0\u6CD5\u8BFB\u53D6\u4F1A\u8BDD ${e}\uFF1A\u4FA7\u8F66\u540E\u53F0\u65E0\u54CD\u5E94\uFF0C\u6B63\u5728\u91CD\u8BD5\u2026`:"\u4FA7\u8F66\u540E\u53F0\u65E0\u54CD\u5E94\uFF0C\u6B63\u5728\u91CD\u8BD5\u2026");return}if(he<2)return;let n=Date.now()-_e,i=Math.max(6e3,3*Math.max(1,b)*1e3);n<i||(se.innerHTML=`<div class="meta-main"><span class="state-chip is-error is-offline" title="\u4FA7\u8F66\u540E\u53F0\u5DF2\u7ECF ${Math.round(n/1e3)}s \u6CA1\u6709\u54CD\u5E94\uFF0C\u5C4F\u5E55\u4E0A\u7684\u6570\u5B57\u662F\u6700\u540E\u4E00\u6B21\u6210\u529F\u8BFB\u53D6\u7684\u503C${e?`\uFF08\u4F1A\u8BDD ${c(e)}\uFF09`:""}"><i class="state-dot"></i>\u540E\u53F0\u65E0\u54CD\u5E94${t} \xB7 ${c(_(n/1e3))}</span></div>`)}async function ve(e=!1){if(!e&&ke!==null)return;e&&Me&&Me.abort();let t=++Xe;ke=t;let n=typeof Q=="number"?Q:0,i=typeof AbortController=="function"?new AbortController:null;Me=i;try{let s=!!L&&L!=="auto",l=s?L:Mt()||"auto",u=s?je():"",r=await mn(l,i?.signal);if(t!==Xe)return;if(r){Ce=!1,_e=Date.now(),G=0,he=0;let o=pe||typeof Q=="number"&&Q!==n,d=o&&te?{...r,config:te}:r;E=d,un(d),o||Lt(r.config),it(d),at(d)}else Ce&&u?vt():St(u)}catch{t===Xe&&(Ce&&L!=="auto"?vt():St(L!=="auto"?je():""))}finally{ke===t&&(ke=null,Me=null)}}function fn(){let e=E?.lastActivityAt;if(!e)return Number.POSITIVE_INFINITY;let t=Date.parse(e);return Number.isNaN(t)?Number.POSITIVE_INFINITY:Math.max(0,Date.now()-t)}function pn(){if(b<=0||document.hidden)return 0;let e=b*1e3;return!!E?.live?.active&&E?.session?.state!=="idle"&&E?.session?.state!=="error"?Math.min(e,jt):!E||fn()/1e3<_t?e:Math.max(e,Gt)}function ie(){j!==null&&(window.clearTimeout(j),j=null);let e=pn();e<=0||(j=window.setTimeout(()=>{j=null,ve(!0).then(()=>{ie()})},e))}O.addEventListener("change",()=>{let e=O.value,t=L;L=e;let n=e!=="auto"?O.options[O.selectedIndex]:void 0;Ge=n&&n.textContent?.replace("\uFF08\u4E0D\u5728\u6700\u8FD1\u5217\u8868\uFF09","")||"",ne=null,e!==t&&sn(),ve(!0)});$.addEventListener("change",()=>{let e=Number.parseInt($.value,10);e===0||Number.isInteger(e)&&e>=1&&e<=60?(rt.add(e),b=e):b=3,$.value=String(b),$.classList.toggle("active",b>0),Yt(b),b>0&&ve(!0),ie()});ce.addEventListener("click",e=>{let t=e.target.closest(".tab-btn");t&&t.dataset.tab&&oe(t.dataset.tab)});function we(e,t,n,i){let s=e?Number(e.value):i;return Number.isFinite(s)?Math.min(n,Math.max(t,Math.round(s))):i}function gn(e){return Je+=1,pe=!0,typeof Q=="number"&&(Q+=1),ze=ze.then(async()=>{let t;Z&&(Z.textContent="\u4FDD\u5B58\u4E2D\u2026");let n=typeof He=="number"?He:8e3,i=typeof AbortController=="function"?new AbortController:null,s,l=new Promise((u,r)=>{typeof setTimeout=="function"&&(s=setTimeout(()=>{i?.abort(),r(new Error("save timeout"))},n))});try{let u=window.sidecar?.fetch?window.sidecar.fetch.bind(window.sidecar):fetch,r={method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e),...i?{signal:i.signal}:{}},o=(async()=>{let d=await u("/api/settings",r);if(!d.ok)throw new Error("save failed");return await d.json()})();o.catch(()=>{}),t=await(typeof setTimeout=="function"?Promise.race([o,l]):o),Z&&(Z.textContent="\u5DF2\u4FDD\u5B58")}catch{Z&&(Z.textContent="\u4FDD\u5B58\u5931\u8D25")}finally{s!==void 0&&typeof clearTimeout=="function"&&clearTimeout(s),Je-=1,pe=Je>0,t&&(typeof Q=="number"&&(Q+=1),te=t),!pe&&te&&(Lt(te),E&&(E={...E,config:te},typeof it=="function"&&it(E),typeof at=="function"&&at(E)))}}),ze}var hn=[[Ae,()=>({layout:Ae?.value})],[ee,()=>({pollSec:Number(ee?.value)})],[de,()=>({lowSpeedWarnTokS:we(de,1,1e4,50)})],[ue,()=>({thresholds:{waitSec:we(ue,1,3600,20)}})],[me,()=>({thresholds:{stallSec:we(me,1,3600,25)}})],[fe,()=>({thresholds:{toolGraceSec:we(fe,1,3600,120)}})],[Pe,()=>({modules:{session:Pe?.checked}})],[qe,()=>({modules:{history:qe?.checked}})],[De,()=>({modules:{context:De?.checked}})],[Be,()=>({modules:{models:Be?.checked}})],[Ne,()=>({modules:{quota:Ne?.checked}})],[Fe,()=>({notch:{enabled:Fe?.checked}})],[Ue,()=>({notch:{hideWhenIdle:Ue?.checked}})],[Re,()=>({notch:{screenMode:Re?.value}})],[We,()=>({notch:{avoidanceMode:We?.value}})]];for(let[e,t]of hn)e?.addEventListener("change",()=>{gn(t())});async function vn(){oe(N),$t(),new MutationObserver(()=>{$t()}).observe(document.documentElement,{attributes:!0,attributeFilter:["style"]}),document.addEventListener("visibilitychange",()=>{if(document.hidden){j!==null&&(window.clearTimeout(j),j=null);return}ve(!0).then(()=>{ie()})}),await ve(),ie()}vn();})();
 </script>
 </body>
 </html>

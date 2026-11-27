@@ -50,12 +50,30 @@ fn hook(a: A, cfg: telemetry.Config) !void {
     updateHook(a, cfg, item) catch {};
     try std.io.getStdOut().writeAll(if (stop) "{\"decision\":\"allow\"}" else "{}");
 }
+fn acquireHookLock(path: []const u8) !std.fs.File {
+    var attempts: usize = 0;
+    while (true) : (attempts += 1) {
+        return std.fs.cwd().createFile(path, .{
+            .read = true,
+            .truncate = false,
+            .lock = .exclusive,
+            .lock_nonblocking = true,
+        }) catch |err| {
+            if (err == error.WouldBlock and attempts < 100) {
+                std.Thread.sleep(5 * std.time.ns_per_ms);
+                continue;
+            }
+            return err;
+        };
+    }
+}
 fn updateHook(a: A, cfg: telemetry.Config, item: V) !void {
     const id = std.mem.trim(u8, c.str(c.get(item, "conversationId")), " \t\r\n");
     if (!c.validId(id)) return;
     const path = try c.join(a, &.{ cfg.data, "active_session.json" });
     try std.fs.cwd().makePath(cfg.data);
-    const lock = try std.fs.cwd().createFile(try c.join(a, &.{ cfg.data, "active_session.lock" }), .{ .truncate = false, .lock = .exclusive, .lock_nonblocking = true });
+    const lock_path = try c.join(a, &.{ cfg.data, "active_session.lock" });
+    const lock = try acquireHookLock(lock_path);
     defer lock.close();
     const old = c.readJson(a, path);
     var sessions = c.get(old, "sessions");
@@ -65,17 +83,27 @@ fn updateHook(a: A, cfg: telemetry.Config, item: V) !void {
     const now = c.s(try c.iso(a, std.time.timestamp()));
     try c.put(a, &next, "conversationId", c.s(id));
     try c.put(a, &next, "updatedAt", now);
-    inline for (.{ "modelName", "transcriptPath", "workspacePaths", "cwd", "terminationReason", "terminalEnv" }) |key| {
+    inline for (.{ "modelName", "transcriptPath", "workspacePaths", "cwd", "terminalEnv" }) |key| {
         var value = c.get(item, key);
         if (value == .null or (value == .string and value.string.len == 0) or (value == .array and value.array.items.len == 0)) value = c.get(prev, key);
         if (value == .null) value = if (c.eq(key, "workspacePaths")) c.arr(a) else c.s("");
         try c.put(a, &next, key, value);
     }
+    const event = c.str(c.get(item, "hookEventName"));
+    const termination = if (event.len == 0)
+        (blk: {
+            const old_term = c.get(prev, "terminationReason");
+            break :blk if (old_term == .string) old_term else c.s("");
+        })
+    else if (c.eq(event, "Stop"))
+        c.s(c.str(c.get(item, "terminationReason")))
+    else
+        c.s("");
+    try c.put(a, &next, "terminationReason", termination);
     inline for (.{ "invocationNum", "executionNum" }) |key| {
         const value = if (item == .object and item.object.contains(key)) c.get(item, key) else c.get(prev, key);
         try c.put(a, &next, key, value);
     }
-    const event = c.str(c.get(item, "hookEventName"));
     try c.put(a, &next, "lastEvent", if (event.len > 0) c.s(event) else c.get(prev, "lastEvent"));
     try c.put(a, &sessions, try a.dupe(u8, id), next);
     while (sessions.object.count() > 30) {

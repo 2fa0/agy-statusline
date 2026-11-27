@@ -15,6 +15,8 @@ Install or uninstall the AGY Desktop Status right-pane plugin for Antigravity 2.
 Options:
   --copy         Copy plugin files into ${TARGET_DIR} (default for release archives)
   --link         Symlink ${TARGET_DIR} to the local source directory (best for development)
+  --doctor       Diagnose installation status (delegates to root install.sh when available)
+  --json         With --doctor: print machine-readable JSON diagnostics
   --uninstall    Remove ${TARGET_DIR}
   -h, --help     Show this help message
 
@@ -60,7 +62,10 @@ verify_checksum() { # <archive> <release-base-url>
   echo "Checksum verified."
 }
 
+ORIG_ARGS=("$@")
 MODE="auto"
+DOCTOR=0
+JSON=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --uninstall)
@@ -76,6 +81,14 @@ while [[ $# -gt 0 ]]; do
       MODE="copy"
       shift
       ;;
+    --doctor)
+      DOCTOR=1
+      shift
+      ;;
+    --json)
+      JSON=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -88,24 +101,190 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ------------------------------------------------------- 平台与原生后台
+
+# Release archives contain all supported native targets; the platform name picks
+# the matching bin/<platform>/ directory.
+detect_platform() {
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64) printf 'macos-arm64' ;;
+    Linux-x86_64 | Linux-amd64) printf 'linux-x64' ;;
+    Linux-aarch64 | Linux-arm64) printf 'linux-arm64' ;;
+    *) printf '' ;;
+  esac
+}
+
+# Where this package keeps its native backend, for the current (or given)
+# platform. Read-only: diagnosing never touches the package, and installing
+# copies from whatever this prints.
+#   release archive: bin/<platform>/agy-desktop-backend (all targets)
+#   source checkout: sidecars/status/agy-desktop-backend (built by build.sh)
+resolve_native_source() { # <plugin-dir> [platform]
+  local plugin_dir="$1" platform="${2:-}"
+  [[ -n "${plugin_dir}" ]] || return 1
+  if [[ -z "${platform}" ]]; then platform="$(detect_platform 2>/dev/null || true)"; fi
+  if [[ -n "${platform}" && -f "${plugin_dir}/bin/${platform}/agy-desktop-backend" ]]; then
+    printf '%s\n' "${plugin_dir}/bin/${platform}/agy-desktop-backend"
+    return 0
+  fi
+  if [[ -f "${plugin_dir}/sidecars/status/agy-desktop-backend" ]]; then
+    printf '%s\n' "${plugin_dir}/sidecars/status/agy-desktop-backend"
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------- 机器可读诊断（--doctor --json）
+
+# The release archive only ships this plugin, so it can diagnose the plugin. It
+# must not pretend to be the full suite diagnosis: the JSON says what it covered
+# and the exit code reflects the checks it actually ran.
+json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\r\n\t'; }
+
+PANEL_CHECKS=""
+PANEL_CODES=""
+panel_check() { # <key> <value> <code|ok>
+  local key="$1" value="$2" code="$3" sep=""
+  if [[ -n "${PANEL_CHECKS}" ]]; then sep=","; fi
+  PANEL_CHECKS="${PANEL_CHECKS}${sep}{\"key\":\"$(json_escape "${key}")\",\"value\":\"$(json_escape "${value}")\",\"code\":\"${code}\"}"
+  if [[ -n "${code}" && "${code}" != "ok" ]]; then
+    PANEL_CODES="${PANEL_CODES}${PANEL_CODES:+,}${code}"
+  fi
+}
+
+panel_remediation() { # <code>
+  case "$1" in
+    panel_missing) printf '未找到面板插件目录；运行本脚本或仓库根目录 install.sh --panel-only 安装。' ;;
+    manifest_missing) printf '插件目录缺少 plugin.json 清单；重新安装面板插件。' ;;
+    manifest_invalid) printf '插件清单 plugin.json 无法读取或没有版本号；重新安装面板插件。' ;;
+    backend_missing) printf '插件缺少原生后台；重新安装面板插件。' ;;
+    backend_not_runnable) printf '原生后台无法启动；可能是架构不匹配或被 Gatekeeper 拦截，先清除 quarantine 再重试。' ;;
+    version_mismatch) printf '插件清单与原生后台版本不一致；重新安装面板插件以同时更新两者。' ;;
+    package_backend_missing) printf '发布包内缺少当前平台的原生后台；重新下载完整发布包。' ;;
+    package_backend_not_runnable) printf '发布包内的原生后台无法启动；下载可能不完整，重新下载发布包。' ;;
+    *) printf '' ;;
+  esac
+}
+
+panel_doctor_json() {
+  # Nothing here may abort before stdout carries a verdict: the caller parses
+  # JSON. A permission error on plugin.json once killed the script at `sed`.
+  set +e
+  trap - ERR
+  local backend="${TARGET_DIR}/sidecars/status/agy-desktop-backend"
+  local manifest="${TARGET_DIR}/plugin.json"
+  local package_dir="" package_backend="" package_version="" plugin_version="" backend_version="" installed=false
+  SCRIPT_SELF="${BASH_SOURCE[0]:-}"
+  if [[ -n "${SCRIPT_SELF}" && -f "${SCRIPT_SELF}" ]]; then
+    package_dir="$(cd "$(dirname "${SCRIPT_SELF}")" && pwd)"
+  fi
+  package_backend="${package_dir}/sidecars/status/agy-desktop-backend"
+
+  panel_check "platform" "$(uname -s) $(uname -m)" "ok"
+  if [[ -d "${TARGET_DIR}" ]]; then
+    installed=true
+    panel_check "panel.dir" "${TARGET_DIR}" "ok"
+    if [[ -f "${manifest}" ]]; then
+      panel_check "panel.manifest" "${manifest}" "ok"
+      plugin_version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "${manifest}" 2>/dev/null | head -1 || true)"
+      plugin_version="$(printf '%s' "${plugin_version}" | tr -d '[:space:]')"
+      if [[ -n "${plugin_version}" ]]; then
+        panel_check "panel.version" "${plugin_version}" "ok"
+      else
+        panel_check "panel.version" "unreadable or missing version" "manifest_invalid"
+      fi
+    else
+      panel_check "panel.manifest" "${manifest}" "manifest_missing"
+    fi
+    if [[ -f "${backend}" ]]; then
+      if backend_version="$("${backend}" --version 2>&1)"; then
+        panel_check "backend.version" "${backend_version}" "ok"
+        local backend_ver="${backend_version##* }"
+        if [[ -n "${plugin_version}" && -n "${backend_ver}" && "${plugin_version}" != "${backend_ver}" ]]; then
+          panel_check "backend.version_match" "${plugin_version} != ${backend_ver}" "version_mismatch"
+        fi
+      else
+        panel_check "backend.version" "${backend_version:-no output}" "backend_not_runnable"
+      fi
+    else
+      panel_check "backend.path" "${backend}" "backend_missing"
+    fi
+  else
+    panel_check "panel.dir" "${TARGET_DIR}" "panel_missing"
+  fi
+
+  # A release archive is self-contained: a missing or unusable backend in the
+  # package means installing from it cannot work. Archives keep the binaries in
+  # bin/<platform>/ (prepare_backend copies them into sidecars/ at install
+  # time); a source checkout has sidecars/status/ already.
+  if [[ -n "${package_dir}" ]]; then
+    # Same resolution `prepare_backend` installs from: reading it here must not
+    # modify the package (no copy, no chmod).
+    package_backend="$(resolve_native_source "${package_dir}" 2>/dev/null || true)"
+    if [[ -n "${package_backend}" && -f "${package_backend}" ]]; then
+      if package_version="$("${package_backend}" --version 2>&1)"; then
+        panel_check "package.backend" "${package_version}" "ok"
+      else
+        panel_check "package.backend" "${package_version:-no output}" "package_backend_not_runnable"
+      fi
+    else
+      panel_check "package.backend" "${package_dir}/bin/<platform>/agy-desktop-backend (or sidecars/status)" "package_backend_missing"
+    fi
+  fi
+
+  local ok=true codes_json="" remediation_json="" code
+  if [[ -n "${PANEL_CODES}" ]]; then ok=false; fi
+  local old_ifs="${IFS}"
+  IFS=','
+  for code in ${PANEL_CODES:-}; do
+    codes_json="${codes_json}${codes_json:+,}\"${code}\""
+    remediation_json="${remediation_json}${remediation_json:+,}\"${code}\":\"$(json_escape "$(panel_remediation "${code}")")\""
+  done
+  IFS="${old_ifs}"
+  set -e
+  printf '{"ok":%s,"scope":"plugin","complete":false,"installed":%s,"platform":"%s","release":"%s","codes":[%s],"remediation":{%s},"checks":[%s],"note":"%s"}\n' \
+    "${ok}" "${installed}" "$(json_escape "$(uname -s) $(uname -m)")" "$(json_escape "${RELEASE_TAG}")" \
+    "${codes_json}" "${remediation_json}" "${PANEL_CHECKS}" \
+    "$(json_escape "这里只诊断面板插件本身。完整诊断（CLI 状态栏、签名/quarantine、套件版本一致性）请运行仓库根目录 install.sh --doctor --json。")"
+  if [[ "${ok}" == "true" ]]; then return 0; fi
+  return 1
+}
+
+if [[ "${DOCTOR}" -eq 1 ]]; then
+  SCRIPT_SELF="${BASH_SOURCE[0]:-}"
+  SCRIPT_DIR=""
+  if [[ -n "${SCRIPT_SELF}" && -f "${SCRIPT_SELF}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_SELF}")" && pwd)"
+  fi
+  if [[ -n "${SCRIPT_DIR}" && -f "${SCRIPT_DIR}/../install.sh" ]]; then
+    exec bash "${SCRIPT_DIR}/../install.sh" "${ORIG_ARGS[@]}"
+  fi
+  if [[ "${JSON}" -eq 1 ]]; then
+    panel_doctor_json
+    exit $?
+  fi
+  echo "Full installation diagnostics require the repository root install.sh:"
+  echo "  curl -fsSL https://raw.githubusercontent.com/${REPO_SLUG}/main/install.sh | bash -s -- --doctor"
+  BACKEND="${TARGET_DIR}/sidecars/status/agy-desktop-backend"
+  if [[ -x "${BACKEND}" ]]; then
+    "${BACKEND}" --version
+    exit 0
+  fi
+  echo "Plugin backend not found at ${BACKEND}" >&2
+  exit 1
+fi
+
 # Release archives contain all supported native targets. Source installations
 # use the binary produced by ./build.sh; no interpreter is needed at runtime.
 prepare_backend() {
-  local plugin_dir="$1" platform arch native_source
-  arch="$(uname -m)"
-  case "$(uname -s)-${arch}" in
-    Darwin-arm64) platform="macos-arm64" ;;
-    Linux-x86_64 | Linux-amd64) platform="linux-x64" ;;
-    Linux-aarch64 | Linux-arm64) platform="linux-arm64" ;;
-    *) platform="local" ;;
-  esac
-  native_source="${plugin_dir}/bin/${platform}/agy-desktop-backend"
-  if [[ -f "${native_source}" ]]; then
+  local plugin_dir="$1" native_source
+  native_source="$(resolve_native_source "${plugin_dir}" 2>/dev/null || true)"
+  if [[ -n "${native_source}" && -f "${native_source}" ]]; then
     install -m 755 "${native_source}" "${plugin_dir}/sidecars/status/agy-desktop-backend.new"
     mv -f "${plugin_dir}/sidecars/status/agy-desktop-backend.new" "${plugin_dir}/sidecars/status/agy-desktop-backend"
   fi
   if [[ ! -f "${plugin_dir}/sidecars/status/agy-desktop-backend" ]]; then
-    echo "Error: native backend missing for $(uname -s)/${arch}." >&2
+    echo "Error: native backend missing for $(uname -s)/$(uname -m) (platform: $(detect_platform 2>/dev/null || printf 'unknown'))." >&2
     echo "Build the source first with Zig 0.14.1 and SQLite: ./build.sh" >&2
     return 1
   fi

@@ -76,7 +76,18 @@ const Usage = struct {
         return out;
     }
 };
-const Point = struct { request: i64, idx: ?i64, at: ?f64, model: []const u8, context: ?i64, compact: bool };
+const Point = struct {
+    request: i64,
+    idx: ?i64,
+    at: ?f64,
+    model: []const u8,
+    context: ?i64,
+    compact: bool,
+    /// Usage reported by the log for this request. Kept inside the bounded
+    /// 120-point ring (instead of a per-request map) so completing a partial
+    /// SQLite row never grows resident memory with the conversation.
+    usage: [3]?i64 = .{ null, null, null },
+};
 // Ignore message bodies and tool payloads while parsing logs. They are not
 // needed for telemetry and can dwarf the actual counters.
 const TranscriptRow = struct {
@@ -90,16 +101,40 @@ const TranscriptRow = struct {
     cache_read_tokens: V = .null,
     output_tokens: V = .null,
 };
+const chunk_size: usize = 64 * 1024;
+/// Below this size a suspicious write verifies every chunk: the cost is bounded
+/// and it removes any sampling gap for the common short conversation.
+const full_verify_limit: u64 = 512 * 1024;
+/// 16384 chunks = 1 GiB of tracked history with 8 bytes per chunk.
+const max_tracked_chunks: usize = 16384;
+/// Bytes re-read per poll while the log is otherwise idle. The rotating scrub
+/// walks one chunk per budget slot, so a block edited in place is corrected
+/// after at most `tracked_chunks / chunks_per_poll` polls.
+const verify_budget_bytes: usize = 128 * 1024;
+
 const Transcript = struct {
     arena: std.heap.ArenaAllocator,
     path: []const u8 = "",
     identity: c.Sig = .{},
     offset: u64 = 0,
-    prefix_hash: std.hash.Wyhash = std.hash.Wyhash.init(0),
+    chunk_hashes: std.ArrayList(u64),
+    /// File offset of `chunk_hashes[0]`; non-zero only past the 1 GiB cap.
+    verified_from: u64 = 0,
+    /// Test seam: a small cap exercises the rolling window without 1 GiB files.
+    chunk_cap: usize = max_tracked_chunks,
+    cur_chunk_hash: std.hash.Wyhash = std.hash.Wyhash.init(0),
+    cur_chunk_len: usize = 0,
+    scrub_cursor: usize = 0,
+    /// Full rescans triggered by verification failures; observable in tests.
+    reloads: u64 = 0,
+    corrupt_lines: usize = 0,
     first: ?f64 = null,
     last: ?f64 = null,
     user: ?f64 = null,
     steps: i64 = 0,
+    /// Completed, non-compaction generations actually present in the log. This
+    /// is evidence the log was parsed for real, unlike a lone USER_INPUT row.
+    generations: i64 = 0,
     turns: i64 = 0,
     compactions: i64 = 0,
     usage: Usage = .{},
@@ -109,15 +144,24 @@ const Transcript = struct {
     latest: ?[3]?i64 = null,
     latest_model: []const u8 = "",
     fn init() Transcript {
-        return .{ .arena = std.heap.ArenaAllocator.init(std.heap.c_allocator), .models = std.StringArrayHashMap(Usage).init(std.heap.c_allocator) };
+        return .{
+            .arena = std.heap.ArenaAllocator.init(std.heap.c_allocator),
+            .chunk_hashes = std.ArrayList(u64).init(std.heap.c_allocator),
+            .models = std.StringArrayHashMap(Usage).init(std.heap.c_allocator),
+        };
     }
     fn deinit(self: *Transcript) void {
+        self.chunk_hashes.deinit();
         self.models.deinit();
         self.arena.deinit();
     }
     fn reset(self: *Transcript) void {
+        const reloads = self.reloads;
+        const cap = self.chunk_cap;
         self.deinit();
         self.* = init();
+        self.reloads = reloads;
+        self.chunk_cap = cap;
     }
     fn ingest(self: *Transcript, item: TranscriptRow) !void {
         self.steps += 1;
@@ -142,6 +186,7 @@ const Transcript = struct {
         self.usage.ingest(vals);
         entry.value_ptr.ingest(vals);
         const compact = c.eq(typ, "CHECKPOINT");
+        if (!compact) self.generations += 1;
         if (compact) self.compactions += 1 else {
             self.latest = vals;
             if (c.str(item.model).len > 0) self.latest_model = entry.key_ptr.*;
@@ -150,20 +195,113 @@ const Transcript = struct {
             std.mem.copyForwards(Point, self.points[0 .. self.points.len - 1], self.points[1..]);
             self.point_count -= 1;
         }
-        self.points[self.point_count] = .{ .request = self.usage.requests, .idx = c.int(item.step_index), .at = at, .model = entry.key_ptr.*, .context = if (!compact and vals[0] != null and vals[1] != null) vals[0].? +| vals[1].? else null, .compact = compact };
+        self.points[self.point_count] = .{
+            .request = self.usage.requests,
+            .idx = c.int(item.step_index),
+            .at = at,
+            .model = entry.key_ptr.*,
+            .context = if (!compact and vals[0] != null and vals[1] != null) vals[0].? +| vals[1].? else null,
+            .compact = compact,
+            // A real zero and an unknown value are different answers; both
+            // survive because the value is an optional integer.
+            .usage = vals,
+        };
         self.point_count += 1;
     }
-    fn hashPrefix(file: std.fs.File, offset: u64) !u64 {
-        var buf: [64 * 1024]u8 = undefined;
-        var h = std.hash.Wyhash.init(0);
-        var pos: u64 = 0;
-        while (pos < offset) {
-            const len: usize = @intCast(@min(offset - pos, buf.len));
-            if (try file.preadAll(buf[0..len], pos) != len) return error.EndOfStream;
-            h.update(buf[0..len]);
-            pos += len;
+    /// Log usage for one step, searched newest-first inside the bounded 120-point
+    /// ring. Deliberate limit: a step older than the window is *not* completed —
+    /// callers keep whatever SQLite reported instead of borrowing another
+    /// request's numbers (null stays unknown, a real zero stays zero).
+    fn usageForStep(self: *const Transcript, step_idx: i64) ?[3]?i64 {
+        var i = self.point_count;
+        while (i > 0) {
+            i -= 1;
+            const point = self.points[i];
+            if (point.compact) continue;
+            if (point.idx) |idx| {
+                if (idx == step_idx) return point.usage;
+            }
         }
-        return h.final();
+        return null;
+    }
+    fn recordPrefixBytes(self: *Transcript, data: []const u8) !void {
+        var pos: usize = 0;
+        while (pos < data.len) {
+            const space = chunk_size - self.cur_chunk_len;
+            const take = @min(space, data.len - pos);
+            self.cur_chunk_hash.update(data[pos .. pos + take]);
+            self.cur_chunk_len += take;
+            pos += take;
+            if (self.cur_chunk_len == chunk_size) {
+                const finalized = self.cur_chunk_hash.final();
+                if (self.chunk_hashes.items.len < self.chunk_cap) {
+                    try self.chunk_hashes.append(finalized);
+                } else {
+                    // Past the cap the window rolls: drop the oldest chunk so the
+                    // tracked range still ends at the file end. Memory, and the
+                    // cost of one verification pass, stay bounded either way.
+                    std.mem.copyForwards(u64, self.chunk_hashes.items[0 .. self.chunk_hashes.items.len - 1], self.chunk_hashes.items[1..]);
+                    self.chunk_hashes.items[self.chunk_hashes.items.len - 1] = finalized;
+                    self.verified_from += chunk_size;
+                }
+                self.cur_chunk_hash = std.hash.Wyhash.init(0);
+                self.cur_chunk_len = 0;
+            }
+        }
+    }
+    fn trackedBytes(self: *const Transcript) u64 {
+        return self.verified_from + @as(u64, self.chunk_hashes.items.len) * chunk_size + self.cur_chunk_len;
+    }
+    fn verifyRange(file: std.fs.File, start_pos: u64, len: usize, expected: u64) !bool {
+        var buf: [chunk_size]u8 = undefined;
+        var h = std.hash.Wyhash.init(0);
+        var done: usize = 0;
+        while (done < len) {
+            const want = @min(len - done, buf.len);
+            const got = try file.preadAll(buf[0..want], start_pos + done);
+            if (got != want) return false;
+            h.update(buf[0..want]);
+            done += got;
+        }
+        return h.final() == expected;
+    }
+    fn verifyChunk(self: *Transcript, file: std.fs.File, idx: usize) !bool {
+        return verifyRange(file, self.verified_from + @as(u64, idx) * chunk_size, chunk_size, self.chunk_hashes.items[idx]);
+    }
+    /// Re-read part of the tracked prefix. Runs on every poll, not only when the
+    /// file grew: an edit that lands while nobody is appending still has to be
+    /// corrected, and the rotating scrub is what eventually reaches it.
+    fn prefixUnchanged(self: *Transcript, file: std.fs.File, thorough: bool) !bool {
+        if (self.offset != self.trackedBytes()) return false;
+        if (self.cur_chunk_len > 0) {
+            var copy = self.cur_chunk_hash;
+            if (!try verifyRange(file, self.offset - self.cur_chunk_len, self.cur_chunk_len, copy.final())) return false;
+        }
+        const n = self.chunk_hashes.items.len;
+        if (n == 0) return true;
+        if (thorough and self.offset <= full_verify_limit) {
+            for (0..n) |idx| {
+                if (!try self.verifyChunk(file, idx)) return false;
+            }
+            return true;
+        }
+        var scrub_budget = @max(1, verify_budget_bytes / chunk_size);
+        if (thorough) {
+            // A concurrent rewrite is most likely to touch the head, the middle
+            // or the freshest data, so check those first.
+            for ([_]usize{ 0, n / 2, n - 1 }) |idx| {
+                if (!try self.verifyChunk(file, idx)) return false;
+            }
+            // Still advance the rotating scrub once per pass, otherwise a log
+            // that keeps appending would never look anywhere else.
+            scrub_budget = 1;
+        }
+        while (scrub_budget > 0) : (scrub_budget -= 1) {
+            const idx = self.scrub_cursor % n;
+            self.scrub_cursor +%= 1;
+            if (!try self.verifyChunk(file, idx)) return false;
+        }
+        return true;
     }
     fn update(self: *Transcript, path: []const u8) !void {
         const file = try std.fs.cwd().openFile(path, .{});
@@ -171,8 +309,16 @@ const Transcript = struct {
         const st = try file.stat();
         const replaced = !c.eq(self.path, path) or self.identity.inode != st.inode or st.size < self.offset;
         const changed = st.mtime != self.identity.mtime or st.ctime != self.identity.ctime or st.size != self.identity.size;
-        // Growth alone does not prove append-only writes: the middle may have changed.
-        if (replaced or (changed and (st.size <= self.identity.size or try hashPrefix(file, self.offset) != self.prefix_hash.final()))) {
+        // Growth alone does not prove append-only writes: verify prefix chunks
+        // (exhaustively up to 512 KiB, and sampled + rotating scrub beyond).
+        // The check also runs while the file looks untouched, otherwise a block
+        // edited just before the log went quiet would never be re-read.
+        var rescan = replaced;
+        if (!rescan and (changed or self.identity.exists)) {
+            if (!try self.prefixUnchanged(file, changed)) rescan = true;
+        }
+        if (rescan) {
+            self.reloads += 1;
             self.reset();
             self.path = try self.arena.allocator().dupe(u8, path);
         }
@@ -188,9 +334,12 @@ const Transcript = struct {
                 if (err == error.EndOfStream) break;
                 return err;
             };
-            self.prefix_hash.update(line.items);
-            self.prefix_hash.update("\n");
+            try self.recordPrefixBytes(line.items);
+            try self.recordPrefixBytes("\n");
             const item = std.json.parseFromSlice(TranscriptRow, line_arena.allocator(), line.items, .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch {
+                if (std.mem.trim(u8, line.items, " \t\r").len > 0) {
+                    self.corrupt_lines += 1;
+                }
                 self.offset += line.items.len + 1;
                 _ = line_arena.reset(.free_all);
                 continue;
@@ -208,7 +357,8 @@ const Gen = struct {
     cached: ?i64 = null,
     written: ?i64 = null,
     output: ?i64 = null,
-    exec: ?f64 = null,
+    /// Protobuf `chat` field 11 is TTFT; field 12 (`duration`) is streaming generation duration.
+    ttft: ?f64 = null,
     duration: ?f64 = null,
     speed: ?f64 = null,
     model: []const u8 = "",
@@ -223,7 +373,7 @@ fn generation(idx: i64, raw: []const u8) ?Gen {
         out.written = c.number(u, 4);
         out.output = c.number(u, 3);
     }
-    out.exec = c.duration(c.bytes(chat, 11));
+    out.ttft = c.duration(c.bytes(chat, 11));
     out.duration = c.duration(c.bytes(chat, 12));
     if (out.duration) |d| {
         if (d >= 0.1 and (out.output orelse 0) > 0) {
@@ -244,21 +394,30 @@ fn generation(idx: i64, raw: []const u8) ?Gen {
 const Speed = struct { tokens: f64 = 0, seconds: f64 = 0, samples: i64 = 0 };
 /// Why the conversation database did or did not provide numbers. "No data" and
 /// "could not read" look identical in the panel unless we say which it was.
-pub const DbState = enum { ok, empty, missing, locked, unreadable };
+pub const DbState = enum { ok, empty, missing, locked, unreadable, corrupt };
 pub const TranscriptState = enum { ok, missing, failed };
 pub const QuotaState = enum { ok, stale, missing, unreadable, disabled };
 
 const DbResult = struct {
     state: DbState = .ok,
     readable: bool = false,
+    latest_mtime_sec: ?f64 = null,
     latest: ?Gen = null,
     history: [12]Gen = undefined,
     count: usize = 0,
     speeds: std.StringArrayHashMap(Speed),
-    usage: ?[4]i64 = null,
+    usage: ?[4]?i64 = null,
+    /// Step index the usage above belongs to, so the log can complete the same
+    /// request without borrowing numbers from another one.
+    usage_idx: ?i64 = null,
     live: bool = false,
     live_idx: ?i64 = null,
     live_type: ?i64 = null,
+    /// Newest row in `steps`, whether active or finished.
+    newest_idx: ?i64 = null,
+    /// The active row is older than a finished step; only keep it live while
+    /// its streamed text still grows (see the residue guard in snapshot()).
+    live_behind: bool = false,
     status: ?i64 = null,
     chars: ?i64 = null,
     cpt: f64 = 1.4,
@@ -266,14 +425,14 @@ const DbResult = struct {
         return .{ .speeds = std.StringArrayHashMap(Speed).init(a) };
     }
 };
-fn stepUsage(raw: []const u8) ?[4]i64 {
+fn stepUsage(raw: []const u8) ?[4]?i64 {
     const u = c.bytes(raw, 9) orelse return null;
     const i = c.number(u, 2);
     const o = c.number(u, 3);
     const w = c.number(u, 4);
     const r = c.number(u, 5);
     if (i == null and o == null and w == null and r == null) return null;
-    return .{ i orelse 0, r orelse 0, o orelse 0, w orelse 0 };
+    return .{ i, r, o, w };
 }
 fn fileUri(a: A, path: []const u8, query: []const u8) ![:0]const u8 {
     var out = std.ArrayList(u8).init(a);
@@ -350,6 +509,14 @@ fn openReadOnlyDb(a: A, path: []const u8) !OpenOutcome {
     const db = tryOpenDb(a, try fileUri(a, path, "immutable=1"), 0x41, &err);
     return .{ .db = db, .state = if (db != null) .ok else .unreadable };
 }
+fn classifySqliteErr(db: ?*anyopaque, lock_error: *bool, query_error: *bool) void {
+    const primary = sqlite3_errcode(db) & 0xff;
+    if (primary == 5 or primary == 6) {
+        lock_error.* = true;
+    } else {
+        query_error.* = true;
+    }
+}
 fn readDb(a: A, path: []const u8, summary_only: bool) !DbResult {
     var out = DbResult.init(a);
     if (!c.sig(path).exists) {
@@ -363,31 +530,73 @@ fn readDb(a: A, path: []const u8, summary_only: bool) !DbResult {
     };
     defer _ = sqlite3_close(db);
     out.readable = true;
-    if (Query.init(a, db, if (summary_only) "SELECT idx,data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC LIMIT 40" else "SELECT idx,data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC")) |q| {
-        defer q.deinit();
-        while (q.next() catch false) {
-            var rec = generation(q.integer(0) orelse continue, q.blob(1)) orelse continue;
-            if (out.count < 12) {
-                rec.model = try a.dupe(u8, rec.model);
-                out.history[out.count] = rec;
-                out.count += 1;
-                if (out.latest == null) out.latest = rec;
-            }
-            if (rec.model.len > 0 and rec.speed != null and (rec.output orelse 0) > 0) {
-                const key = c.modelKey(rec.model);
-                const entry = try out.speeds.getOrPut(key);
-                if (!entry.found_existing) {
-                    entry.key_ptr.* = try a.dupe(u8, key);
-                    entry.value_ptr.* = .{};
-                }
-                entry.value_ptr.tokens += @floatFromInt(rec.output.?);
-                entry.value_ptr.seconds += @as(f64, @floatFromInt(rec.output.?)) / rec.speed.?;
-                entry.value_ptr.samples += 1;
+    var lock_error = false;
+    var query_error = false;
+    var corrupt_rows = false;
+    var has_gen_table = false;
+    var has_steps_table = false;
+    var other_table_count: usize = 0;
+    if (Query.init(a, db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")) |tq| {
+        defer tq.deinit();
+        while (true) {
+            const has_row = tq.next() catch {
+                classifySqliteErr(db, &lock_error, &query_error);
+                break;
+            };
+            if (!has_row) break;
+            const tname = tq.blob(0);
+            if (c.eq(tname, "gen_metadata")) {
+                has_gen_table = true;
+            } else if (c.eq(tname, "steps")) {
+                has_steps_table = true;
+            } else {
+                other_table_count += 1;
             }
         }
-    } else |_| {}
-    var cols = Query.init(a, db, "PRAGMA table_info(steps)") catch return out;
-    defer cols.deinit();
+    } else |_| {
+        classifySqliteErr(db, &lock_error, &query_error);
+    }
+    if (has_gen_table) {
+        if (Query.init(a, db, if (summary_only) "SELECT idx,data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC LIMIT 40" else "SELECT idx,data FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx DESC")) |q| {
+            defer q.deinit();
+            var gen_rows: usize = 0;
+            var gen_parsed: usize = 0;
+            while (true) {
+                const has_row = q.next() catch {
+                    classifySqliteErr(db, &lock_error, &query_error);
+                    break;
+                };
+                if (!has_row) break;
+                gen_rows += 1;
+                var rec = generation(q.integer(0) orelse continue, q.blob(1)) orelse continue;
+                gen_parsed += 1;
+                if (out.count < 12) {
+                    rec.model = try a.dupe(u8, rec.model);
+                    out.history[out.count] = rec;
+                    out.count += 1;
+                    if (out.latest == null) out.latest = rec;
+                }
+                if (rec.model.len > 0 and rec.speed != null and (rec.output orelse 0) > 0) {
+                    const key = c.modelKey(rec.model);
+                    const entry = try out.speeds.getOrPut(key);
+                    if (!entry.found_existing) {
+                        entry.key_ptr.* = try a.dupe(u8, key);
+                        entry.value_ptr.* = .{};
+                    }
+                    entry.value_ptr.tokens += @floatFromInt(rec.output.?);
+                    entry.value_ptr.seconds += @as(f64, @floatFromInt(rec.output.?)) / rec.speed.?;
+                    entry.value_ptr.samples += 1;
+                }
+            }
+            // Rows that exist but cannot be decoded are damage, not an empty
+            // conversation: reporting `empty` would hide a broken database.
+            // Partially readable history stays usable, only a fully undecodable
+            // table is called corrupt.
+            if (gen_rows > 0 and gen_parsed == 0) corrupt_rows = true;
+        } else |_| {
+            classifySqliteErr(db, &lock_error, &query_error);
+        }
+    }
     var metadata: ?[]const u8 = null;
     var order: []const u8 = "rowid";
     var payload: ?[]const u8 = null;
@@ -395,48 +604,91 @@ fn readDb(a: A, path: []const u8, summary_only: bool) !DbResult {
     var has_idx = false;
     var has_status = false;
     var has_type = false;
-    while (cols.next() catch false) {
-        const name = cols.blob(1);
-        if (c.eq(name, "metadata")) metadata = "metadata";
-        if (c.eq(name, "data")) has_data = true;
-        if (c.eq(name, "idx")) {
-            order = "idx";
-            has_idx = true;
+    if (has_steps_table) {
+        if (Query.init(a, db, "PRAGMA table_info(steps)")) |cols| {
+            defer cols.deinit();
+            while (true) {
+                const has_row = cols.next() catch {
+                    classifySqliteErr(db, &lock_error, &query_error);
+                    break;
+                };
+                if (!has_row) break;
+                const name = cols.blob(1);
+                if (c.eq(name, "metadata")) metadata = "metadata";
+                if (c.eq(name, "data")) has_data = true;
+                if (c.eq(name, "idx")) {
+                    order = "idx";
+                    has_idx = true;
+                }
+                if (c.eq(name, "step_idx") and !has_idx) order = "step_idx";
+                if (c.eq(name, "step_payload")) payload = "step_payload";
+                if (c.eq(name, "status")) has_status = true;
+                if (c.eq(name, "step_type")) has_type = true;
+            }
+        } else |_| {
+            classifySqliteErr(db, &lock_error, &query_error);
         }
-        if (c.eq(name, "step_idx") and !has_idx) order = "step_idx";
-        if (c.eq(name, "step_payload")) payload = "step_payload";
-        if (c.eq(name, "status")) has_status = true;
-        if (c.eq(name, "step_type")) has_type = true;
+        if (metadata == null and has_data) metadata = "data";
+        if (payload == null) payload = metadata;
+        if (metadata == null and payload == null) query_error = true;
+    } else if (!has_gen_table and other_table_count > 0) {
+        query_error = true;
     }
-    if (metadata == null and has_data) metadata = "data";
-    if (payload == null) payload = metadata;
     if (metadata) |col| {
-        const sql = try c.fmt(a, "SELECT {s} FROM steps WHERE {s} IS NOT NULL ORDER BY {s} DESC LIMIT 40", .{ col, col, order });
+        const sql = try c.fmt(a, "SELECT {s},{s} FROM steps WHERE {s} IS NOT NULL ORDER BY {s} DESC LIMIT 40", .{ order, col, col, order });
         if (Query.init(a, db, sql)) |q| {
             defer q.deinit();
-            while (q.next() catch false) {
-                if (stepUsage(q.blob(0))) |u| {
-                    out.usage = u;
+            while (true) {
+                const has_row = q.next() catch {
+                    classifySqliteErr(db, &lock_error, &query_error);
                     break;
+                };
+                if (!has_row) break;
+                if (stepUsage(q.blob(1))) |u| {
+                    if (u[0] != null or u[1] != null or u[3] != null) {
+                        out.usage = u;
+                        out.usage_idx = q.integer(0);
+                        break;
+                    }
+                    if (out.usage == null) {
+                        out.usage = u;
+                        out.usage_idx = q.integer(0);
+                    }
                 }
             }
-        } else |_| {}
+        } else |_| {
+            classifySqliteErr(db, &lock_error, &query_error);
+        }
     }
     if (payload != null and has_status) {
-        const sql = try c.fmt(a, "SELECT {s},status,{s},{s} FROM steps ORDER BY {s} DESC LIMIT 1", .{ order, payload.?, if (has_type) "step_type" else "NULL", order });
+        const sql = try c.fmt(a, "SELECT {s},status,{s},{s} FROM steps ORDER BY {s} DESC LIMIT 8", .{ order, payload.?, if (has_type) "step_type" else "NULL", order });
         if (Query.init(a, db, sql)) |q| {
             defer q.deinit();
-            if (q.next() catch false) {
+            while (true) {
+                const has_row = q.next() catch {
+                    classifySqliteErr(db, &lock_error, &query_error);
+                    break;
+                };
+                if (!has_row) break;
+                const row_idx = q.integer(0);
+                if (out.newest_idx == null) out.newest_idx = row_idx;
                 const status = q.integer(1) orelse 0;
-                if (status == 1 or status == 2 or status == 8) {
-                    out.live = true;
-                    out.live_idx = q.integer(0);
-                    out.status = status;
-                    out.live_type = q.integer(3);
-                    out.chars = c.chars(q.blob(2));
-                }
+                if (status != 1 and status != 2 and status != 8) continue;
+                // A finished step can sit above a step that is still streaming;
+                // report the active row instead of hiding it behind the newest.
+                // A leftover active row from an old round is filtered out later
+                // by the growth check in snapshot().
+                out.live = true;
+                out.live_idx = row_idx;
+                out.status = status;
+                out.live_type = q.integer(3);
+                out.chars = c.chars(q.blob(2));
+                out.live_behind = out.newest_idx != null and row_idx != null and out.newest_idx.? > row_idx.?;
+                break;
             }
-        } else |_| {}
+        } else |_| {
+            classifySqliteErr(db, &lock_error, &query_error);
+        }
     }
     if (out.live and metadata != null and payload != null) {
         const sql = try c.fmt(a, "SELECT {s},{s} FROM steps WHERE {s} IS NOT NULL ORDER BY {s} DESC LIMIT 24", .{ payload.?, metadata.?, metadata.?, order });
@@ -444,24 +696,45 @@ fn readDb(a: A, path: []const u8, summary_only: bool) !DbResult {
             defer q.deinit();
             var chars: f64 = 0;
             var tokens: f64 = 0;
-            while (q.next() catch false) {
+            while (true) {
+                const has_row = q.next() catch {
+                    classifySqliteErr(db, &lock_error, &query_error);
+                    break;
+                };
+                if (!has_row) break;
                 const u = stepUsage(q.blob(1)) orelse continue;
-                if (u[2] <= 0) continue;
+                const out_tok = u[2] orelse continue;
+                if (out_tok <= 0) continue;
                 const count = c.chars(q.blob(0)) orelse continue;
                 if (count <= 0) continue;
                 chars += @floatFromInt(count);
-                tokens += @floatFromInt(u[2]);
+                tokens += @floatFromInt(out_tok);
             }
             if (chars > 0 and tokens > 0) out.cpt = std.math.clamp(chars / tokens, 0.4, 6);
-        } else |_| {}
+        } else |_| {
+            classifySqliteErr(db, &lock_error, &query_error);
+        }
     }
-    // Opened and queried fine, but this conversation has no usable rows yet
-    // (e.g. the turn has not produced a finished step). That is not a failure.
-    if (out.count == 0 and out.usage == null and !out.live) out.state = .empty;
+    if (lock_error) {
+        out.state = .locked;
+    } else if (query_error) {
+        out.state = .unreadable;
+    } else if (corrupt_rows) {
+        out.state = .corrupt;
+    } else if (out.count == 0 and out.usage == null and !out.live) {
+        // Opened and queried fine, but this conversation has no usable rows yet
+        // (e.g. the turn has not produced a finished step). That is not a failure.
+        out.state = .empty;
+    }
     return out;
 }
-
 pub const Config = struct { root: []const u8, data: []const u8, quota: []const u8, settings: []const u8 };
+const StopScope = struct {
+    /// The Stop still describes the live row on screen, so suppress it.
+    covers_live: bool = true,
+    /// The Stop still describes the current round, so it may paint a chip.
+    current: bool = true,
+};
 const LiveSlot = struct {
     id: [36]u8 = @splat(0),
     step: ?i64 = null,
@@ -470,6 +743,12 @@ const LiveSlot = struct {
     growth_at: f64 = 0,
     growth_chars: ?i64 = null,
     growth_seen: bool = false,
+    /// Timestamp of the Stop hook last accounted for, the step index that was
+    /// live when it arrived, and the streamed length at that moment. A newer
+    /// index — or text that grew afterwards — is a new stream, not leftover.
+    stop_at: ?f64 = null,
+    stop_step: ?i64 = null,
+    stop_chars: ?i64 = null,
     last_used: f64 = 0,
 };
 
@@ -575,6 +854,35 @@ pub const Runtime = struct {
         if (!slot.growth_seen) return null;
         return @max(0, now - slot.growth_at);
     }
+    /// A Stop event only speaks for the round it ended. Remember the step that
+    /// was live when it arrived; anything newer — a fresh step index, a live
+    /// row above that step, or database writes well after the event — is a new
+    /// round, even when no PreInvocation was delivered for it.
+    fn stopScope(self: *Runtime, id: []const u8, db: *const DbResult, hook_at: ?f64, now: f64) StopScope {
+        const at = hook_at orelse return .{};
+        const slot = self.getOrAllocLiveSlot(id, now);
+        if (slot.stop_at == null or slot.stop_at.? != at) {
+            slot.stop_at = at;
+            slot.stop_step = slot.step;
+            slot.stop_chars = if (db.live) db.chars else null;
+        }
+        if (slot.stop_chars == null and db.live) slot.stop_chars = db.chars;
+        // Only the *active* row decides whether a new round started. A finished
+        // step above it ended before the Stop and must not be mistaken for new
+        // activity (that is what resurrected the stream).
+        const newer_live = if (!db.live) false else if (slot.stop_step) |stopped|
+            // Same process watched this step before the Stop: a higher index is
+            // a new round. The stopped step itself has ended, even if a late
+            // write lands afterwards.
+            (db.live_idx orelse stopped) > stopped
+        else
+            // Cold start: no step history. Believe the row only when its text
+            // grew after we first looked at it — a leftover never does. No
+            // clock/mtime heuristics: those resurrected residue after a WAL
+            // checkpoint touched the file.
+            slot.stop_chars != null and (db.chars orelse 0) > slot.stop_chars.?;
+        return .{ .covers_live = !newer_live, .current = !newer_live };
+    }
     fn database(self: *Runtime, id: []const u8, path: []const u8, a: A) !DbResult {
         const sig = c.sig(path);
         const wal = c.sig(try c.fmt(a, "{s}-wal", .{path}));
@@ -587,8 +895,10 @@ pub const Runtime = struct {
             if (slot.id[0] != 0 and c.eq(&slot.id, id)) {
                 match_idx = idx;
                 // Never serve an active live step from cache: streaming state and
-                // completion transitions must re-read SQLite on every poll.
-                if (slot.db != null and slot.summary_only == self.summary_only and std.meta.eql(sig, slot.db_sig) and std.meta.eql(wal, slot.wal_sig) and slot.db.?.readable and !slot.db.?.live) {
+                // completion transitions must re-read SQLite on every poll. A
+                // transient failure is not cached either, or one locked moment
+                // would stick until the file changed again.
+                if (slot.db != null and slot.summary_only == self.summary_only and std.meta.eql(sig, slot.db_sig) and std.meta.eql(wal, slot.wal_sig) and slot.db.?.readable and !slot.db.?.live and (slot.db.?.state == .ok or slot.db.?.state == .empty)) {
                     slot.last_used = self.db_clock;
                     return slot.db.?;
                 }
@@ -603,7 +913,9 @@ pub const Runtime = struct {
         _ = slot.arena.reset(.free_all);
         slot.db = null;
         slot.id = @splat(0);
-        const result = try readDb(slot.arena.allocator(), path, self.summary_only);
+        var result = try readDb(slot.arena.allocator(), path, self.summary_only);
+        const max_mtime_ns = @max(if (sig.exists) sig.mtime else 0, if (wal.exists) wal.mtime else 0);
+        result.latest_mtime_sec = if (max_mtime_ns > 0) @as(f64, @floatFromInt(max_mtime_ns)) / 1e9 else null;
         if (id.len == 36) @memcpy(&slot.id, id);
         slot.db_sig = sig;
         slot.wal_sig = wal;
@@ -879,6 +1191,7 @@ fn dbStateName(state: DbState) []const u8 {
         .missing => "missing",
         .locked => "locked",
         .unreadable => "unreadable",
+        .corrupt => "corrupt",
     };
 }
 fn transcriptStateName(state: TranscriptState) []const u8 {
@@ -919,10 +1232,12 @@ fn sourcesValue(a: A, db: DbResult, transcript_state: TranscriptState, hook_conn
     switch (db.state) {
         .locked => try note(a, &notes, "db_locked", "数据库被占用", "会话数据库正被其他进程占用（例如同时开着另一个窗口），本轮数值暂未刷新；面板会自动重试。"),
         .unreadable => try note(a, &notes, "db_unreadable", "数据库异常", "会话数据库无法以只读方式打开，可能是文件异常或被独占；本轮数值暂未刷新。"),
+        .corrupt => try note(a, &notes, "db_corrupt", "数据库记录损坏", "会话数据库里的生成记录无法解析（可能写入中断或版本不一致），本轮数值暂未刷新；面板会自动重试。"),
         .missing => if (transcript_state == .ok and db.count == 0) try note(a, &notes, "db_missing", "数据库缺失", "对话日志存在，但对应的会话数据库不存在或尚未就绪，部分数值可能缺失。"),
         else => {},
     }
     if (transcript_state == .failed) try note(a, &notes, "transcript_error", "日志读取失败", "对话日志读取失败（可能单行过大或文件损坏），会话累计值可能不完整。");
+    if (quota_state == .unreadable) try note(a, &notes, "quota_unreadable", "额度文件损坏", "额度快照文件（quota.json）无法解析，额度重置时间暂不可用。");
     try c.put(a, &out, "degraded", c.b(notes.array.items.len > 0));
     try c.put(a, &out, "notes", notes);
     return out;
@@ -972,6 +1287,9 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     try c.put(a, &out, "live", live);
     if (!c.validId(id)) {
         try c.put(a, &out, "message", c.s("No local Antigravity Desktop conversation found yet."));
+        if (quota_state == .unreadable) {
+            try c.put(a, &out, "sources", try sourcesValue(a, DbResult.init(a), .missing, active.len > 0, quota_state));
+        }
         return out;
     }
     const meta = c.get(c.get(hooks, "sessions"), id);
@@ -994,34 +1312,55 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
             break :blk false;
         }
     };
+    if (has_log and tracker.corrupt_lines > 0) transcript_state = .failed;
     var model: []const u8 = if (db.latest) |r| r.model else "";
     if (model.len == 0) model = c.str(c.get(meta, "modelName"));
-    if (!db.readable and model.len == 0 and has_log) model = tracker.latest_model;
+    if (model.len == 0 and has_log) model = tracker.latest_model;
     var input: ?i64 = null;
     var cached: ?i64 = null;
     var written: ?i64 = null;
     var output: ?i64 = if (db.latest) |r| r.output else null;
     var source: []const u8 = "none";
-    if (db.usage) |u| {
-        input = u[0];
-        cached = u[1];
-        written = u[3];
-        if (output == null and u[2] > 0) output = u[2];
-        source = "steps";
-    } else if (db.latest) |r| {
-        if (r.input != null or r.cached != null) {
-            input = r.input;
-            cached = r.cached;
-            written = r.written;
-            source = "gen_metadata";
+    if (db.usage) |steps_usage| {
+        if (steps_usage[0] != null or steps_usage[1] != null or steps_usage[3] != null) {
+            var u = steps_usage;
+            // One request can be split across sources: SQLite knows the input
+            // but not the cache reads, the log knows both. Complete the missing
+            // fields from the *same* step index; never borrow another request's
+            // numbers, and keep "unknown" (null) distinct from a real zero.
+            if (has_log) {
+                if (db.usage_idx) |idx| {
+                    if (tracker.usageForStep(idx)) |logged| {
+                        for (0..3) |k| {
+                            if (u[k] == null) u[k] = logged[k];
+                        }
+                    }
+                }
+            }
+            input = u[0];
+            cached = u[1];
+            written = u[3];
+            source = "steps";
         }
     }
-    if (!db.readable and c.eq(source, "none") and has_log) {
+    if (c.eq(source, "none")) {
+        if (db.latest) |r| {
+            if (r.input != null or r.cached != null or r.written != null) {
+                input = r.input;
+                cached = r.cached;
+                written = r.written;
+                source = "gen_metadata";
+            }
+        }
+    }
+    if (c.eq(source, "none") and has_log) {
         if (tracker.latest) |vals| {
-            input = vals[0];
-            cached = vals[1];
-            if (output == null) output = vals[2];
-            source = "transcript";
+            if (vals[0] != null or vals[1] != null) {
+                input = vals[0];
+                cached = vals[1];
+                source = "transcript";
+            }
+            if (!db.readable and output == null) output = vals[2];
         }
     }
     const total: ?i64 = if (input != null or cached != null or written != null) (input orelse 0) +| (cached orelse 0) +| (written orelse 0) else null;
@@ -1030,12 +1369,20 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     const capacity: ?i64 = if (contains(lower, "gemini") or contains(lower, "hydrogen") or contains(lower, "argon") or contains(lower, "flash")) 1048576 else if (contains(lower, "claude") or contains(lower, "sonnet") or contains(lower, "opus") or contains(lower, "haiku")) (if (contains(lower, "1m")) @as(i64, 1000000) else @as(i64, 200000)) else null;
     const denom: f64 = @floatFromInt((input orelse 0) +| (cached orelse 0));
     const hit: ?f64 = if (input != null and cached != null and denom > 0 and ((written orelse 0) == 0 or cached.? > 0)) 100 * @as(f64, @floatFromInt(cached.?)) / denom else null;
+    const target_model_key: []const u8 = if (model.len > 0) c.modelKey(model) else "";
     var steady_out: f64 = 0;
     var steady_sec: f64 = 0;
     var short_out: f64 = 0;
     var short_sec: f64 = 0;
+    var speed_model: []const u8 = "";
     for (db.history[0..db.count]) |rec| {
+        const rec_model_key: []const u8 = if (rec.model.len > 0) c.modelKey(rec.model) else "";
+        if (!c.eq(rec_model_key, target_model_key)) continue;
         if (rec.speed != null and (rec.output orelse 0) > 0 and (rec.duration orelse 0) >= 0.1) {
+            // Keep the model name next to the average: after a switch, the
+            // samples are the *previous* model's, and the panel must say so
+            // instead of calling them the current model's speed.
+            if (rec.model.len > 0) speed_model = rec.model;
             if (rec.duration.? >= 0.3) {
                 steady_out += @floatFromInt(rec.output.?);
                 steady_sec += rec.duration.?;
@@ -1051,18 +1398,33 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
         short_out / short_sec
     else
         null;
-    const dur = if (db.latest) |r| r.exec orelse r.duration else null;
+    const dur = if (db.latest) |r| r.duration else null;
+    const ttft = if (db.latest) |r| r.ttft else null;
+    const latest_speed = if (db.latest) |r| r.speed else null;
     var workspace = c.str(c.get(meta, "cwd"));
     const paths = c.get(meta, "workspacePaths");
     if (paths == .array and paths.array.items.len > 0) workspace = c.str(paths.array.items[0]);
-    try c.put(a, &out, "found", c.b(db.readable or has_log));
+    // A database that failed to open or query is not evidence of anything;
+    // "no active step" must not be inferred from it. Decode damage in the
+    // generation table is reported as `corrupt`, but the step table still
+    // answers the live question and any usage it holds is kept.
+    const db_usable = db.readable and (db.state == .ok or db.state == .empty or db.state == .corrupt);
+    const log_usable = has_log and transcript_state == .ok and tracker.generations > 0;
+    try c.put(a, &out, "found", c.b(db_usable or has_log));
+    if (!db_usable and !has_log) {
+        try c.put(a, &out, "message", c.s("会话数据库暂时无法读取（或记录损坏），本轮数值暂未刷新；面板会自动重试。"));
+    }
     try c.put(a, &out, "shortId", c.s(id[0..8]));
     try c.put(a, &out, "isActiveSession", c.b(c.eq(id, active)));
     try c.put(a, &out, "modelName", c.s(model));
     try c.put(a, &out, "workspaceName", c.s(std.fs.path.basename(workspace)));
+    try c.put(a, &out, "lastGenSpeed", c.rounded(latest_speed, 10));
     try c.put(a, &out, "lastAvgSpeed", c.rounded(speed, 10));
-    try c.put(a, &out, "lowSpeedWarning", c.b(if (speed) |x| x < settings.low_speed else false));
+    try c.put(a, &out, "lastAvgSpeedModel", c.s(if (speed != null) speed_model else ""));
+    try c.put(a, &out, "turnModel", c.s(c.str(c.get(meta, "modelName"))));
+    try c.put(a, &out, "lowSpeedWarning", c.b(if (latest_speed orelse speed) |x| x < settings.low_speed else false));
     try c.put(a, &out, "lastGenDurationSec", c.rounded(dur, 100));
+    try c.put(a, &out, "lastGenTtftSec", c.rounded(ttft, 100));
     try c.put(a, &out, "turnDurationSec", c.rounded(if (has_log) span(tracker.last, tracker.user) else null, 100));
     try c.put(a, &out, "sessionDurationSec", c.rounded(if (has_log) span(tracker.last, tracker.first) else null, 100));
     try c.put(a, &out, "turnCount", if (has_log) c.n(tracker.turns) else .null);
@@ -1125,14 +1487,57 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
             try c.put(a, &row, "idx", c.n(rec.idx));
             try c.put(a, &row, "speedTokS", c.rounded(rec.speed, 10));
             try c.put(a, &row, "outputTokens", c.opt(rec.output));
-            try c.put(a, &row, "durationSec", c.rounded(rec.exec orelse rec.duration, 100));
-            try c.put(a, &row, "model", c.s(if (rec.model.len > 0) rec.model else model));
+            try c.put(a, &row, "durationSec", c.rounded(rec.duration, 100));
+            try c.put(a, &row, "ttftSec", c.rounded(rec.ttft, 100));
+            try c.put(a, &row, "model", c.s(rec.model));
             try c.add(&history, row);
         }
     }
     try c.put(a, &out, "history", history);
-    const rate = runtime.rate(id, db, now);
-    if (db.live) {
+    const hook_event = c.str(c.get(meta, "lastEvent"));
+    const hook_at = c.timestamp(c.str(c.get(meta, "updatedAt")));
+    const hook_age_sec: ?f64 = if (hook_at) |at| now - at else null;
+    const stopped_recently = c.eq(hook_event, "Stop") and hook_age_sec != null and hook_age_sec.? >= -5 and hook_age_sec.? <= settings.limits.stop_ttl_sec;
+    const is_stop = hook_at != null and c.eq(hook_event, "Stop");
+    // What expires after `stop_ttl_sec` is the chip, not the verdict: if the
+    // database and its active row did not change since the Stop, the row is
+    // still finished and must not come back as a live stream.
+    const stop_scope = if (is_stop) runtime.stopScope(id, &db, hook_at, now) else StopScope{};
+    const stop_suppressed = is_stop and stop_scope.covers_live;
+    // Sample growth for every live row, including a stopped or behind row: both
+    // the residue guard and the post-Stop growth escape need to know whether the
+    // text moved, and not sampling here would deadlock that decision.
+    var rate_db = db;
+    rate_db.live = db.live and (db.chars orelse 0) > 0;
+    const rate = runtime.rate(id, rate_db, now);
+    const chars_idle_sec = runtime.charsIdleSec(id, now);
+    // A leftover active row from an old round hides behind a finished step. It
+    // stays live while its text grows, then drops out instead of being sold as
+    // a new stream.
+    const stale_behind = db.live and db.live_behind and (chars_idle_sec == null or chars_idle_sec.? >= settings.limits.stall_sec);
+    const effective_db_live = db.live and !stop_suppressed and !stale_behind;
+    const hook_model = c.str(c.get(meta, "modelName"));
+    const evidence: session.Input = .{
+        .now = now,
+        .hook_event = hook_event,
+        .hook_age_sec = hook_age_sec,
+        .hook_connected = active.len > 0,
+        .stop_current = !stopped_recently or stop_scope.current,
+        .live = effective_db_live,
+        .live_chars = db.chars,
+        .live_status = db.status,
+        .chars_idle_sec = chars_idle_sec,
+        // The hook reports the model chosen for this turn; the last
+        // completed generation reports the previous one. Comparing them is
+        // what makes "switch → cache recompute" explainable.
+        .model = if (hook_model.len > 0) hook_model else model,
+        .prev_model = if (db.latest) |rec| rec.model else "",
+        .termination = c.str(c.get(meta, "terminationReason")),
+        .evidence_trusted = db_usable or log_usable,
+    };
+    const session_out = session.evaluate(evidence, settings.limits);
+    const live_active = effective_db_live and (db.chars orelse 0) > 0 and (session_out.code == .streaming or session_out.code == .stalled);
+    if (live_active) {
         try c.put(a, &live, "active", c.b(true));
         try c.put(a, &live, "stepIdx", c.opt(db.live_idx));
         try c.put(a, &live, "stepType", c.opt(db.live_type));
@@ -1146,24 +1551,7 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     }
     try c.put(a, &out, "live", live);
     if (settings.session or runtime.summary_only) {
-        const hook_model = c.str(c.get(meta, "modelName"));
-        const evidence: session.Input = .{
-            .now = now,
-            .hook_event = c.str(c.get(meta, "lastEvent")),
-            .hook_age_sec = if (c.timestamp(c.str(c.get(meta, "updatedAt")))) |at| now - at else null,
-            .hook_connected = active.len > 0,
-            .live = db.live,
-            .live_status = db.status,
-            .chars_idle_sec = runtime.charsIdleSec(id, now),
-            // The hook reports the model chosen for this turn; the last
-            // completed generation reports the previous one. Comparing them is
-            // what makes "switch → cache recompute" explainable.
-            .model = if (hook_model.len > 0) hook_model else model,
-            .prev_model = if (db.latest) |rec| rec.model else "",
-            .termination = c.str(c.get(meta, "terminationReason")),
-            .evidence_trusted = db.readable or (has_log and tracker.steps > 0),
-        };
-        try c.put(a, &out, "session", try session.toValue(a, evidence, session.evaluate(evidence, settings.limits), settings.debug));
+        try c.put(a, &out, "session", try session.toValue(a, evidence, session_out, settings.debug));
     }
     try c.put(a, &out, "sources", try sourcesValue(a, db, transcript_state, active.len > 0, quota_state));
     return out;
@@ -1204,4 +1592,49 @@ test "transcript cache retains nine parsers and evicts the least recently used" 
     try evicted.update(paths[9]);
     try std.testing.expectEqualStrings(paths[9], evicted.path);
     try std.testing.expectEqual(@as(i64, 1), first.steps);
+}
+
+test "capped transcript window rolls instead of rescanning on every append" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    const path = try c.join(a, &.{ root, "big.jsonl" });
+    var tr = Transcript.init();
+    defer tr.deinit();
+    // Two chunks instead of the production 1 GiB cap keeps the test cheap while
+    // exercising exactly the same rolling-window math.
+    tr.chunk_cap = 2;
+    const padding = "x" ** 3000;
+    var row = std.ArrayList(u8).init(a);
+    try row.writer().print("{{\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"input_tokens\":10,\"cache_read_tokens\":0,\"output_tokens\":1,\"content\":\"{s}\"}}\n", .{padding});
+    {
+        var file = try tmp.dir.createFile("big.jsonl", .{});
+        for (0..200) |_| try file.writeAll(row.items);
+        file.close();
+    }
+    try tr.update(path);
+    try std.testing.expectEqual(@as(usize, 2), tr.chunk_hashes.items.len);
+    try std.testing.expect(tr.verified_from > 0);
+    try std.testing.expectEqual(tr.offset, tr.trackedBytes());
+    try std.testing.expectEqual(@as(i64, 200), tr.steps);
+    const reloads_before = tr.reloads;
+    // Appends past the cap must slide the window; a full re-scan per poll would
+    // make a 1 GiB log unusable.
+    var steps: i64 = 200;
+    for (0..40) |_| {
+        var file = try tmp.dir.openFile("big.jsonl", .{ .mode = .write_only });
+        try file.seekFromEnd(0);
+        try file.writeAll(row.items);
+        file.close();
+        try tr.update(path);
+        steps += 1;
+        try std.testing.expectEqual(steps, tr.steps);
+        try std.testing.expectEqual(tr.offset, tr.trackedBytes());
+    }
+    try std.testing.expectEqual(reloads_before, tr.reloads);
+    try std.testing.expectEqual(@as(usize, 2), tr.chunk_hashes.items.len);
+    try std.testing.expectEqual(tr.offset - 2 * chunk_size - tr.cur_chunk_len, tr.verified_from);
 }

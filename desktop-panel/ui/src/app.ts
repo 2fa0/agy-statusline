@@ -5,6 +5,7 @@ interface GenHistoryItem {
   speedTokS: number | null;
   outputTokens: number | null;
   durationSec: number | null;
+  ttftSec?: number | null;
   model: string;
 }
 
@@ -140,9 +141,15 @@ interface StatusSnapshot {
   hookConnected?: boolean;
   modelName?: string;
   workspaceName?: string;
+  lastGenSpeed?: number | null;
   lastAvgSpeed?: number | null;
+  /** Model whose history produced lastAvgSpeed (the last generation's model). */
+  lastAvgSpeedModel?: string;
+  /** Model the hook reports for the current turn; differs after a switch. */
+  turnModel?: string;
   lowSpeedWarning?: boolean;
   lastGenDurationSec?: number | null;
+  lastGenTtftSec?: number | null;
   turnDurationSec?: number | null;
   sessionDurationSec?: number | null;
   turnCount?: number | null;
@@ -193,6 +200,7 @@ const ALLOWED_TABS = new Set(['trends', 'usage', 'quota', 'settings']);
 const IDLE_POLL_MS = 15000;
 const IDLE_AFTER_SEC = 45;
 const LIVE_POLL_MS = 1000;
+const REQUEST_TIMEOUT_MS = 8000;
 
 const sessionSelect = document.getElementById('session-select') as HTMLSelectElement;
 const refreshSelect = document.getElementById('refresh-select') as HTMLSelectElement;
@@ -235,9 +243,14 @@ let settingsPending = 0;
 let settingsQueue: Promise<void> = Promise.resolve();
 
 let selectedConversation = 'auto';
+let selectedConversationLabel = '';
+/** True while a manually chosen conversation has not produced data yet. */
+let switchingConversation = false;
 let refreshIntervalSec = loadSavedInterval();
 let activeTab = loadSavedTab();
-let inFlight = false;
+let refreshSeq = 0;
+let inFlightSeq: number | null = null;
+let activeRefreshController: AbortController | null = null;
 let timerId: number | null = null;
 let currentHistory: GenHistoryItem[] = [];
 let currentContextPoints: ContextPoint[] = [];
@@ -246,7 +259,10 @@ let activeHistoryIdx: number | null = null;
 let lastSnapshot: StatusSnapshot | null = null;
 let appliedPollSec: number | null = null;
 let lastSuccessAt = 0;
+let firstFailureAt = 0;
 let consecutiveFailures = 0;
+let settingsEpoch = 0;
+let latestSavedConfig: PanelConfig | null = null;
 
 function loadSavedTab(): string {
   try {
@@ -278,9 +294,10 @@ function setActiveTab(tab: string): void {
 function loadSavedInterval(): number {
   try {
     const raw = window.localStorage?.getItem(STORAGE_KEY_INTERVAL);
-    if (raw !== null) {
-      const n = Number.parseInt(raw, 10);
-      if (ALLOWED_INTERVALS.has(n)) {
+    if (raw !== null && /^\d+$/.test(raw.trim())) {
+      const n = Number.parseInt(raw.trim(), 10);
+      if (n === 0 || (n >= 1 && n <= 60)) {
+        ALLOWED_INTERVALS.add(n);
         return n;
       }
     }
@@ -298,6 +315,12 @@ function saveInterval(sec: number): void {
   }
 }
 
+if (refreshIntervalSec > 0 && !Array.from(refreshSelect.options).some((opt) => Number(opt.value) === refreshIntervalSec)) {
+  const option = document.createElement('option');
+  option.value = String(refreshIntervalSec);
+  option.textContent = `${refreshIntervalSec}s`;
+  refreshSelect.insertBefore(option, refreshSelect.lastElementChild);
+}
 refreshSelect.value = String(refreshIntervalSec);
 refreshSelect.classList.toggle('active', refreshIntervalSec > 0);
 refreshSelect.title =
@@ -305,8 +328,12 @@ refreshSelect.title =
 
 function formatTokens(val: number | null | undefined): string {
   if (val === null || val === undefined || val < 0) return '--';
+  if (val >= 10000) {
+    return `${Math.round(val / 1000).toLocaleString('en-US')}K`;
+  }
   if (val >= 1000) {
-    return `${Math.trunc(val / 1000).toLocaleString('en-US')}K`;
+    const k = Math.round((val / 1000) * 10) / 10;
+    return k >= 10 ? `${Math.round(k).toLocaleString('en-US')}K` : `${k.toFixed(1)}K`;
   }
   return val.toLocaleString('en-US');
 }
@@ -317,10 +344,11 @@ function formatExactTokens(val: number | null | undefined): string {
 }
 
 function formatDuration(sec: number | null | undefined): string {
-  if (sec === null || sec === undefined || sec < 0) return '--';
-  if (sec < 60) return `${sec.toFixed(1)}s`;
-  const mins = Math.floor(sec / 60);
-  const rem = Math.round(sec % 60);
+  if (sec === null || sec === undefined || !Number.isFinite(sec) || sec < 0) return '--';
+  if (sec < 59.95) return `${sec.toFixed(1)}s`;
+  const totalSec = Math.round(sec);
+  const mins = Math.floor(totalSec / 60);
+  const rem = totalSec % 60;
   if (mins < 60) return `${mins}m ${rem}s`;
   const hrs = Math.floor(mins / 60);
   return `${hrs}h ${mins % 60}m`;
@@ -363,7 +391,8 @@ function formatResetAt(epochSec: number | null | undefined): string {
 
 function formatRemaining(sec: number | null | undefined): string {
   if (sec === null || sec === undefined) return '';
-  if (sec <= 0) return '即将重置';
+  if (sec < 0) return '';
+  if (sec < 60) return '即将重置';
   const days = Math.floor(sec / 86400);
   const hours = Math.floor((sec % 86400) / 3600);
   const mins = Math.floor((sec % 3600) / 60);
@@ -402,12 +431,24 @@ function renderQuota(quota: QuotaSnapshot | null | undefined): void {
 
   const age = formatAge(quota.observedAgeSec);
   const observedAt = formatSnapshotTime(quota.observedAt);
-  quotaNote.textContent = quota.stale
-    ? `${observedAt || age} · 推算`
-    : `${observedAt || age} 更新`;
-  quotaNote.title = quota.stale
-    ? `上次采到额度是 ${observedAt}（${age}）；重置时间已按 5h / 7 天周期推算到下一次`
-    : '额度来自上一次 agy CLI 渲染时的状态栏数据';
+  const withReset = windows.filter((w) => w.resetAtEpoch !== null && w.resetAtEpoch !== undefined);
+  const approxCount = withReset.filter((w) => Boolean(w.approx)).length;
+  const expiredCount = withReset.filter(
+    (w) => !w.approx && typeof w.resetInSec === 'number' && w.resetInSec < 0,
+  ).length;
+  if (approxCount > 0) {
+    quotaNote.textContent = `${observedAt || age} · ${approxCount === withReset.length ? '已推算' : '部分推算'}`;
+    quotaNote.title = `上次采到额度是 ${observedAt || age}（${age}）；带 ≈ 的窗口已按对应周期推算到下一次，其余为原记录时间`;
+  } else if (expiredCount > 0) {
+    quotaNote.textContent = `${observedAt || age} · 部分已过`;
+    quotaNote.title = `上次采到额度是 ${observedAt || age}（${age}）；部分窗口的重置时间已过且周期未知，等待 agy CLI 刷新`;
+  } else if (quota.stale) {
+    quotaNote.textContent = `${observedAt || age} · 快照较旧`;
+    quotaNote.title = `上次采到额度是 ${observedAt || age}（${age}），快照已超过 6 小时；当前重置时间尚未到期，仍为原记录值`;
+  } else {
+    quotaNote.textContent = `${observedAt || age} 更新`;
+    quotaNote.title = '额度来自上一次 agy CLI 渲染时的状态栏数据';
+  }
 
   const groups = new Map<string, QuotaWindow[]>();
   for (const item of windows) {
@@ -427,14 +468,27 @@ function renderQuota(quota: QuotaSnapshot | null | undefined): void {
           const windowLabel = QUOTA_WINDOW_LABELS[item.window] || item.window;
           const hasReset = item.resetAtEpoch !== null && item.resetAtEpoch !== undefined;
           const approxMark = hasReset && item.approx ? '≈ ' : '';
-          const remaining = hasReset ? formatRemaining(item.resetInSec) : '';
+          const isExpired = hasReset && !item.approx && typeof item.resetInSec === 'number' && item.resetInSec < 0;
+          const remaining = hasReset && !isExpired ? formatRemaining(item.resetInSec) : '';
           const resetAt = hasReset ? formatResetAt(item.resetAtEpoch) : '未知';
+          const displayTime = isExpired ? `${resetAt}（已过）` : approxMark + resetAt;
           const fullLocal = hasReset ? new Date((item.resetAtEpoch as number) * 1000).toLocaleString() : '--';
+          const approxTip = item.approx
+            ? item.window === '5h'
+              ? '按 5h 周期推算'
+              : item.window === 'weekly'
+                ? '按 7 天周期推算'
+                : '按周期推算'
+            : '';
           const tip = [
             `${pool} ${windowLabel}`,
             hasReset ? `重置于 ${fullLocal}` : '重置时间未知',
-            hasReset && remaining ? `距重置 ${remaining}` : '',
-            item.approx ? '按 5h / 7 天周期推算' : '',
+            isExpired
+              ? '重置时间已过（周期未知，无法推算）'
+              : hasReset && remaining
+                ? `距重置 ${remaining}`
+                : '',
+            approxTip,
             age ? `采集于 ${age}` : '',
           ]
             .filter(Boolean)
@@ -442,7 +496,7 @@ function renderQuota(quota: QuotaSnapshot | null | undefined): void {
           return `
             <div class="quota-cell" title="${escapeHtml(tip)}">
               <span class="quota-label">${escapeHtml(windowLabel)}</span>
-              <span class="quota-time">${escapeHtml(approxMark + resetAt)}</span>
+              <span class="quota-time">${escapeHtml(displayTime)}</span>
             </div>
           `;
         })
@@ -460,19 +514,112 @@ function renderQuota(quota: QuotaSnapshot | null | undefined): void {
 function syncSessionSelect(recent: RecentConversation[] = []): void {
   const previous = selectedConversation;
   const options: string[] = ['<option value="auto">自动跟随当前活跃会话</option>'];
+  let previousFound = false;
   for (const item of recent) {
     const labelParts = [item.shortId];
     if (item.workspace) labelParts.push(item.workspace);
     if (item.modelName) labelParts.push(item.modelName);
     if (item.isActive) labelParts.push('活跃');
+    const label = labelParts.join(' · ');
+    if (item.conversationId === previous) {
+      previousFound = true;
+      selectedConversationLabel = label;
+    }
     options.push(
-      `<option value="${escapeHtml(item.conversationId)}">${escapeHtml(labelParts.join(' · '))}</option>`,
+      `<option value="${escapeHtml(item.conversationId)}">${escapeHtml(label)}</option>`,
+    );
+  }
+  if (previous !== 'auto' && !previousFound) {
+    // A manually picked conversation may age out of the recent list. Dropping
+    // the option would silently snap the panel back to "auto" while the user
+    // still believes they are looking at the conversation they picked.
+    const label = selectedConversationLabel || conversationShortId(previous) || previous.slice(0, 8);
+    options.push(
+      `<option value="${escapeHtml(previous)}">${escapeHtml(label)}（不在最近列表）</option>`,
     );
   }
   sessionSelect.innerHTML = options.join('');
   const exists = Array.from(sessionSelect.options).some((opt) => opt.value === previous);
   sessionSelect.value = exists ? previous : 'auto';
   selectedConversation = sessionSelect.value;
+}
+
+function conversationShortId(id: string): string {
+  return id && id !== 'auto' ? id.slice(0, 8) : '';
+}
+
+/** What the panel calls the conversation it is currently showing. */
+function selectedConversationText(): string {
+  if (selectedConversation === 'auto') return '自动跟随当前会话';
+  return selectedConversationLabel || conversationShortId(selectedConversation) || selectedConversation;
+}
+
+/**
+ * Switching conversations must not leave the previous conversation's numbers
+ * on screen under the new name. Clear first, then say what is loading.
+ */
+function beginConversationSwitch(): void {
+  lastSnapshot = null;
+  lastSuccessAt = 0;
+  firstFailureAt = 0;
+  consecutiveFailures = 0;
+  switchingConversation = selectedConversation !== 'auto';
+  currentHistory = [];
+  currentContextPoints = [];
+  activeHistoryIdx = null;
+  renderSwitchPending();
+}
+
+/** Drop everything that belonged to the previous conversation. */
+function clearConversationView(): void {
+  cardsEl.innerHTML = '';
+  sparkEl.innerHTML = '';
+  sparkDetailEl.innerHTML = '';
+  historyListEl.innerHTML = '';
+  historyCount.textContent = '';
+  historySection.style.display = 'none';
+  // Tab content belongs to the previous conversation just as much as the cards
+  // do: a user sitting on the usage tab must not keep reading it.
+  for (const section of [usageSection, contextSection, modelsSection]) {
+    section.innerHTML = '';
+    section.style.display = 'none';
+  }
+  if (typeof document !== 'undefined') {
+    // The highlighted context point is per conversation too.
+    delete contextSection.dataset.activeReq;
+    const stateNote = document.getElementById('state-note');
+    if (stateNote) {
+      stateNote.hidden = true;
+      stateNote.textContent = '';
+    }
+    const sourcesNote = document.getElementById('sources-note');
+    if (sourcesNote) {
+      sourcesNote.hidden = true;
+      sourcesNote.textContent = '';
+      sourcesNote.removeAttribute('title');
+    }
+  }
+}
+
+function renderSwitchPending(): void {
+  const label = selectedConversationText();
+  metaStrip.innerHTML = `<div class="meta-main"><span class="state-chip is-switching" title="正在读取会话 ${escapeHtml(
+    label,
+  )}"><i class="state-dot"></i>加载中 · ${escapeHtml(label)}</span></div>`;
+  clearConversationView();
+  emptyBox.style.display = 'block';
+  emptyBox.textContent = `正在读取会话 ${label}…`;
+}
+
+/** The chosen conversation itself failed, not the sidecar as a whole. */
+function renderConversationFailure(): void {
+  const label = selectedConversationText();
+  metaStrip.innerHTML = `<div class="meta-main"><span class="state-chip is-error is-switching" title="读取会话 ${escapeHtml(
+    label,
+  )} 失败，面板会继续重试"><i class="state-dot"></i>会话读取失败 · ${escapeHtml(label)}</span></div>`;
+  clearConversationView();
+  emptyBox.style.display = 'block';
+  emptyBox.textContent = `无法读取会话 ${label} 的数据，正在重试…`;
 }
 
 function highlightHistoryItem(targetIdx: number | null): void {
@@ -484,7 +631,7 @@ function highlightHistoryItem(targetIdx: number | null): void {
 
   const isWarn = item.speedTokS !== null && item.speedTokS < (lastSnapshot?.config?.lowSpeedWarnTokS ?? 50);
   const speedStr = item.speedTokS !== null ? `${item.speedTokS.toFixed(1)} tok/s` : '--';
-  const modelStr = item.model || currentDefaultModel || '未知模型';
+  const modelStr = item.model || '未知模型';
   const outStr =
     item.outputTokens !== null && item.outputTokens !== undefined
       ? `${item.outputTokens.toLocaleString('en-US')} tok`
@@ -522,11 +669,66 @@ function getPaneConversationId(): string {
   return (window.sidecar?.conversationId || urlParams.get('conversationId') || '').trim();
 }
 
-function usageBody(usage: UsageSummary | null | undefined): string {
+function usageBody(usage: UsageSummary | null | undefined, latest?: UsageSummary | null): string {
   const pct = usage?.cacheHitPct;
-  return `<div class="usage-total">${formatTokens(usage?.totalTokens)} <small>tok</small></div>
-    <div class="stats-note">入 ${formatTokens(usage?.inputTokens)} · 读 ${formatTokens(usage?.cacheReadTokens)} · 出 ${formatTokens(usage?.outputTokens)}</div>
-    <div class="stats-note">缓存命中 ${typeof pct === 'number' ? `${pct.toFixed(1)}%` : '--'}</div>`;
+  const pctText = typeof pct === 'number' ? `${pct.toFixed(1)}%` : '--';
+  const hitCls = typeof pct === 'number' && pct >= 70 ? ' good' : '';
+
+  const cache = Math.max(0, usage?.cacheReadTokens ?? 0);
+  const input = Math.max(0, usage?.inputTokens ?? 0);
+  const out = Math.max(0, usage?.outputTokens ?? 0);
+  const sum = cache + input + out;
+  const share = (val: number) => (sum > 0 ? ((val / sum) * 100).toFixed(1) : '0.0');
+
+  const barHtml = sum > 0
+    ? `<div class="usage-bar" title="缓存读取 ${share(cache)}% · 新增输入 ${share(input)}% · 模型输出 ${share(out)}%">
+        ${cache > 0 ? `<div class="usage-seg seg-cache" style="width:${(cache / sum) * 100}%"></div>` : ''}
+        ${input > 0 ? `<div class="usage-seg seg-input" style="width:${(input / sum) * 100}%"></div>` : ''}
+        ${out > 0 ? `<div class="usage-seg seg-out" style="width:${(out / sum) * 100}%"></div>` : ''}
+      </div>`
+    : '';
+
+  const cell = (cls: string, label: string, val: number | null | undefined) => {
+    const shareStr = sum > 0 && typeof val === 'number' ? ` (${share(Math.max(0, val))}%)` : '';
+    const tip = `${label}：${formatExactTokens(val)}${shareStr}`;
+    return `<div class="usage-cell" title="${escapeHtml(tip)}">
+      <span class="usage-cell-label"><i class="usage-dot ${cls}"></i>${label}</span>
+      <span class="usage-cell-val">${formatTokens(val)}</span>
+    </div>`;
+  };
+
+  const latestHtml = latest
+    ? (() => {
+        const lPct = typeof latest.cacheHitPct === 'number' ? ` · 命中 ${latest.cacheHitPct.toFixed(1)}%` : '';
+        const lTip = `最近一次回复：总计 ${formatExactTokens(latest.totalTokens)}（读 ${formatExactTokens(
+          latest.cacheReadTokens,
+        )} · 入 ${formatExactTokens(latest.inputTokens)} · 出 ${formatExactTokens(latest.outputTokens)}${lPct}）`;
+        return `<div class="usage-latest" title="${escapeHtml(lTip)}">
+          <span class="muted">最近回复</span>
+          <span class="usage-latest-val"><strong>${formatTokens(latest.totalTokens)}</strong> <span class="muted">tok · 读 ${formatTokens(
+            latest.cacheReadTokens,
+          )} · 入 ${formatTokens(latest.inputTokens)} · 出 ${formatTokens(latest.outputTokens)}</span></span>
+        </div>`;
+      })()
+    : '';
+
+  return `<div class="usage-hero">
+      <div class="usage-hero-total">${formatTokens(usage?.totalTokens)} <small>tok</small></div>
+      <span class="usage-hit-pill${hitCls}" title="会话累计缓存命中率">缓存命中 ${pctText}</span>
+    </div>
+    ${barHtml}
+    <div class="usage-cells">
+      ${cell('seg-cache', '缓存读取', usage?.cacheReadTokens)}
+      ${cell('seg-input', '新增输入', usage?.inputTokens)}
+      ${cell('seg-out', '模型输出', usage?.outputTokens)}
+    </div>
+    ${latestHtml}`;
+}
+
+function formatRequestCoverage(recorded?: number, total?: number): string {
+  if (typeof total !== 'number') return '日志未采集';
+  if (typeof recorded === 'number' && recorded < total) return `${recorded}/${total} 次请求`;
+  return `${total} 次请求`;
 }
 
 function pointLabel(point: ContextPoint): string {
@@ -540,13 +742,10 @@ function renderSessionStats(snap: StatusSnapshot): void {
   }
   if (!snap.found) return;
   const usage = snap.sessionUsage;
-  const coverage = usage ? `${usage.recordedCount}/${usage.requestCount} 次请求` : '日志未采集';
+  const coverage = usage ? formatRequestCoverage(usage.recordedCount, usage.requestCount) : '日志未采集';
   const usageTip = '累计包含已完成的回复与压缩请求；按日志中的输入、缓存读取、输出相加，不含未记录的缓存写入。缓存命中率按总量加权。';
   usageSection.innerHTML = `<div class="section-title" title="${usageTip}"><span>Token 与缓存</span><span class="muted">${escapeHtml(coverage)}</span></div>
-    <div class="usage-grid">
-      <div><div class="stats-label">最近回复</div>${usageBody(snap.latestUsage)}</div>
-      <div><div class="stats-label">会话累计</div>${usageBody(usage)}</div>
-    </div>`;
+    ${usageBody(usage, snap.latestUsage)}`;
 
   const points = snap.contextHistory || [];
   const count = snap.compactionCount;
@@ -596,11 +795,11 @@ function renderSessionStats(snap: StatusSnapshot): void {
     return '';
   }).join('');
 
-  const stepW = points.length > 0 ? span / points.length : span;
   const hits = points.map((point, i) => {
-    const px = x(i);
-    const hx = Math.max(0, px - stepW / 2).toFixed(1);
-    const hw = Math.max(6, stepW).toFixed(1);
+    const xStart = i === 0 ? 0 : (x(i - 1) + x(i)) / 2;
+    const xEnd = i === points.length - 1 ? 360 : (x(i) + x(i + 1)) / 2;
+    const hx = xStart.toFixed(1);
+    const hw = Math.max(0.1, xEnd - xStart).toFixed(1);
     return `<rect class="ctx-hit" data-req="${point.request}" x="${hx}" y="${top - 4}" width="${hw}" height="${bottom - top + 8}"/>`;
   }).join('');
 
@@ -634,24 +833,54 @@ function renderSessionStats(snap: StatusSnapshot): void {
     </svg>` : '<div class="stats-note">暂无上下文记录</div>'}
     <details ${recordsOpen ? 'open' : ''}><summary>近期记录</summary><div class="context-records">${points.slice(-12).reverse().map((p) => `<div>${escapeHtml(pointLabel(p))}</div>`).join('') || '暂无记录'}</div></details>`;
 
-  const models = snap.modelUsage || [];
-  const modelsTip = '同一模型的思考档位合并；速度按有效样本的输出总量 / 耗时总量计算。';
-  modelsSection.innerHTML = `<div class="section-title" title="${modelsTip}"><span>按模型统计</span></div>
-    ${models.map((model) => {
-      const pct = model.cacheHitPct;
-      const speedStr = typeof model.avgSpeedTokS === 'number' ? `${model.avgSpeedTokS.toFixed(1)} tok/s` : '--';
-      return `<div class="model-stat">
-        <div class="model-stat-head">
-          <strong>${escapeHtml(model.model)}</strong>
-          <span class="muted">${model.recordedCount}/${model.requestCount} 次请求</span>
-        </div>
-        <div class="model-stat-metrics">
-          <div class="usage-total">${formatTokens(model.totalTokens)} <small>tok</small></div>
-          <span class="muted" title="${model.speedSamples ?? 0} 个有效速度样本">${speedStr}</span>
-        </div>
-        <div class="stats-note">入 ${formatTokens(model.inputTokens)} · 读 ${formatTokens(model.cacheReadTokens)} · 出 ${formatTokens(model.outputTokens)} · 命中 ${typeof pct === 'number' ? `${pct.toFixed(1)}%` : '--'}</div>
-      </div>`;
-    }).join('') || '<div class="stats-note">暂无模型用量记录</div>'}`;
+  const models = [...(snap.modelUsage || [])].sort((a, b) => (b.totalTokens ?? -1) - (a.totalTokens ?? -1));
+  const warnTokS = typeof snap.config?.lowSpeedWarnTokS === 'number' ? snap.config.lowSpeedWarnTokS : 50;
+  const modelSum = models.reduce((acc, m) => acc + Math.max(0, m.totalTokens ?? 0), 0);
+  const totalPool = typeof usage?.totalTokens === 'number' && usage.totalTokens > 0 ? usage.totalTokens : modelSum;
+  const modelsTip = '按模型累计总量降序；同一模型的思考档位合并，速度按有效样本的输出总量 / 耗时总量计算。';
+  modelsSection.innerHTML = `<div class="section-title" title="${modelsTip}"><span>按模型统计</span>${
+    models.length > 0 ? `<span class="muted">${models.length} 个模型</span>` : ''
+  }</div>
+    ${models.length > 0
+      ? `<div class="model-list">${models
+          .map((model) => {
+            const pct = model.cacheHitPct;
+            const pctStr = typeof pct === 'number' ? `${pct.toFixed(1)}%` : '--';
+            const speedStr = typeof model.avgSpeedTokS === 'number' ? `${model.avgSpeedTokS.toFixed(1)} tok/s` : '--';
+            const isWarn = typeof model.avgSpeedTokS === 'number' && model.avgSpeedTokS < warnTokS;
+            const reqStr =
+              typeof model.recordedCount === 'number' && typeof model.requestCount === 'number' && model.recordedCount < model.requestCount
+                ? `${model.recordedCount}/${model.requestCount} 次`
+                : `${model.requestCount ?? 0} 次`;
+            const sharePct =
+              models.length > 1 && totalPool > 0 && typeof model.totalTokens === 'number' && model.totalTokens >= 0
+                ? Math.min(100, Math.max(0, (model.totalTokens / totalPool) * 100))
+                : null;
+            const metaStr = sharePct !== null ? `${reqStr} · ${Math.round(sharePct)}%` : reqStr;
+            const kvItem = (label: string, val: number | null | undefined) =>
+              `<span class="model-kv-item" title="${escapeHtml(`${label} ${formatExactTokens(val)}`)}"><span class="muted">${label}</span><strong>${formatTokens(val)}</strong></span>`;
+            return `<div class="model-card">
+              <div class="model-head">
+                <strong class="model-name" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</strong>
+                <span class="model-meta">${escapeHtml(metaStr)}</span>
+              </div>
+              <div class="model-metrics">
+                <div class="model-total" title="总计 ${escapeHtml(formatExactTokens(model.totalTokens))}">${formatTokens(model.totalTokens)} <small>tok</small></div>
+                <div class="model-tags">
+                  <span class="model-speed${isWarn ? ' warn' : ''}" title="${model.speedSamples ?? 0} 个有效速度样本">${speedStr}</span>
+                  <span class="model-hit" title="该模型缓存命中率">命中 ${pctStr}</span>
+                </div>
+              </div>
+              ${sharePct !== null ? `<div class="model-share-track"><div class="model-share-fill" style="width:${sharePct.toFixed(1)}%"></div></div>` : ''}
+              <div class="model-kv">
+                ${kvItem('读', model.cacheReadTokens)}
+                ${kvItem('入', model.inputTokens)}
+                ${kvItem('出', model.outputTokens)}
+              </div>
+            </div>`;
+          })
+          .join('')}</div>`
+      : '<div class="stats-note">暂无模型用量记录</div>'}`;
 }
 
 function renderSnapshot(snap: StatusSnapshot): void {
@@ -677,9 +906,16 @@ function renderSnapshot(snap: StatusSnapshot): void {
     metaStrip.innerHTML = '';
     cardsEl.innerHTML = '';
     historySection.style.display = 'none';
-    if (snap.disabled) {
+    const isDisabled = Boolean(snap.disabled) || snap.config?.enabled === false;
+    if (isDisabled) {
       tabBar.style.display = 'none';
       tabPanels.forEach((p) => { p.style.display = 'none'; });
+    } else {
+      tabBar.style.display = 'grid';
+      tabPanels.forEach((p) => { p.style.display = ''; });
+      if (typeof setActiveTab === 'function' && typeof activeTab === 'string') {
+        setActiveTab(activeTab);
+      }
     }
     emptyBox.style.display = 'block';
     emptyBox.textContent = snap.message || '暂未发现本地 Antigravity 桌面端会话记录。';
@@ -694,19 +930,31 @@ function renderSnapshot(snap: StatusSnapshot): void {
 
   const metaParts: string[] = [];
   if (snap.workspaceName) metaParts.push(snap.workspaceName);
-  if (snap.modelName) metaParts.push(snap.modelName);
+  const lastGenModel = snap.modelName || '';
+  const turnModel = typeof snap.turnModel === 'string' ? snap.turnModel.trim() : '';
+  if (lastGenModel && turnModel && turnModel !== lastGenModel) {
+    // The turn already runs on another model while the numbers on screen still
+    // belong to the last completed generation. Say both, in order.
+    metaParts.push(`${lastGenModel} → ${turnModel}`);
+  } else if (lastGenModel) {
+    metaParts.push(lastGenModel);
+  } else if (turnModel) {
+    metaParts.push(turnModel);
+  }
   if (typeof snap.turnCount === 'number' && snap.turnCount > 0) {
     metaParts.push(`${snap.turnCount} 轮`);
   }
   const live = snap.live;
-  const liveActive = Boolean(live?.active);
   const session = snap.session || null;
   // The backend already resolved the state and its reason; the panel must not
   // re-derive thresholds locally or the two will drift apart.
-  const stateKey: SessionState =
-    session && (['idle', 'running', 'waiting', 'error'] as string[]).includes(session.state)
-      ? session.state
-      : 'idle';
+  const hasSessionState = Boolean(session) &&
+    (['idle', 'running', 'waiting', 'error'] as string[]).includes(session!.state);
+  const stateKey: SessionState = hasSessionState ? (session!.state as SessionState) : 'idle';
+  // `modules.session: false` only hides the session capsule. A live stream
+  // still gets its realtime card and keeps polling once per second; idle and
+  // error states still suppress an invalid live row.
+  const liveActive = Boolean(live?.active) && (!hasSessionState || (stateKey !== 'idle' && stateKey !== 'error'));
   const waitText =
     session && typeof session.waitSec === 'number' && session.waitSec >= 1
       ? formatDuration(session.waitSec)
@@ -735,17 +983,44 @@ function renderSnapshot(snap: StatusSnapshot): void {
   ].filter(Boolean).join(' · ');
   metaStrip.innerHTML = `<div class="meta-main" title="${escapeHtml(metaTip)}">${statusBadge}<span class="meta-text">${escapeHtml(metaParts.join(' · ') || '活跃会话')}</span></div>${updatedHtml}`;
 
-  const speedText =
-    snap.lastAvgSpeed !== null && snap.lastAvgSpeed !== undefined
-      ? `${snap.lastAvgSpeed.toFixed(1)} tok/s`
-      : '--';
+  const hasLastGenSpeed = typeof snap.lastGenSpeed === 'number';
+  const hasAvgSpeed = typeof snap.lastAvgSpeed === 'number';
+  // The average comes from the last completed generations. After a model
+  // switch those belong to the previous model, so name it instead of calling
+  // it the current model's speed.
+  const speedModel = typeof snap.lastAvgSpeedModel === 'string' ? snap.lastAvgSpeedModel.trim() : '';
+  const displaySpeed = hasLastGenSpeed
+    ? (snap.lastGenSpeed as number)
+    : hasAvgSpeed
+      ? (snap.lastAvgSpeed as number)
+      : null;
+  const speedText = displaySpeed !== null ? `${displaySpeed.toFixed(1)} tok/s` : '--';
+  const isLowSpeed = displaySpeed !== null ? displaySpeed < warnTokS : Boolean(snap.lowSpeedWarning);
   const genDurText = formatDuration(snap.lastGenDurationSec);
   const outTokText = formatTokens(snap.outputTokens);
+  const speedRightLabel = isLowSpeed
+    ? '<span>偏慢</span>'
+    : hasLastGenSpeed && hasAvgSpeed
+      ? `<span>均 ${(snap.lastAvgSpeed as number).toFixed(1)}</span>`
+      : !hasLastGenSpeed && hasAvgSpeed
+        ? '<span>近期均速</span>'
+        : '';
+  const speedSubText = hasLastGenSpeed
+    ? `${outTokText} · ${genDurText}`
+    : hasAvgSpeed
+      ? speedModel
+        ? `${speedModel} 均速`
+        : '近期均速'
+      : `${outTokText} · ${genDurText}`;
+  const ttftTip = typeof snap.lastGenTtftSec === 'number' ? `，首字 ${snap.lastGenTtftSec.toFixed(2)}s` : '';
+  const avgTip = hasAvgSpeed
+    ? `\n${speedModel ? `${speedModel} ` : '最近生成模型 '}近期均速：${(snap.lastAvgSpeed as number).toFixed(1)} tok/s`
+    : '';
   const speedCardTip = `最近一次生成：输出 ${formatExactTokens(snap.outputTokens)}，生成耗时 ${
     snap.lastGenDurationSec !== null && snap.lastGenDurationSec !== undefined
       ? `${snap.lastGenDurationSec.toFixed(2)}s`
       : '--'
-  }`;
+  }${ttftTip}${avgTip}`;
 
   // While the agent is replying, the DB row for the in-flight step grows with
   // the streamed text; show that instead of the previous turn's average.
@@ -774,13 +1049,13 @@ function renderSnapshot(snap: StatusSnapshot): void {
       <div class="card-value">${escapeHtml(liveSpeedText)}</div>
       <div class="card-sub">${escapeHtml(liveSubParts.join(' · ') || '正在接收输出…')}</div>
     </div>`
-    : `<div class="card ${snap.lowSpeedWarning ? 'warn' : ''}" title="${escapeHtml(speedCardTip)}">
+    : `<div class="card ${isLowSpeed ? 'warn' : ''}" title="${escapeHtml(speedCardTip)}">
       <div class="card-label">
         <span>输出速度</span>
-        ${snap.lowSpeedWarning ? '<span>偏慢</span>' : ''}
+        ${speedRightLabel}
       </div>
       <div class="card-value">${escapeHtml(speedText)}</div>
-      <div class="card-sub">${escapeHtml(outTokText)} · ${escapeHtml(genDurText)}</div>
+      <div class="card-sub">${escapeHtml(speedSubText)}</div>
     </div>`;
 
   const turnDurText = formatDuration(snap.turnDurationSec);
@@ -869,7 +1144,8 @@ function renderSnapshot(snap: StatusSnapshot): void {
         const s = item.speedTokS ?? 0;
         const hPct = Math.max(12, Math.round((s / maxSpeed) * 100));
         const warnCls = item.speedTokS !== null && item.speedTokS < warnTokS ? 'warn' : '';
-        const tip = `#${item.idx} · ${item.speedTokS !== null ? `${item.speedTokS.toFixed(1)} tok/s` : '--'} · 输出 ${formatExactTokens(item.outputTokens)} · 耗时 ${formatDuration(item.durationSec)}`;
+        const ttftSuffix = typeof item.ttftSec === 'number' ? ` · 首字 ${item.ttftSec.toFixed(2)}s` : '';
+        const tip = `#${item.idx} · ${item.speedTokS !== null ? `${item.speedTokS.toFixed(1)} tok/s` : '--'} · 输出 ${formatExactTokens(item.outputTokens)} · 耗时 ${formatDuration(item.durationSec)}${ttftSuffix}`;
         return `
           <div class="spark-col" data-idx="${item.idx}" title="${escapeHtml(tip)}">
             <div class="spark-bar ${warnCls}" style="height:${hPct}%"></div>
@@ -885,7 +1161,7 @@ function renderSnapshot(snap: StatusSnapshot): void {
         return `
           <div class="history-row" data-idx="${item.idx}">
             <span class="muted">#${item.idx}</span>
-            <span class="muted">${escapeHtml(item.model || snap.modelName || '')}</span>
+            <span class="muted">${escapeHtml(item.model || '未知模型')}</span>
             <span class="speed-badge ${isWarn ? 'warn' : ''}">${item.speedTokS !== null ? `${item.speedTokS.toFixed(1)} tok/s` : '--'}</span>
             <span class="muted">${formatTokens(item.outputTokens)} / ${formatDuration(item.durationSec)}</span>
           </div>
@@ -1121,57 +1397,138 @@ function renderSourcesNote(snap: StatusSnapshot): void {
   node.title = notes.map((note) => note.text).join('\n');
 }
 
-async function fetchSidecarSnapshot(convId: string): Promise<StatusSnapshot | null> {
+async function fetchSidecarSnapshot(convId: string, signal?: AbortSignal): Promise<StatusSnapshot | null> {
   const f = window.sidecar?.fetch ? window.sidecar.fetch.bind(window.sidecar) : fetch;
   const qs = convId ? `?conversationId=${encodeURIComponent(convId)}` : '';
-  const res = await f(`/api/status${qs}`, { method: 'GET' });
-  if (!res.ok) return null;
-  return (await res.json()) as StatusSnapshot;
+  const timeoutMs = typeof REQUEST_TIMEOUT_MS === 'number' ? REQUEST_TIMEOUT_MS : 8000;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const onAbort = () => controller?.abort();
+  if (signal && controller) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  }
+  let timer: number | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    if (typeof setTimeout === 'function') {
+      timer = setTimeout(() => {
+        controller?.abort();
+        reject(new Error('request timeout'));
+      }, timeoutMs) as unknown as number;
+    }
+  });
+  try {
+    const reqOptions: RequestInit = controller ? { method: 'GET', signal: controller.signal } : { method: 'GET' };
+    const fetchAndParse = (async () => {
+      const res = await f(`/api/status${qs}`, reqOptions);
+      if (!res.ok) return null;
+      return (await res.json()) as StatusSnapshot;
+    })();
+    fetchAndParse.catch(() => undefined);
+    return await (typeof setTimeout === 'function' ? Promise.race([fetchAndParse, timeoutPromise]) : fetchAndParse);
+  } finally {
+    if (timer !== undefined && typeof clearTimeout === 'function') {
+      clearTimeout(timer);
+    }
+    if (signal && controller) {
+      signal.removeEventListener('abort', onAbort);
+    }
+  }
 }
 
 /**
  * A sidecar can be restarted or wedged while the panel keeps its last numbers on
  * screen. Saying "no response" is better than looking live and lying.
  */
-function markBackendUnresponsive(): void {
+function markBackendUnresponsive(label = ''): void {
+  const attr = label ? ` · ${escapeHtml(label)}` : '';
   consecutiveFailures += 1;
-  if (lastSuccessAt === 0 || consecutiveFailures < 2) return;
+  if (lastSuccessAt === 0) {
+    const now = Date.now();
+    if (typeof firstFailureAt === 'number' && firstFailureAt === 0) {
+      firstFailureAt = now;
+    }
+    if (consecutiveFailures < 2) return;
+    const startAt = typeof firstFailureAt === 'number' && firstFailureAt > 0 ? firstFailureAt : now;
+    const silentMs = Math.max(0, now - startAt);
+    const durSuffix = silentMs >= 1000 ? ` · ${escapeHtml(formatDuration(silentMs / 1000))}` : '';
+    metaStrip.innerHTML = `<div class="meta-main"><span class="state-chip is-error is-offline" title="侧车后台启动后持续无响应，暂无法加载数据${label ? `（会话 ${escapeHtml(label)}）` : ''}"><i class="state-dot"></i>后台无响应${attr}${durSuffix}</span></div>`;
+    if (typeof emptyBox !== 'undefined' && emptyBox && (typeof lastSnapshot === 'undefined' || !lastSnapshot)) {
+      emptyBox.style.display = 'block';
+      emptyBox.textContent = label
+        ? `无法读取会话 ${label}：侧车后台无响应，正在重试…`
+        : '侧车后台无响应，正在重试…';
+    }
+    return;
+  }
+  if (consecutiveFailures < 2) return;
   const silentMs = Date.now() - lastSuccessAt;
   const loudAfter = Math.max(6000, 3 * Math.max(1, refreshIntervalSec) * 1000);
   if (silentMs < loudAfter) return;
   metaStrip.innerHTML = `<div class="meta-main"><span class="state-chip is-error is-offline" title="侧车后台已经 ${Math.round(
     silentMs / 1000,
-  )}s 没有响应，屏幕上的数字是最后一次成功读取的值"><i class="state-dot"></i>后台无响应 · ${escapeHtml(
+  )}s 没有响应，屏幕上的数字是最后一次成功读取的值${label ? `（会话 ${escapeHtml(label)}）` : ''}"><i class="state-dot"></i>后台无响应${attr} · ${escapeHtml(
     formatDuration(silentMs / 1000),
   )}</span></div>`;
 }
 
-async function refreshSnapshot(): Promise<void> {
-  if (inFlight) return;
-  inFlight = true;
+async function refreshSnapshot(force = false): Promise<void> {
+  if (!force && inFlightSeq !== null) return;
+  if (force && activeRefreshController) {
+    activeRefreshController.abort();
+  }
+  const seq = ++refreshSeq;
+  inFlightSeq = seq;
+  const startSettingsEpoch = typeof settingsEpoch === 'number' ? settingsEpoch : 0;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  activeRefreshController = controller;
   try {
-    const targetId =
-      selectedConversation && selectedConversation !== 'auto'
-        ? selectedConversation
-        : getPaneConversationId() || 'auto';
-    const snap = await fetchSidecarSnapshot(targetId);
+    const manualTarget = Boolean(selectedConversation) && selectedConversation !== 'auto';
+    const targetId = manualTarget
+      ? selectedConversation
+      : getPaneConversationId() || 'auto';
+    // A failure while a manually chosen conversation has not loaded yet belongs
+    // to that conversation, not to whatever was on screen before.
+    const failureLabel = manualTarget ? selectedConversationText() : '';
+    const snap = await fetchSidecarSnapshot(targetId, controller?.signal);
+    if (seq !== refreshSeq) return;
     if (snap) {
-      lastSnapshot = snap;
+      switchingConversation = false;
       lastSuccessAt = Date.now();
+      firstFailureAt = 0;
       consecutiveFailures = 0;
-      renderSnapshot(snap);
-      applyPanelConfig(snap.config);
-      renderStateNote(snap);
-      renderSourcesNote(snap);
+      const staleConfig = settingsSaving || (typeof settingsEpoch === 'number' && settingsEpoch !== startSettingsEpoch);
+      const effectiveSnap =
+        staleConfig && latestSavedConfig ? { ...snap, config: latestSavedConfig } : snap;
+      lastSnapshot = effectiveSnap;
+      renderSnapshot(effectiveSnap);
+      if (!staleConfig) {
+        applyPanelConfig(snap.config);
+      }
+      renderStateNote(effectiveSnap);
+      renderSourcesNote(effectiveSnap);
+    } else if (switchingConversation && failureLabel) {
+      renderConversationFailure();
     } else {
-      markBackendUnresponsive();
+      markBackendUnresponsive(failureLabel);
     }
   } catch {
     // Keep last rendered state if host aborts an in-flight refresh on close/reload,
     // but surface a backend that stayed silent across several cycles.
-    markBackendUnresponsive();
+    if (seq === refreshSeq) {
+      if (switchingConversation && selectedConversation !== 'auto') {
+        renderConversationFailure();
+      } else {
+        markBackendUnresponsive(selectedConversation !== 'auto' ? selectedConversationText() : '');
+      }
+    }
   } finally {
-    inFlight = false;
+    if (inFlightSeq === seq) {
+      inFlightSeq = null;
+      activeRefreshController = null;
+    }
   }
 }
 
@@ -1188,8 +1545,15 @@ function nextPollDelay(): number {
   if (document.hidden) return 0;
   const base = refreshIntervalSec * 1000;
   // While the agent is streaming, poll faster so the live numbers move.
-  if (lastSnapshot?.live?.active) {
+  const liveStreaming =
+    Boolean(lastSnapshot?.live?.active) &&
+    lastSnapshot?.session?.state !== 'idle' &&
+    lastSnapshot?.session?.state !== 'error';
+  if (liveStreaming) {
     return Math.min(base, LIVE_POLL_MS);
+  }
+  if (!lastSnapshot) {
+    return base;
   }
   if (msSinceLastActivity() / 1000 < IDLE_AFTER_SEC) {
     return base;
@@ -1206,26 +1570,40 @@ function resetTimer(): void {
   if (delay <= 0) return;
   timerId = window.setTimeout(() => {
     timerId = null;
-    void refreshSnapshot().then(() => {
+    void refreshSnapshot(true).then(() => {
       resetTimer();
     });
   }, delay);
 }
 
 sessionSelect.addEventListener('change', () => {
-  selectedConversation = sessionSelect.value;
+  const next = sessionSelect.value;
+  const previous = selectedConversation;
+  selectedConversation = next;
+  const picked = next !== 'auto' ? sessionSelect.options[sessionSelect.selectedIndex] : undefined;
+  selectedConversationLabel = picked
+    ? picked.textContent?.replace('（不在最近列表）', '') || ''
+    : '';
   activeHistoryIdx = null;
-  void refreshSnapshot();
+  if (next !== previous) {
+    beginConversationSwitch();
+  }
+  void refreshSnapshot(true);
 });
 
 refreshSelect.addEventListener('change', () => {
   const parsed = Number.parseInt(refreshSelect.value, 10);
-  refreshIntervalSec = ALLOWED_INTERVALS.has(parsed) ? parsed : 3;
+  if (parsed === 0 || (Number.isInteger(parsed) && parsed >= 1 && parsed <= 60)) {
+    ALLOWED_INTERVALS.add(parsed);
+    refreshIntervalSec = parsed;
+  } else {
+    refreshIntervalSec = 3;
+  }
   refreshSelect.value = String(refreshIntervalSec);
   refreshSelect.classList.toggle('active', refreshIntervalSec > 0);
   saveInterval(refreshIntervalSec);
   if (refreshIntervalSec > 0) {
-    void refreshSnapshot();
+    void refreshSnapshot(true);
   }
   resetTimer();
 });
@@ -1246,25 +1624,60 @@ function readClampedNum(el: HTMLInputElement | null, min: number, max: number, f
 function saveSettingsPatch(payload: object): Promise<void> {
   settingsPending += 1;
   settingsSaving = true;
+  if (typeof settingsEpoch === 'number') settingsEpoch += 1;
   settingsQueue = settingsQueue.then(async () => {
     let updated: PanelConfig | undefined;
     if (settingsSaveStatusEl) settingsSaveStatusEl.textContent = '保存中…';
+    const timeoutMs = typeof REQUEST_TIMEOUT_MS === 'number' ? REQUEST_TIMEOUT_MS : 8000;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    let timer: number | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      if (typeof setTimeout === 'function') {
+        timer = setTimeout(() => {
+          controller?.abort();
+          reject(new Error('save timeout'));
+        }, timeoutMs) as unknown as number;
+      }
+    });
     try {
       const f = window.sidecar?.fetch ? window.sidecar.fetch.bind(window.sidecar) : fetch;
-      const res = await f('/api/settings', {
+      const reqOptions: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error('save failed');
-      updated = (await res.json()) as PanelConfig;
+        ...(controller ? { signal: controller.signal } : {}),
+      };
+      const sendAndParse = (async () => {
+        const res = await f('/api/settings', reqOptions);
+        if (!res.ok) throw new Error('save failed');
+        return (await res.json()) as PanelConfig;
+      })();
+      sendAndParse.catch(() => undefined);
+      updated = await (typeof setTimeout === 'function' ? Promise.race([sendAndParse, timeoutPromise]) : sendAndParse);
       if (settingsSaveStatusEl) settingsSaveStatusEl.textContent = '已保存';
     } catch {
       if (settingsSaveStatusEl) settingsSaveStatusEl.textContent = '保存失败';
     } finally {
+      if (timer !== undefined && typeof clearTimeout === 'function') {
+        clearTimeout(timer);
+      }
       settingsPending -= 1;
       settingsSaving = settingsPending > 0;
-      if (!settingsSaving && updated) applyPanelConfig(updated);
+      // Remember every success immediately: if the next save fails, the page
+      // must fall back to the last configuration that really was written, not
+      // to the stale one an earlier GET brought back.
+      if (updated) {
+        if (typeof settingsEpoch === 'number') settingsEpoch += 1;
+        latestSavedConfig = updated;
+      }
+      if (!settingsSaving && latestSavedConfig) {
+        applyPanelConfig(latestSavedConfig);
+        if (lastSnapshot) {
+          lastSnapshot = { ...lastSnapshot, config: latestSavedConfig };
+          if (typeof renderStateNote === 'function') renderStateNote(lastSnapshot);
+          if (typeof renderSourcesNote === 'function') renderSourcesNote(lastSnapshot);
+        }
+      }
     }
   });
   return settingsQueue;
@@ -1305,7 +1718,7 @@ async function boot(): Promise<void> {
       }
       return;
     }
-    void refreshSnapshot().then(() => {
+    void refreshSnapshot(true).then(() => {
       resetTimer();
     });
   });
