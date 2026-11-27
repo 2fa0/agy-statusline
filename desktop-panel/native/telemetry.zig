@@ -749,6 +749,9 @@ const LiveSlot = struct {
     stop_at: ?f64 = null,
     stop_step: ?i64 = null,
     stop_chars: ?i64 = null,
+    /// The active row the baseline belongs to. A different active row cannot be
+    /// the one the Stop ended, so it is a new stream even if it is shorter.
+    stop_row: ?i64 = null,
     last_used: f64 = 0,
 };
 
@@ -858,15 +861,21 @@ pub const Runtime = struct {
     /// was live when it arrived; anything newer — a fresh step index, a live
     /// row above that step, or database writes well after the event — is a new
     /// round, even when no PreInvocation was delivered for it.
-    fn stopScope(self: *Runtime, id: []const u8, db: *const DbResult, hook_at: ?f64, now: f64) StopScope {
+    fn stopScope(self: *Runtime, id: []const u8, db: *const DbResult, hook_at: ?f64, last_user: ?f64, now: f64) StopScope {
         const at = hook_at orelse return .{};
         const slot = self.getOrAllocLiveSlot(id, now);
         if (slot.stop_at == null or slot.stop_at.? != at) {
             slot.stop_at = at;
             slot.stop_step = slot.step;
             slot.stop_chars = if (db.live) db.chars else null;
+            slot.stop_row = if (db.live) db.live_idx else null;
         }
-        if (slot.stop_chars == null and db.live) slot.stop_chars = db.chars;
+        // The Stop can land while nothing is active; adopt the first row seen
+        // afterwards as the baseline row.
+        if (slot.stop_row == null and db.live) {
+            slot.stop_row = db.live_idx;
+            slot.stop_chars = db.chars;
+        }
         // Only the *active* row decides whether a new round started. A finished
         // step above it ended before the Stop and must not be mistaken for new
         // activity (that is what resurrected the stream).
@@ -875,12 +884,27 @@ pub const Runtime = struct {
             // a new round. The stopped step itself has ended, even if a late
             // write lands afterwards.
             (db.live_idx orelse stopped) > stopped
-        else
-            // Cold start: no step history. Believe the row only when its text
-            // grew after we first looked at it — a leftover never does. No
-            // clock/mtime heuristics: those resurrected residue after a WAL
-            // checkpoint touched the file.
-            slot.stop_chars != null and (db.chars orelse 0) > slot.stop_chars.?;
+        else blk: {
+            // Cold start: no step history, but the baseline remembers which row
+            // it belongs to. A different active row is a new stream even when it
+            // is shorter than the stopped one — that is exactly what the index
+            // comparison does on the warm path.
+            if (slot.stop_row) |row| {
+                if (db.live_idx) |idx| {
+                    if (idx != row) break :blk true;
+                }
+            }
+            if (last_user) |user_at| {
+                // Same row: the transcript knows when the user last wrote
+                // something. A Stop with no later USER_INPUT means no new round,
+                // so an active row is leftover — this also covers the final
+                // flush AGY writes a few seconds after the Stop.
+                break :blk user_at > at;
+            }
+            // No usable log evidence: only text that grew after we first looked
+            // at the row proves a new stream. A leftover never grows by itself.
+            break :blk slot.stop_chars != null and (db.chars orelse 0) > slot.stop_chars.?;
+        };
         return .{ .covers_live = !newer_live, .current = !newer_live };
     }
     fn database(self: *Runtime, id: []const u8, path: []const u8, a: A) !DbResult {
@@ -1502,7 +1526,8 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     // What expires after `stop_ttl_sec` is the chip, not the verdict: if the
     // database and its active row did not change since the Stop, the row is
     // still finished and must not come back as a live stream.
-    const stop_scope = if (is_stop) runtime.stopScope(id, &db, hook_at, now) else StopScope{};
+    const last_user = if (has_log) tracker.user else null;
+    const stop_scope = if (is_stop) runtime.stopScope(id, &db, hook_at, last_user, now) else StopScope{};
     const stop_suppressed = is_stop and stop_scope.covers_live;
     // Sample growth for every live row, including a stopped or behind row: both
     // the residue guard and the post-Stop growth escape need to know whether the

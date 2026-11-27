@@ -248,11 +248,16 @@ class DoctorJsonTests(unittest.TestCase):
             shutil.copytree(ROOT / 'desktop-panel', pkg,
                             ignore=shutil.ignore_patterns('node_modules', '__pycache__'))
             self.assertFalse((base / 'install.sh').exists())
-            # CI packages the native binaries under bin/<platform>/ only.
-            (pkg / 'sidecars/status/agy-desktop-backend').unlink()
+            # CI packages the native binaries under bin/<platform>/ only, and a
+            # fresh checkout has no built backend at all (it is gitignored), so
+            # synthesise one that answers --version. The doctor only runs the
+            # binary, never edits the package. The stub must report the manifest
+            # version, otherwise backend.version_match would (correctly) fail.
+            (pkg / 'sidecars/status/agy-desktop-backend').unlink(missing_ok=True)
             packaged = pkg / 'bin' / target / 'agy-desktop-backend'
             packaged.parent.mkdir(parents=True)
-            shutil.copyfile(ROOT / 'desktop-panel/sidecars/status/agy-desktop-backend', packaged)
+            packaged.write_text('#!/bin/sh\necho "agy-desktop-backend %s"\n'
+                                % (ROOT / 'VERSION').read_text().strip())
             packaged.chmod(0o755)
             home = base / 'home'
             home.mkdir()
@@ -292,15 +297,23 @@ class DoctorJsonTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
 
             # ... and an unreadable one must not abort the script before output.
-            manifest = plugin / 'plugin.json'
-            manifest.write_text('{"version": "%s"}' % (ROOT / 'VERSION').read_text().strip())
-            manifest.chmod(0o000)
-            try:
+            # (chmod 000 does not block root, so only assert when it can fail.)
+            if not (hasattr(os, 'geteuid') and os.geteuid() == 0):
+                manifest = plugin / 'plugin.json'
+                manifest.write_text('{"version": "%s"}' % (ROOT / 'VERSION').read_text().strip())
+                manifest.chmod(0o000)
+                try:
+                    proc, data = doctor()
+                finally:
+                    manifest.chmod(0o644)
+                self.assertIn('manifest_invalid', data['codes'])
+                self.assertNotEqual(proc.returncode, 0)
+
+                # A manifest without a version is just as unusable.
+                manifest.write_text('{"name": "agy-desktop-status"}')
                 proc, data = doctor()
-            finally:
-                manifest.chmod(0o644)
-            self.assertIn('manifest_invalid', data['codes'])
-            self.assertNotEqual(proc.returncode, 0)
+                self.assertIn('manifest_invalid', data['codes'])
+                self.assertNotEqual(proc.returncode, 0)
 
 
 if __name__ == '__main__':

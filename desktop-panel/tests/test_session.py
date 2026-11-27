@@ -45,6 +45,9 @@ class PanelFixture(unittest.TestCase):
         self.config_path = self.root / CONFIG
         self.env = dict(
             os.environ,
+            # Without this every status/hook call would launch a real macOS notch
+            # bound to this throwaway data dir, and it would outlive the test.
+            AGY_NO_NOTCH='1',
             AGY_STATUSLINE_QUOTA_FILE=str(self.root / 'quota.json'),
             AGY_STATUSLINE_SETTINGS=str(self.config_path),
         )
@@ -451,7 +454,7 @@ class SessionTests(PanelFixture):
         # The chip may expire after stop_ttl_sec, but an unchanged active row
         # must not reappear as a live stream just because the badge timed out.
         self.database()
-        self.transcript()
+        self.transcript([{'type': 'USER_INPUT', 'created_at': iso(600)}])
         self.live_step('残留的最终文本', idx=1, status=8)
         old = time.time() - 300
         os.utime(self.db_path, (old, old))
@@ -535,7 +538,7 @@ class SessionTests(PanelFixture):
         # A WAL checkpoint or final flush can bump the file mtime long after the
         # Stop; a cold start must still read the leftover row as finished.
         self.database()
-        self.transcript()
+        self.transcript([{'type': 'USER_INPUT', 'created_at': iso(600)}])
         self.hooks('Stop', age=5, termination='USER_CANCELLED')
         self.live_step('残留文本', idx=1, status=8)
         os.utime(self.db_path, None)
@@ -547,12 +550,40 @@ class SessionTests(PanelFixture):
         os.utime(self.db_path, None)
         self.assertFalse(self.snapshot()['live']['active'])
 
-    def test_cold_start_stop_yields_to_observed_growth(self):
-        # Without step history a live row is only believed once its text grows
-        # after the panel starts watching; residue never does.
+    def test_late_flush_after_a_cold_start_stays_hidden(self):
+        # The panel starts a couple of seconds after the Stop; AGY writes its
+        # final flush afterwards. That is text growth without a user turn, so it
+        # must not be sold as a new stream.
         self.config(thresholds={'stallSec': 30})
         self.database()
-        self.transcript()
+        self.transcript([{'type': 'USER_INPUT', 'created_at': iso(600)}])
+        self.live_step('残留文本', idx=1, status=8)
+        self.hooks('Stop', age=3, termination='USER_CANCELLED')
+        proc = self.worker()
+        self.assertFalse(self.query(proc)['live']['active'])
+        self.db.execute('UPDATE steps SET step_payload=? WHERE idx=1', (payload('残留文本，收尾写入'),))
+        self.db.commit()
+        after = self.query(proc)
+        self.assertFalse(after['live']['active'])
+        self.assertNotEqual(after['session']['code'], 'streaming')
+
+    def test_cold_start_stop_yields_to_a_new_user_turn(self):
+        # A user turn logged after the Stop is the one thing that proves a new
+        # round began when the step history is unknown.
+        self.config(thresholds={'stallSec': 30})
+        self.database()
+        self.transcript([{'type': 'USER_INPUT', 'created_at': iso(1)}])
+        self.live_step('新回合的第一段', idx=1, status=8)
+        self.hooks('Stop', age=5, termination='USER_CANCELLED')
+        snap = self.snapshot()
+        self.assertTrue(snap['live']['active'])
+        self.assertEqual(snap['session']['code'], 'streaming')
+
+    def test_cold_start_without_a_log_yields_to_observed_growth(self):
+        # No transcript to consult: only text that grows after the panel starts
+        # watching can prove the row is a stream, and residue never grows.
+        self.config(thresholds={'stallSec': 30})
+        self.database()
         self.live_step('第一段文本', idx=1, status=8)
         self.hooks('Stop', age=5, termination='USER_CANCELLED')
         proc = self.worker()
@@ -561,6 +592,25 @@ class SessionTests(PanelFixture):
         self.db.commit()
         resumed = self.query(proc)
         self.assertTrue(resumed['live']['active'])
+        self.assertEqual(resumed['session']['code'], 'streaming')
+
+
+    def test_cold_start_new_step_is_not_held_back_by_the_stopped_row_length(self):
+        # The stopped row is long; a brand-new (shorter) active row must be read
+        # as a new stream immediately, because a different row cannot be the one
+        # the Stop ended. The baseline remembers which row it belongs to.
+        self.config(thresholds={'stallSec': 30})
+        self.database()
+        self.transcript([{'type': 'USER_INPUT', 'created_at': iso(600)}])
+        self.live_step('残' * 3000, idx=1, status=8)
+        self.hooks('Stop', age=5, termination='USER_CANCELLED')
+        proc = self.worker()
+        self.assertFalse(self.query(proc)['live']['active'])
+        self.db.execute('INSERT INTO steps VALUES(2,2,1,?,?)', (payload('新款回复'), blob(120, 2)))
+        self.db.commit()
+        resumed = self.query(proc)
+        self.assertTrue(resumed['live']['active'])
+        self.assertEqual(resumed['live']['stepIdx'], 2)
         self.assertEqual(resumed['session']['code'], 'streaming')
 
 
