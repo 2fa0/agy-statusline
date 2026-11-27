@@ -105,6 +105,17 @@ fn updateHook(a: A, cfg: telemetry.Config, item: V) !void {
         try c.put(a, &next, key, value);
     }
     try c.put(a, &next, "lastEvent", if (event.len > 0) c.s(event) else c.get(prev, "lastEvent"));
+    const item_kind = c.str(c.get(item, "clientKind"));
+    const prev_kind = c.str(c.get(prev, "clientKind"));
+    const inferred_kind = if (item_kind.len > 0)
+        item_kind
+    else if (prev_kind.len > 0)
+        prev_kind
+    else if (std.mem.indexOf(u8, cfg.data, "antigravity-cli") != null or c.eq(std.fs.path.basename(cfg.root), "antigravity-cli"))
+        "cli"
+    else
+        "desktop";
+    try c.put(a, &next, "clientKind", c.s(inferred_kind));
     try c.put(a, &sessions, try a.dupe(u8, id), next);
     while (sessions.object.count() > 30) {
         var oldest: ?[]const u8 = null;
@@ -375,8 +386,9 @@ fn ensureMacOsNotchRunning(a: A, cfg: telemetry.Config, cli: bool) void {
     const notch_bin = c.join(a, &.{ exe_dir, "agy-notch" }) catch return;
     std.fs.cwd().access(notch_bin, .{ .mode = .read_only }) catch return;
 
-    std.fs.cwd().makePath(cfg.data) catch {};
-    const lock_path = c.join(a, &.{ cfg.data, "agy-notch.lock" }) catch return;
+    const lock_dir = std.fs.path.dirname(cfg.settings) orelse cfg.data;
+    std.fs.cwd().makePath(lock_dir) catch {};
+    const lock_path = c.join(a, &.{ lock_dir, "agy-notch.lock" }) catch return;
     const lock_file = std.fs.cwd().createFile(lock_path, .{ .read = true, .truncate = false }) catch null;
     if (lock_file) |lf| {
         const locked = std.posix.flock(lf.handle, std.posix.LOCK.EX | std.posix.LOCK.NB);
@@ -391,7 +403,7 @@ fn ensureMacOsNotchRunning(a: A, cfg: telemetry.Config, cli: bool) void {
     }
 
     var args = std.ArrayList([]const u8).init(a);
-    args.appendSlice(&.{ notch_bin, "--backend", self_exe, "--data-dir", cfg.data, "--desktop-root", cfg.root }) catch return;
+    args.appendSlice(&.{ notch_bin, "--backend", self_exe, "--data-dir", cfg.data, "--desktop-root", cfg.root, "--lock-file", lock_path }) catch return;
     const tracked = c.readJson(a, c.join(a, &.{ cfg.data, "active_session.json" }) catch return);
     if (cli or c.eq(c.str(c.get(tracked, "clientKind")), "cli")) args.append("--cli") catch return;
     var child = std.process.Child.init(args.items, a);

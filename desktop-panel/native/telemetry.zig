@@ -996,10 +996,112 @@ fn span(end: ?f64, start: ?f64) ?f64 {
     return @max(0, end.? - start.?);
 }
 const Recent = struct { id: [36]u8, at: i128 };
-fn transcriptPath(a: A, root: []const u8, meta: V, id: []const u8) ![]const u8 {
+fn peerRoot(a: A, root: []const u8) !?[]const u8 {
+    const base = std.fs.path.basename(root);
+    const parent = std.fs.path.dirname(root) orelse return null;
+    if (c.eq(base, "antigravity")) return try c.join(a, &.{ parent, "antigravity-cli" });
+    if (c.eq(base, "antigravity-cli")) return try c.join(a, &.{ parent, "antigravity" });
+    return null;
+}
+const PeerDataInfo = struct {
+    primary_kind: []const u8,
+    peer_path: []const u8,
+    peer_kind: []const u8,
+};
+fn peerDataInfo(a: A, data: []const u8) !?PeerDataInfo {
+    if (!c.eq(std.fs.path.basename(data), "agy-desktop-status")) return null;
+    const plugin_data = std.fs.path.dirname(data) orelse return null;
+    if (!c.eq(std.fs.path.basename(plugin_data), "plugin_data")) return null;
+    const root_dir = std.fs.path.dirname(plugin_data) orelse return null;
+    const parent = std.fs.path.dirname(root_dir) orelse return null;
+    const base = std.fs.path.basename(root_dir);
+    if (c.eq(base, "antigravity")) {
+        return .{
+            .primary_kind = "desktop",
+            .peer_path = try c.join(a, &.{ parent, "antigravity-cli", "plugin_data", "agy-desktop-status" }),
+            .peer_kind = "cli",
+        };
+    }
+    if (c.eq(base, "antigravity-cli")) {
+        return .{
+            .primary_kind = "cli",
+            .peer_path = try c.join(a, &.{ parent, "antigravity", "plugin_data", "agy-desktop-status" }),
+            .peer_kind = "desktop",
+        };
+    }
+    return null;
+}
+fn sessionClientKind(meta: V, fallback: []const u8) []const u8 {
+    const own = c.str(c.get(meta, "clientKind"));
+    if (own.len > 0) return own;
+    return fallback;
+}
+fn withDefaultClientKind(a: A, entry: V, default_kind: []const u8) !V {
+    if (entry != .object) return entry;
+    if (c.str(c.get(entry, "clientKind")).len > 0 or default_kind.len == 0) return entry;
+    var copy = c.object(a);
+    for (entry.object.keys(), entry.object.values()) |k, v| {
+        try c.put(a, &copy, k, v);
+    }
+    try c.put(a, &copy, "clientKind", c.s(default_kind));
+    return copy;
+}
+fn loadMergedHooks(a: A, cfg: Config) !V {
+    const primary = c.readJson(a, try c.join(a, &.{ cfg.data, "active_session.json" }));
+    const info = (try peerDataInfo(a, cfg.data)) orelse return primary;
+    const peer = c.readJson(a, try c.join(a, &.{ info.peer_path, "active_session.json" }));
+    if (peer != .object) return primary;
+
+    var sessions = c.object(a);
+    const primary_sessions = c.get(primary, "sessions");
+    if (primary_sessions == .object) {
+        const primary_default = if (c.str(c.get(primary, "clientKind")).len > 0) c.str(c.get(primary, "clientKind")) else info.primary_kind;
+        for (primary_sessions.object.keys(), primary_sessions.object.values()) |sid, val| {
+            try c.put(a, &sessions, sid, try withDefaultClientKind(a, val, primary_default));
+        }
+    }
+    const peer_sessions = c.get(peer, "sessions");
+    if (peer_sessions == .object) {
+        const peer_default = if (c.str(c.get(peer, "clientKind")).len > 0) c.str(c.get(peer, "clientKind")) else info.peer_kind;
+        for (peer_sessions.object.keys(), peer_sessions.object.values()) |sid, val| {
+            const existing = c.get(sessions, sid);
+            const peer_at = c.str(c.get(val, "updatedAt"));
+            const existing_at = c.str(c.get(existing, "updatedAt"));
+            if (existing != .object or std.mem.order(u8, peer_at, existing_at) == .gt) {
+                try c.put(a, &sessions, sid, try withDefaultClientKind(a, val, peer_default));
+            }
+        }
+    }
+
+    const primary_active = c.str(c.get(primary, "activeConversationId"));
+    const peer_active = c.str(c.get(peer, "activeConversationId"));
+    const primary_updated = c.str(c.get(primary, "updatedAt"));
+    const peer_updated = c.str(c.get(peer, "updatedAt"));
+    const primary_ts = c.timestamp(primary_updated) orelse -1;
+    const peer_ts = c.timestamp(peer_updated) orelse -1;
+    const use_peer = c.validId(peer_active) and (!c.validId(primary_active) or peer_ts > primary_ts);
+
+    var merged = c.object(a);
+    try c.put(a, &merged, "activeConversationId", c.s(if (use_peer) peer_active else primary_active));
+    try c.put(a, &merged, "updatedAt", c.s(if (use_peer) peer_updated else primary_updated));
+    try c.put(a, &merged, "sessions", sessions);
+    const chosen_kind = if (use_peer)
+        (if (c.str(c.get(peer, "clientKind")).len > 0) c.str(c.get(peer, "clientKind")) else info.peer_kind)
+    else
+        (if (c.str(c.get(primary, "clientKind")).len > 0) c.str(c.get(primary, "clientKind")) else info.primary_kind);
+    try c.put(a, &merged, "clientKind", c.s(chosen_kind));
+    return merged;
+}
+fn transcriptPath(a: A, root: []const u8, peer_root: ?[]const u8, meta: V, id: []const u8) ![]const u8 {
     const path = c.str(c.get(meta, "transcriptPath"));
     if (path.len > 0 and c.sig(path).exists) return path;
-    return c.join(a, &.{ root, "brain", id, ".system_generated", "logs", "transcript.jsonl" });
+    const primary = try c.join(a, &.{ root, "brain", id, ".system_generated", "logs", "transcript.jsonl" });
+    if (c.sig(primary).exists) return primary;
+    if (peer_root) |pr| {
+        const peer = try c.join(a, &.{ pr, "brain", id, ".system_generated", "logs", "transcript.jsonl" });
+        if (c.sig(peer).exists) return peer;
+    }
+    return primary;
 }
 fn sortRecent(items: []Recent) void {
     std.mem.sort(Recent, items, {}, struct {
@@ -1016,8 +1118,16 @@ fn statDbAt(dir: std.fs.Dir, id: []const u8) ?i128 {
     const wal = dir.statFile(std.fmt.bufPrint(&wal_name, "{s}.db-wal", .{id}) catch "") catch null;
     return @max(st.mtime, if (wal) |w| w.mtime else 0);
 }
-fn recent(a: A, runtime: *Runtime, root: []const u8, hooks: V, now: f64) !V {
-    const dirpath = try c.join(a, &.{ root, "conversations" });
+fn recent(a: A, runtime: *Runtime, root: []const u8, peer_root: ?[]const u8, hooks: V, now: f64) !V {
+    const primary_conv = try c.join(a, &.{ root, "conversations" });
+    const dirpath = blk: {
+        if (c.sig(primary_conv).exists) break :blk primary_conv;
+        if (peer_root) |pr| {
+            const peer_conv = try c.join(a, &.{ pr, "conversations" });
+            if (c.sig(peer_conv).exists) break :blk peer_conv;
+        }
+        break :blk primary_conv;
+    };
     const dir_sig = c.sig(dirpath);
     const need_full_scan = !runtime.recent_cache_valid or !std.meta.eql(dir_sig, runtime.recent_dir_sig) or (now - runtime.recent_scan_at) >= 10.0 or now < runtime.recent_scan_at;
 
@@ -1141,9 +1251,10 @@ fn recent(a: A, runtime: *Runtime, root: []const u8, hooks: V, now: f64) !V {
         try c.put(a, &row, "workspace", c.s(std.fs.path.basename(c.str(c.get(meta, "cwd")))));
         try c.put(a, &row, "updatedAt", if (item.at == 0) c.get(hooks, "updatedAt") else try timeValue(a, @as(f64, @floatFromInt(item.at)) / 1e9));
         try c.put(a, &row, "isActive", c.b(c.eq(id, active)));
-        try c.put(a, &row, "transcriptPath", c.s(try transcriptPath(a, root, meta, id)));
+        try c.put(a, &row, "transcriptPath", c.s(try transcriptPath(a, root, peer_root, meta, id)));
         try c.put(a, &row, "lastEvent", c.s(c.str(c.get(meta, "lastEvent"))));
         try c.put(a, &row, "terminalEnv", c.get(meta, "terminalEnv"));
+        try c.put(a, &row, "clientKind", c.s(sessionClientKind(meta, "")));
         try c.add(&out, row);
     }
     return out;
@@ -1280,11 +1391,12 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
         try c.put(a, &off, "generatedAt", try timeValue(a, now));
         return off;
     }
-    const hooks = c.readJson(a, try c.join(a, &.{ cfg.data, "active_session.json" }));
+    const hooks = try loadMergedHooks(a, cfg);
+    const peer_root = try peerRoot(a, cfg.root);
     const active = c.str(c.get(hooks, "activeConversationId"));
     var id = std.mem.trim(u8, requested, " \t\r\n");
     const include_shared = !runtime.summary_only or runtime.include_shared or id.len == 0 or c.eq(id, "auto");
-    const conversations = if (include_shared) try recent(a, runtime, cfg.root, hooks, now) else c.arr(a);
+    const conversations = if (include_shared) try recent(a, runtime, cfg.root, peer_root, hooks, now) else c.arr(a);
     if (id.len == 0 or c.eq(id, "auto")) id = active;
     if (id.len == 0 and conversations.array.items.len > 0) id = c.str(c.get(conversations.array.items[0], "conversationId"));
     var out = c.object(a);
@@ -1318,9 +1430,18 @@ pub fn snapshot(a: A, runtime: *Runtime, cfg: Config, requested: []const u8) !V 
     }
     const meta = c.get(c.get(hooks, "sessions"), id);
     try c.put(a, &out, "terminalEnv", c.get(meta, "terminalEnv"));
-    const dbpath = try c.join(a, &.{ cfg.root, "conversations", try c.fmt(a, "{s}.db", .{id}) });
+    try c.put(a, &out, "clientKind", c.s(sessionClientKind(meta, c.str(c.get(hooks, "clientKind")))));
+    const dbpath = blk: {
+        const primary_db = try c.join(a, &.{ cfg.root, "conversations", try c.fmt(a, "{s}.db", .{id}) });
+        if (c.sig(primary_db).exists) break :blk primary_db;
+        if (peer_root) |pr| {
+            const peer_db = try c.join(a, &.{ pr, "conversations", try c.fmt(a, "{s}.db", .{id}) });
+            if (c.sig(peer_db).exists) break :blk peer_db;
+        }
+        break :blk primary_db;
+    };
     const db = try runtime.database(id, dbpath, a);
-    const transcript_path = try transcriptPath(a, cfg.root, meta, id);
+    const transcript_path = try transcriptPath(a, cfg.root, peer_root, meta, id);
     try c.put(a, &out, "transcriptPath", c.s(transcript_path));
     var transcript_state: TranscriptState = .ok;
     const tracker = runtime.transcriptFor(transcript_path);

@@ -345,6 +345,9 @@ MainActor.assumeIsolated {
     assert(unknown.bundleId == nil && unknown.appName == nil)
     assert(NotchPaths.dataRoot(for: "/tmp/custom-cli/plugin_data/agy-desktop-status") == "/tmp/custom-cli")
     assert(NotchPaths.dataRoot(for: "/tmp/arbitrary-data") == nil)
+    assert(NotchPaths.peerDataDir(for: "/Users/test/.gemini/antigravity/plugin_data/agy-desktop-status") == "/Users/test/.gemini/antigravity-cli/plugin_data/agy-desktop-status")
+    assert(NotchPaths.peerDataDir(for: "/Users/test/.gemini/antigravity-cli/plugin_data/agy-desktop-status") == "/Users/test/.gemini/antigravity/plugin_data/agy-desktop-status")
+    assert(NotchPaths.peerDataDir(for: "/tmp/custom-cli/plugin_data/agy-desktop-status") == nil)
     let cliStore = NotchStore(backendPath: "/nonexistent", dataDir: "/tmp/custom-cli/plugin_data/agy-desktop-status", demoMode: true, isCLI: true)
     assert(cliStore.isCLI)
     var firstTerminalTask = runningTask

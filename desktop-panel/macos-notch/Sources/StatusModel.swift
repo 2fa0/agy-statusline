@@ -15,6 +15,7 @@ struct ActiveTaskItem: Identifiable, Equatable {
     var isRunning: Bool = true
     var code: String = ""
     var terminalEnvironment: [String: String] = [:]
+    var clientKind: String? = nil
 }
 
 enum NotchPaths {
@@ -23,6 +24,26 @@ enum NotchPaths {
         let parent = data.deletingLastPathComponent()
         guard data.lastPathComponent == "agy-desktop-status", parent.lastPathComponent == "plugin_data" else { return nil }
         return parent.deletingLastPathComponent().path
+    }
+
+    static func peerDataDir(for dataDir: String) -> String? {
+        guard let root = dataRoot(for: dataDir) else { return nil }
+        let rootURL = URL(fileURLWithPath: root).standardizedFileURL
+        let base = rootURL.lastPathComponent
+        let parent = rootURL.deletingLastPathComponent()
+        let peerBase: String
+        if base == "antigravity" {
+            peerBase = "antigravity-cli"
+        } else if base == "antigravity-cli" {
+            peerBase = "antigravity"
+        } else {
+            return nil
+        }
+        return parent
+            .appendingPathComponent(peerBase)
+            .appendingPathComponent("plugin_data")
+            .appendingPathComponent("agy-desktop-status")
+            .path
     }
 }
 
@@ -509,9 +530,8 @@ final class NotchStore: ObservableObject {
     private var timer: Timer?
     private var currentPollInterval: TimeInterval = 0
     private var demoPeekTimer: Timer?
-    private var dirMonitor: DispatchSourceFileSystemObject?
+    private var dirMonitors: [DispatchSourceFileSystemObject] = []
     private var dirDebounceWorkItem: DispatchWorkItem?
-    private var dirFD: Int32 = -1
     private var isFetching = false
     private var lastFetchAt: Date = .distantPast
     private var consecutiveFetchFailures = 0
@@ -558,7 +578,7 @@ final class NotchStore: ObservableObject {
         timer?.invalidate()
         demoPeekTimer?.invalidate()
         dirDebounceWorkItem?.cancel()
-        dirMonitor?.cancel()
+        for monitor in dirMonitors { monitor.cancel() }
         peekDismissWorkItem?.cancel()
         backendClient.close()
     }
@@ -570,8 +590,8 @@ final class NotchStore: ObservableObject {
         demoPeekTimer = nil
         dirDebounceWorkItem?.cancel()
         dirDebounceWorkItem = nil
-        dirMonitor?.cancel()
-        dirMonitor = nil
+        for monitor in dirMonitors { monitor.cancel() }
+        dirMonitors.removeAll()
         peekDismissWorkItem?.cancel()
         peekDismissWorkItem = nil
         backendClient.close()
@@ -712,30 +732,37 @@ final class NotchStore: ObservableObject {
 
     private func watchDataDirectory() {
         try? FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
-        dirFD = open(dataDir, O_EVTONLY)
-        guard dirFD >= 0 else { return }
-
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: dirFD,
-            eventMask: [.write, .rename, .extend],
-            queue: DispatchQueue.global(qos: .utility)
-        )
-        source.setEventHandler { [weak self] in
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isHidden else { return }
-                self.dirDebounceWorkItem?.cancel()
-                let work = DispatchWorkItem { [weak self] in
-                    self?.refreshNow(force: false)
+        var dirs = [dataDir]
+        if let peer = NotchPaths.peerDataDir(for: dataDir),
+           peer != dataDir,
+           FileManager.default.fileExists(atPath: peer) {
+            dirs.append(peer)
+        }
+        for dir in dirs {
+            let fd = open(dir, O_EVTONLY)
+            guard fd >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd,
+                eventMask: [.write, .rename, .extend],
+                queue: DispatchQueue.global(qos: .utility)
+            )
+            source.setEventHandler { [weak self] in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.isHidden else { return }
+                    self.dirDebounceWorkItem?.cancel()
+                    let work = DispatchWorkItem { [weak self] in
+                        self?.refreshNow(force: false)
+                    }
+                    self.dirDebounceWorkItem = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
                 }
-                self.dirDebounceWorkItem = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
             }
+            source.setCancelHandler {
+                close(fd)
+            }
+            source.resume()
+            dirMonitors.append(source)
         }
-        source.setCancelHandler { [fd = dirFD] in
-            if fd >= 0 { close(fd) }
-        }
-        source.resume()
-        dirMonitor = source
     }
 
     func refreshNow(force: Bool) {
@@ -1297,7 +1324,8 @@ final class NotchStore: ObservableObject {
                 contextPct: snap.contextPct,
                 isRunning: snap.isActive,
                 code: snap.code,
-                terminalEnvironment: json["terminalEnv"] as? [String: String] ?? [:]
+                terminalEnvironment: json["terminalEnv"] as? [String: String] ?? [:],
+                clientKind: (json["clientKind"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             )
             recentList.append(primaryItem)
             if snap.isActive {
@@ -1446,7 +1474,8 @@ final class NotchStore: ObservableObject {
                     contextPct: ctx,
                     isRunning: active,
                     code: code,
-                    terminalEnvironment: item["terminalEnv"] as? [String: String] ?? previouslyActiveTasks[cid]?.terminalEnvironment ?? [:]
+                    terminalEnvironment: item["terminalEnv"] as? [String: String] ?? previouslyActiveTasks[cid]?.terminalEnvironment ?? [:],
+                    clientKind: (item["clientKind"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? previouslyActiveTasks[cid]?.clientKind
                 )
                 if active && tasks.count < 4 {
                     tasks.append(taskItem)

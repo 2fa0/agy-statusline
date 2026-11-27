@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var manager: NotchWindowManager!
     private var terminateObserver: NSObjectProtocol?
     private var lifecycleTimer: Timer?
-    private var sawAntigravityRunning = false
+    private var sawHostRunning = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         signal(SIGPIPE, SIG_IGN)
@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         var dataDir = ProcessInfo.processInfo.environment["PLUGIN_DATA"]
             ?? "\(home)/.gemini/antigravity/plugin_data/agy-desktop-status"
+        var lockFilePath: String?
         var demoMode = false
         var isCLI = false
         var dataRoot: String?
@@ -41,11 +42,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else if arg == "--data-dir", idx + 1 < args.count {
                 idx += 1
                 dataDir = args[idx]
+            } else if arg == "--lock-file", idx + 1 < args.count {
+                idx += 1
+                lockFilePath = args[idx]
             }
             idx += 1
         }
 
-        if !demoMode && !acquireSingleInstanceLock(dataDir: dataDir) {
+        let resolvedLockPath: String = {
+            if let explicit = lockFilePath, !explicit.isEmpty { return explicit }
+            if let settingsEnv = ProcessInfo.processInfo.environment["AGY_STATUSLINE_SETTINGS"], !settingsEnv.isEmpty {
+                let dir = URL(fileURLWithPath: settingsEnv).deletingLastPathComponent().path
+                return "\(dir)/agy-notch.lock"
+            }
+            return "\(home)/.gemini/agy-statusline/agy-notch.lock"
+        }()
+
+        if !demoMode && !acquireSingleInstanceLock(lockPath: resolvedLockPath) {
             NSApp.terminate(nil)
             return
         }
@@ -55,8 +68,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MenuActions.shared.store = store
         MenuActions.shared.manager = manager
 
-        if !demoMode && !store.isCLI {
-            startAntigravityLifecycleWatch()
+        if !demoMode {
+            startHostLifecycleWatch()
         }
     }
 
@@ -78,8 +91,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func startAntigravityLifecycleWatch() {
-        sawAntigravityRunning = isAntigravityRunning()
+    private func isCliRunning() -> Bool {
+        let count = proc_listallpids(nil, 0)
+        guard count > 0 else { return false }
+        var pids = [pid_t](repeating: 0, count: Int(count) + 64)
+        let bytes = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.stride))
+        guard bytes > 0 else { return false }
+        let n = Int(bytes) / MemoryLayout<pid_t>.stride
+        var nameBuf = [CChar](repeating: 0, count: 64)
+        for i in 0..<n {
+            let pid = pids[i]
+            if pid <= 0 { continue }
+            let len = proc_name(pid, &nameBuf, UInt32(nameBuf.count))
+            if len == 3 && nameBuf[0] == 97 && nameBuf[1] == 103 && nameBuf[2] == 121 { // "agy"
+                return true
+            }
+        }
+        return false
+    }
+
+    private func isAnyHostRunning() -> Bool {
+        isAntigravityRunning() || isCliRunning()
+    }
+
+    private func startHostLifecycleWatch() {
+        sawHostRunning = isAnyHostRunning()
 
         terminateObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification,
@@ -92,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard name.contains("antigravity") || bid.contains("antigravity") else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 guard let self else { return }
-                if !self.isAntigravityRunning() {
+                if !self.isAnyHostRunning() {
                     NSApp.terminate(nil)
                 }
             }
@@ -101,10 +137,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let t = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                let running = self.isAntigravityRunning()
+                let running = self.isAnyHostRunning()
                 if running {
-                    self.sawAntigravityRunning = true
-                } else if self.sawAntigravityRunning {
+                    self.sawHostRunning = true
+                } else if self.sawHostRunning {
                     NSApp.terminate(nil)
                 }
             }
@@ -114,9 +150,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var lockFD: Int32 = -1
-    private func acquireSingleInstanceLock(dataDir: String) -> Bool {
-        try? FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
-        let lockPath = "\(dataDir)/agy-notch.lock"
+    private func acquireSingleInstanceLock(lockPath: String) -> Bool {
+        let lockDir = URL(fileURLWithPath: lockPath).deletingLastPathComponent().path
+        try? FileManager.default.createDirectory(atPath: lockDir, withIntermediateDirectories: true)
         let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
         guard fd >= 0 else { return true }
         if flock(fd, LOCK_EX | LOCK_NB) != 0 {

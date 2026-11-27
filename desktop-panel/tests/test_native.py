@@ -996,6 +996,98 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(snap['lastAvgSpeed'], 50.0)
         self.assertEqual(snap['lastAvgSpeedModel'], '')
 
+    def test_shared_notch_merges_desktop_and_cli_peer_sessions(self):
+        desktop_root = self.root / 'shared' / 'antigravity'
+        cli_root = self.root / 'shared' / 'antigravity-cli'
+        desktop_data = desktop_root / 'plugin_data' / 'agy-desktop-status'
+        cli_data = cli_root / 'plugin_data' / 'agy-desktop-status'
+        desktop_data.mkdir(parents=True)
+        cli_data.mkdir(parents=True)
+        (desktop_root / 'conversations').mkdir(parents=True)
+        cli_cid = '33333333-3333-3333-3333-333333333333'
+        db = sqlite3.connect(desktop_root / 'conversations' / f'{CID}.db')
+        db.execute('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB)')
+        db.execute('INSERT INTO gen_metadata VALUES(?,?)', (0, blob(150, 2, b'gemini-desktop')))
+        db.commit()
+        db.close()
+
+        t_desktop = datetime.fromtimestamp(time.time() - 10, timezone.utc).isoformat()
+        t_cli = datetime.fromtimestamp(time.time() - 2, timezone.utc).isoformat()
+        (desktop_data / 'active_session.json').write_text(json.dumps({
+            'activeConversationId': CID,
+            'updatedAt': t_desktop,
+            'sessions': {
+                CID: {
+                    'conversationId': CID,
+                    'updatedAt': t_desktop,
+                    'modelName': 'gemini-desktop',
+                    'lastEvent': 'Stop',
+                },
+            },
+        }))
+        (cli_data / 'active_session.json').write_text(json.dumps({
+            'activeConversationId': cli_cid,
+            'updatedAt': t_cli,
+            'clientKind': 'cli',
+            'sessions': {
+                cli_cid: {
+                    'conversationId': cli_cid,
+                    'updatedAt': t_cli,
+                    'modelName': 'gemini-cli',
+                    'lastEvent': 'PreInvocation',
+                    'terminalEnv': {'TERM_PROGRAM': 'ghostty'},
+                },
+            },
+        }))
+
+        # Querying from Desktop side merges CLI peer and picks the newer CLI session as active.
+        proc = subprocess.run(
+            [str(BINARY), 'status', '--conversation-id', 'auto',
+             '--desktop-root', str(desktop_root), '--data-dir', str(desktop_data)],
+            env=self.env, text=True, capture_output=True, check=True,
+        )
+        snap = json.loads(proc.stdout)
+        self.assertEqual(snap['conversationId'], cli_cid)
+        self.assertEqual(snap['clientKind'], 'cli')
+        self.assertEqual(snap['terminalEnv']['TERM_PROGRAM'], 'ghostty')
+        recent = {item['conversationId']: item for item in snap['recentConversations']}
+        self.assertEqual(recent[cli_cid]['clientKind'], 'cli')
+        self.assertEqual(recent[CID]['clientKind'], 'desktop')
+
+        # Querying Desktop's conversation from CLI side still resolves Desktop's .db via peer root.
+        proc_cli = subprocess.run(
+            [str(BINARY), 'status', '--conversation-id', CID,
+             '--desktop-root', str(cli_root), '--data-dir', str(cli_data)],
+            env=self.env, text=True, capture_output=True, check=True,
+        )
+        snap_cli = json.loads(proc_cli.stdout)
+        self.assertTrue(snap_cli['found'])
+        self.assertEqual(snap_cli['clientKind'], 'desktop')
+        self.assertEqual(snap_cli['modelName'], 'gemini-desktop')
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS shared notch lock')
+    def test_shared_notch_lock_prevents_duplicate_launch_across_data_dirs(self):
+        import fcntl
+        sidecars = self.root / 'sidecars' / 'status'
+        sidecars.mkdir(parents=True)
+        backend_copy = sidecars / 'agy-desktop-backend'
+        shutil.copy2(BINARY, backend_copy)
+        marker = self.root / 'spawned'
+        notch = sidecars / 'agy-notch'
+        notch.write_text('#!/bin/sh\necho spawned > ' + shlex.quote(str(marker)) + '\n')
+        notch.chmod(0o755)
+        lock_file = self.root / 'agy-notch.lock'
+        with open(lock_file, 'a+') as lf:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            env = dict(self.env)
+            env.pop('AGY_NO_NOTCH', None)
+            subprocess.run(
+                [str(backend_copy), 'cli-status', '--desktop-root', str(self.root / 'other-cli'), '--conversation-id', CID],
+                env=env, check=True,
+            )
+            time.sleep(0.15)
+            self.assertFalse(marker.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

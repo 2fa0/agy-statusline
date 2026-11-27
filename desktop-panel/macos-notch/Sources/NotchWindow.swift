@@ -732,7 +732,13 @@ final class NotchWindowManager: NSObject, NSMenuDelegate {
 
     func activateAntigravity() {
         let running = NSWorkspace.shared.runningApplications
-        if store.isCLI {
+        let taskIsCLI: Bool = {
+            if let kind = store.displayedTask?.clientKind, !kind.isEmpty {
+                return kind == "cli"
+            }
+            return store.isCLI
+        }()
+        if taskIsCLI {
             let env = store.displayedTask?.terminalEnvironment ?? [:]
             let target = NotchStore.resolveCliTerminalTarget(env: env)
             if let bid = target.bundleId?.lowercased(),
