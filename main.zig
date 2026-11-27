@@ -446,8 +446,8 @@ fn renderMetrics(allocator: Allocator, cw: ContextWindow, speed: ?f64, color: []
     const ctx_text = try renderContext(allocator, cw);
     if (cw.current_usage) |u| {
         if (u.input_tokens != null and u.cache_read_input_tokens != null and u.cache_creation_input_tokens != null) {
-            const input = u.input_tokens.?; const read = u.cache_read_input_tokens.?;
-            if (input >= 0 and read >= 0 and u.cache_creation_input_tokens.? == 0) {
+            const input = u.input_tokens.?; const read = u.cache_read_input_tokens.?; const create = u.cache_creation_input_tokens.?;
+            if (input >= 0 and read >= 0 and create >= 0 and (create == 0 or read > 0)) {
                 const total = @as(f64, @floatFromInt(input)) + @as(f64, @floatFromInt(read));
                 if (total > 0) return std.fmt.allocPrint(allocator, "{s}Cache hit: {d:.1}% | Cache read: {s} | {s} | {s}\x1b[0m\n", .{color, 100 * @as(f64, @floatFromInt(read)) / total, try formatTokens(allocator, read), ctx_text, speed_text});
             }
@@ -609,6 +609,10 @@ test "formatting and speed" {
     try std.testing.expectEqual(@as(?f64, null), metadataSpeed(&.{0x0a,0xff}));
     const line = try render(a, .{ .context_window_size = 1_048_576, .current_usage = .{ .input_tokens = 200, .cache_read_input_tokens = 800, .cache_creation_input_tokens = 0 } }, 12.6, .{}); defer a.free(line);
     try std.testing.expectEqualStrings("\x1b[43;30mCache hit: 80.0% | Cache read: 800 | Ctx: 1K/1,048K | Last avg speed: 13 token/s\x1b[0m\n", line);
+    const write_with_read = try render(a, .{ .context_window_size = 1_048_576, .current_usage = .{ .input_tokens = 200, .cache_read_input_tokens = 800, .cache_creation_input_tokens = 500 } }, 12.6, .{}); defer a.free(write_with_read);
+    try std.testing.expectEqualStrings("\x1b[43;30mCache hit: 80.0% | Cache read: 800 | Ctx: 1K/1,048K | Last avg speed: 13 token/s\x1b[0m\n", write_with_read);
+    const write_only = try render(a, .{ .context_window_size = 1_048_576, .current_usage = .{ .input_tokens = 200, .cache_read_input_tokens = 0, .cache_creation_input_tokens = 500 } }, 12.6, .{}); defer a.free(write_only);
+    try std.testing.expectEqualStrings("\x1b[43;30mCache hit: -- | Ctx: 700/1,048K | Last avg speed: 13 token/s\x1b[0m\n", write_only);
 }
 
 test "quota summary and rendering" {
